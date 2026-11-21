@@ -1,0 +1,426 @@
+"""Quality gate engine: stress test, 4 hard gates, soft displacement hints, and health-report.json."""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+from PIL import Image
+
+from src.pipeline.presets import get_preset
+from src.render.renderer import SpineRenderer, parts_composite_pm
+
+
+class GateFailureError(RuntimeError):
+    """Raised when one or more hard quality gates fail."""
+
+    def __init__(self, message: str, health_report: Dict[str, Any]):
+        super().__init__(message)
+        self.code = "HARD_GATE_FAILED"
+        self.retryable = False
+        self.details = health_report
+        self.health_report = health_report
+
+
+def _seed_runs(T: np.ndarray, seed: np.ndarray) -> np.ndarray:
+    Tp = np.pad(T, ((0, 0), (0, 1)))
+    Sp = np.pad(seed, ((0, 0), (0, 1)))
+    f = Tp.reshape(-1)
+    sd = Sp.reshape(-1)
+    start = f & ~np.concatenate([[False], f[:-1]])
+    rid = np.cumsum(start) * f
+    hit = np.bincount(rid[sd & f], minlength=int(rid.max()) + 1) > 0
+    hit[0] = False
+    return hit[rid].reshape(Tp.shape)[:, :-1]
+
+
+def enclosed_transparent(alpha: np.ndarray, thr: int = 128) -> np.ndarray:
+    """Pixels with `alpha < thr` NOT 4-connected to the canvas border."""
+    T = alpha < thr
+    seed = np.zeros_like(T)
+    seed[0] = T[0]
+    seed[-1] = T[-1]
+    seed[:, 0] = T[:, 0]
+    seed[:, -1] = T[:, -1]
+    prev_count = -1
+    while True:
+        seed = _seed_runs(T, seed)
+        seed = _seed_runs(T.T, seed.T).T
+        c = int(seed.sum())
+        if c == prev_count:
+            break
+        prev_count = c
+    return T & ~seed
+
+
+def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
+    """Fast box dilation of a 2D boolean mask by `radius` pixels."""
+    if radius <= 0 or not mask.any():
+        return mask.copy()
+    a = mask.copy()
+    s = 1
+    while s <= radius:
+        step = min(s, radius - s + 1) if s * 2 > radius else s
+        b = a.copy()
+        b[:, step:] |= a[:, :-step]
+        b[:, :-step] |= a[:, step:]
+        c = b.copy()
+        c[step:, :] |= b[:-step, :]
+        c[:-step, :] |= b[step:, :]
+        a = c
+        s += step
+    return a
+
+
+def count_enclosed_holes(frame_pm: np.ndarray, rest_alpha: np.ndarray, alpha_thr: int = 128) -> int:
+    """Count pixels that were opaque at rest (>=250) and became newly enclosed see-through (<alpha_thr).
+
+    Pre-existing anatomical enclosed cutouts at rest (e.g. hand-on-hip or hair-strand loops)
+    that translate with the character are seeded out so rigid/deforming sway does not cause
+    false positives, while newly opened interior seam tears are still strictly caught.
+    """
+    frame_alpha = frame_pm[..., 3]
+    T = frame_alpha < alpha_thr
+    if not T.any():
+        return 0
+
+    seed = np.zeros_like(T)
+    seed[0] = T[0]
+    seed[-1] = T[-1]
+    seed[:, 0] = T[:, 0]
+    seed[:, -1] = T[:, -1]
+
+    rest_enc = enclosed_transparent(rest_alpha, thr=alpha_thr)
+    if rest_enc.any():
+        h, w = rest_alpha.shape
+        motion_r = max(32, int(0.05 * max(h, w)))
+        seed |= T & _dilate_mask(rest_enc, motion_r)
+
+    prev_count = -1
+    while True:
+        seed = _seed_runs(T, seed)
+        seed = _seed_runs(T.T, seed.T).T
+        c = int(seed.sum())
+        if c == prev_count:
+            break
+        prev_count = c
+
+    holes = (T & ~seed) & (rest_alpha >= 250)
+    if not holes.any():
+        return 0
+
+    # Ignore tiny (<= 24 px) exterior-contour notch pinches near the rest silhouette edge
+    near_rest_bg = _dilate_mask(rest_alpha < alpha_thr, 16)
+    deep_holes = holes & ~near_rest_bg
+    if deep_holes.any():
+        return int(holes.sum())
+    edge_count = int(holes.sum())
+    return 0 if edge_count <= 24 else edge_count
+
+
+def stress_test(
+    parts_dir: Union[str, Path],
+    rig_dir: Union[str, Path],
+    *,
+    stress_gain: float = 1.6,
+    sample_times: Optional[Sequence[float]] = None,
+    sample_count: int = 8,
+    renderer: Optional[SpineRenderer] = None,
+) -> Dict[str, Any]:
+    """Run extreme-deformation stress poses to catch hidden-fill holes early."""
+    r = renderer or SpineRenderer(rig_dir)
+    rep_path = Path(rig_dir) / "rig-build-report.json"
+    duration = 8.0
+    if rep_path.is_file():
+        duration = float(json.loads(rep_path.read_text(encoding="utf-8")).get("duration", 8.0))
+
+    if sample_times is None:
+        times = [duration * (i + 0.5) / float(sample_count) for i in range(sample_count)]
+    else:
+        times = [float(t) for t in sample_times]
+
+    rest_frame = r.frame(None)
+    rest_alpha = rest_frame[..., 3]
+    per_sample: List[int] = []
+    for t in times:
+        f = r.frame(t, gain=stress_gain)
+        per_sample.append(count_enclosed_holes(f, rest_alpha))
+
+    return {
+        "partsDir": str(Path(parts_dir).resolve()),
+        "rigDir": str(Path(rig_dir).resolve()),
+        "gain": float(stress_gain),
+        "sampleTimes": [round(t, 4) for t in times],
+        "sampleCount": len(times),
+        "enclosedHolesMax": max(per_sample) if per_sample else 0,
+        "perSampleHoles": per_sample,
+        "passed": (max(per_sample) if per_sample else 0) == 0,
+    }
+
+
+def _evaluate_rest_diff(parts_dir: Path) -> Dict[str, Any]:
+    rd_path = parts_dir / "rest_diff.json"
+    if rd_path.is_file():
+        rd = json.loads(rd_path.read_text(encoding="utf-8"))
+        max_rgba = int(rd["maxRGBA"])
+        return {
+            "passed": max_rgba <= 2,
+            "threshold": {"maxRGBA": 2},
+            "measured": {
+                "maxRGBA": max_rgba,
+                "meanAbsDiff": float(rd.get("meanAbsDiff", 0.0)),
+                "pixelsOver2": int(rd.get("pixelsOver2", 0)),
+            },
+        }
+    pj = json.loads((parts_dir / "parts.json").read_text(encoding="utf-8"))
+    src = np.asarray(Image.open(pj["source"]).convert("RGBA"), dtype=np.uint8)
+    rc = np.asarray(Image.open(parts_dir / "rest_composite.png").convert("RGBA"), dtype=np.uint8)
+    opaque_thr = int(pj.get("opaqueThreshold", 250))
+    src_n = src.copy()
+    src_n[..., 3] = np.where(src_n[..., 3] >= opaque_thr, 255, src_n[..., 3])
+    src_n[src_n[..., 3] == 0] = 0
+    rc_n = rc.copy()
+    rc_n[rc_n[..., 3] == 0] = 0
+    d = np.abs(rc_n.astype(np.int16) - src_n.astype(np.int16))
+    max_rgba = int(d.max()) if d.size else 0
+    return {
+        "passed": max_rgba <= 2,
+        "threshold": {"maxRGBA": 2},
+        "measured": {
+            "maxRGBA": max_rgba,
+            "meanAbsDiff": round(float(d.mean()), 6) if d.size else 0.0,
+            "pixelsOver2": int((d.max(axis=-1) > 2).sum()) if d.size else 0,
+        },
+    }
+
+
+def _resolve_soft_landmark_bone(sk_bones: Dict[str, Any], name: str) -> Optional[Tuple[str, bool]]:
+    """Map logical landmark (`head`, `chest`, `hips`, `hair_tip`) -> (bone_name, use_tip)."""
+    if name in sk_bones:
+        return name, False
+    if name == "hair_tip":
+        hair_bones = [bn for bn in sk_bones if any(tok in bn.lower() for tok in ("back_hair", "hair_strand", "mane", "hair"))]
+        if hair_bones:
+            # Prefer highest-indexed link of back_hair/hair chain
+            hair_bones.sort()
+            return hair_bones[-1], True
+        if "head" in sk_bones:
+            return "head", True
+    if name == "chest" and "torso" in sk_bones:
+        return "torso", False
+    if name == "hips" and "waist" in sk_bones:
+        return "waist", False
+    return None
+
+
+def _ik_constraint_drift(r: SpineRenderer, c: Dict[str, Any], setup_dists: Dict[str, float]) -> float:
+    names = c["bones"]
+    tgt = r.sk.by_name[c["target"]]
+    T = np.array([tgt.worldX, tgt.worldY], dtype=np.float64)
+    if len(names) == 2:
+        tip = r.sk.by_name[names[1]].tip_world()
+        return float(np.linalg.norm(tip - T))
+    # 1-bone aim IK: measure distance from bone's ray/tip to target
+    b = r.sk.by_name[names[0]]
+    p0 = np.array([b.worldX, b.worldY], dtype=np.float64)
+    length = float(b.data.get("length", 0.0))
+    if length > 1e-6 and abs(length - setup_dists[c["name"]]) <= 1.0:
+        return float(np.linalg.norm(b.tip_world() - T))
+    # Otherwise perpendicular distance from T to bone +x ray
+    axis = np.array([b.a, b.c], dtype=np.float64)
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-9:
+        return float(np.linalg.norm(T - p0))
+    axis /= norm
+    rel = T - p0
+    proj = max(0.0, float(rel @ axis))
+    closest = p0 + proj * axis
+    return float(np.linalg.norm(T - closest))
+
+
+def run_audit(
+    parts_dir: Union[str, Path],
+    rig_dir: Union[str, Path],
+    *,
+    out_path: Optional[Union[str, Path]] = None,
+    sample_count: int = 16,
+    stress_gain: float = 1.6,
+    stress_samples: int = 8,
+    raise_on_fail: bool = False,
+) -> Dict[str, Any]:
+    """Run all 4 hard gates + stress test + soft displacement hints and write `health-report.json`."""
+    pdir = Path(parts_dir).resolve()
+    rdir = Path(rig_dir).resolve()
+    report_dst = Path(out_path).resolve() if out_path else (rdir / "health-report.json")
+
+    rep_path = rdir / "rig-build-report.json"
+    rig_rep = json.loads(rep_path.read_text(encoding="utf-8")) if rep_path.is_file() else {}
+    duration = float(rig_rep.get("duration", 8.0))
+    preset_name = str(rig_rep.get("preset", "agile_full"))
+    gain = float(rig_rep.get("gain", 1.0))
+    ref_ranges = rig_rep.get("softReferenceRanges") or get_preset(preset_name)["soft_displacement_ranges"]
+
+    renderer = SpineRenderer(rdir)
+
+    # Gate 1: rest_diff (maxRGBA <= 2)
+    gate_rest_diff = _evaluate_rest_diff(pdir)
+
+    # Gate 2: setup_identity (frame0VsSetup == 0, frameLoopEndVsSetup == 0, setupVsParts.maxRGBA <= 2)
+    f_setup = renderer.frame(None)
+    f_0 = renderer.frame(0.0)
+    f_end = renderer.frame(duration)
+    parts_pm = parts_composite_pm(pdir, renderer.width, renderer.height)
+
+    diff_0 = int(np.abs(f_0.astype(np.int16) - f_setup.astype(np.int16)).max())
+    diff_end = int(np.abs(f_end.astype(np.int16) - f_setup.astype(np.int16)).max())
+    diff_parts = int(np.abs(f_setup.astype(np.int16) - parts_pm.astype(np.int16)).max())
+    gate_setup_identity = {
+        "passed": (diff_0 == 0) and (diff_end == 0) and (diff_parts <= 2),
+        "threshold": {"frame0VsSetup": 0, "frameLoopEndVsSetup": 0, "setupVsPartsMaxRGBA": 2},
+        "measured": {
+            "frame0VsSetup": diff_0,
+            "frameLoopEndVsSetup": diff_end,
+            "setupVsPartsMaxRGBA": diff_parts,
+        },
+    }
+
+    # Gate 3 & 4 + Soft displacement tracks over sampled loop frames
+    rest_alpha = f_setup[..., 3]
+    ys_nz, _ = np.nonzero(rest_alpha > 8)
+    body_h = int(ys_nz.max() - ys_nz.min() + 1) if ys_nz.size else renderer.height
+
+    renderer.pose(None)
+    setup_ik_dists: Dict[str, float] = {}
+    for c in renderer.sk.ik:
+        b0 = renderer.sk.by_name[c["bones"][0]]
+        tgt = renderer.sk.by_name[c["target"]]
+        setup_ik_dists[c["name"]] = float(math.hypot(tgt.worldX - b0.worldX, tgt.worldY - b0.worldY))
+
+    loop_times = [duration * i / float(sample_count) for i in range(sample_count)]
+    loop_holes: List[int] = []
+    ik_drifts: Dict[str, float] = {c["name"]: 0.0 for c in renderer.sk.ik}
+
+    landmark_names = ("head", "chest", "hips", "hair_tip")
+    lm_bindings = {nm: _resolve_soft_landmark_bone(renderer.sk.by_name, nm) for nm in landmark_names}
+    lm_tracks: Dict[str, List[Tuple[float, float]]] = {nm: [] for nm in landmark_names}
+
+    for t in loop_times:
+        f = renderer.frame(t)
+        loop_holes.append(count_enclosed_holes(f, rest_alpha))
+        for c in renderer.sk.ik:
+            drift = _ik_constraint_drift(renderer, c, setup_ik_dists)
+            if drift > ik_drifts[c["name"]]:
+                ik_drifts[c["name"]] = drift
+        for nm, bind in lm_bindings.items():
+            if bind is None:
+                continue
+            bname, use_tip = bind
+            b = renderer.sk.by_name[bname]
+            if use_tip:
+                pt = b.tip_world()
+                lm_tracks[nm].append((float(pt[0]), float(pt[1])))
+            else:
+                lm_tracks[nm].append((float(b.worldX), float(b.worldY)))
+
+    stress_res = stress_test(
+        pdir,
+        rdir,
+        stress_gain=stress_gain,
+        sample_count=stress_samples,
+        renderer=renderer,
+    )
+    loop_holes_max = max(loop_holes) if loop_holes else 0
+    stress_holes_max = int(stress_res["enclosedHolesMax"])
+    enclosed_max = max(loop_holes_max, stress_holes_max)
+
+    gate_no_holes = {
+        "passed": enclosed_max == 0,
+        "threshold": {"enclosedHolesMax": 0},
+        "measured": {
+            "loopEnclosedHolesMax": loop_holes_max,
+            "stressEnclosedHolesMax": stress_holes_max,
+            "enclosedHolesMax": enclosed_max,
+        },
+    }
+
+    max_ik_drift = max(ik_drifts.values()) if ik_drifts else 0.0
+    gate_anchor_stability = {
+        "passed": max_ik_drift <= 1.5,
+        "threshold": {"maxDriftPx": 1.5},
+        "measured": {
+            "maxDriftPx": round(float(max_ik_drift), 4),
+            "perConstraint": {k: round(float(v), 4) for k, v in ik_drifts.items()},
+        },
+    }
+
+    # Soft displacement hints (advisory only; never fail hard gates)
+    soft_landmarks: Dict[str, Dict[str, Any]] = {}
+    for nm in landmark_names:
+        lo, hi = ref_ranges.get(nm, [0.0, 999.0])
+        pts = lm_tracks[nm]
+        if not pts:
+            soft_landmarks[nm] = {
+                "bone": None,
+                "ptpPx": None,
+                "ptpX": None,
+                "ptpY": None,
+                "refRangePx": [float(lo), float(hi)],
+                "status": "not_present",
+            }
+            continue
+        arr = np.asarray(pts, dtype=np.float64)
+        ptp_x = float(np.ptp(arr[:, 0]))
+        ptp_y = float(np.ptp(arr[:, 1]))
+        ptp = float(math.hypot(ptp_x, ptp_y))
+        if ptp < float(lo):
+            st = "warn_low"
+        elif ptp > float(hi):
+            st = "warn_high"
+        else:
+            st = "ok"
+        bind = lm_bindings[nm]
+        soft_landmarks[nm] = {
+            "bone": bind[0] if bind else None,
+            "ptpPx": round(ptp, 3),
+            "ptpX": round(ptp_x, 3),
+            "ptpY": round(ptp_y, 3),
+            "refRangePx": [float(lo), float(hi)],
+            "status": st,
+        }
+
+    hard_gates = {
+        "rest_diff": gate_rest_diff,
+        "setup_identity": gate_setup_identity,
+        "no_holes": gate_no_holes,
+        "anchor_stability": gate_anchor_stability,
+    }
+    all_passed = all(g["passed"] for g in hard_gates.values())
+
+    health_report: Dict[str, Any] = {
+        "version": "1.0",
+        "status": "pass" if all_passed else "fail",
+        "hardGates": hard_gates,
+        "softHints": {
+            "preset": preset_name,
+            "gain": gain,
+            "bodyHeightPx": body_h,
+            "landmarks": soft_landmarks,
+        },
+        "stressTest": stress_res,
+        "artifacts": {
+            "partsDir": str(pdir),
+            "rigDir": str(rdir),
+            "healthReport": str(report_dst),
+        },
+    }
+
+    report_dst.parent.mkdir(parents=True, exist_ok=True)
+    report_dst.write_text(json.dumps(health_report, indent=2) + "\n", encoding="utf-8")
+
+    if raise_on_fail and not all_passed:
+        failed = [k for k, v in hard_gates.items() if not v["passed"]]
+        raise GateFailureError(f"Hard quality gates failed: {', '.join(failed)}", health_report)
+
+    return health_report

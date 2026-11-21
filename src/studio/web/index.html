@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Portrait Spine Studio — 本机离线工具台</title>
+<style>
+  :root {
+    --bg-0: #0b0d12;
+    --bg-1: #12151d;
+    --bg-2: #181c26;
+    --bg-3: #202634;
+    --bg-hover: #262d3d;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text-0: #f3f6fc;
+    --text-1: #b8c2d6;
+    --text-2: #7e8aa3;
+    --accent: #38bdf8;
+    --accent-dim: rgba(56, 189, 248, 0.14);
+    --accent-border: rgba(56, 189, 248, 0.42);
+    --ok: #10b981;
+    --ok-dim: rgba(16, 185, 129, 0.14);
+    --warn: #f59e0b;
+    --warn-dim: rgba(245, 158, 11, 0.15);
+    --danger: #f43f5e;
+    --danger-dim: rgba(244, 63, 94, 0.14);
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: var(--bg-0);
+    color: var(--text-0);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button, input, select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  .topbar {
+    height: 54px;
+    padding: 0 20px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 13px;
+    color: #081018;
+    flex-shrink: 0;
+  }
+
+  .brand-title { font-weight: 600; font-size: 14px; }
+  .brand-sub {
+    font-size: 11px;
+    color: var(--text-2);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+
+  .stepper { display: flex; align-items: center; gap: 6px; }
+  .step-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text-2);
+    border: 1px solid transparent;
+  }
+  .step-pill .num {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-family: var(--mono);
+    background: var(--bg-3);
+  }
+  .step-pill.active {
+    color: var(--text-0);
+    background: var(--accent-dim);
+    border-color: var(--accent-border);
+  }
+  .step-pill.active .num { background: var(--accent); color: #06131c; font-weight: 700; }
+  .step-pill.done { color: var(--ok); }
+  .step-pill.done .num { background: var(--ok-dim); color: var(--ok); }
+  .step-sep { width: 14px; height: 1px; background: var(--border-strong); }
+
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+  .status-pill {
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--ok-dim);
+    color: var(--ok);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .status-pill.busy {
+    background: var(--warn-dim);
+    color: #fcd34d;
+    border-color: rgba(245, 158, 11, 0.45);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 13px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-2);
+    color: var(--text-0);
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  .btn:hover { background: var(--bg-hover); border-color: rgba(255,255,255,0.25); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #06131c; font-weight: 600; }
+  .btn-primary:hover { background: #5ccbfa; border-color: #5ccbfa; }
+  .btn-ok { background: var(--ok); border-color: var(--ok); color: #041c13; font-weight: 600; }
+  .btn-ok:hover { background: #22d397; border-color: #22d397; }
+  .btn-danger { background: var(--danger-dim); border-color: rgba(244,63,94,0.45); color: #fda4af; }
+  .btn-danger:hover { background: rgba(244,63,94,0.24); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-lg { padding: 11px 20px; font-size: 14px; border-radius: var(--radius-md); width: 100%; }
+  .btn-toggle.active { background: var(--accent-dim); border-color: var(--accent-border); color: var(--accent); }
+  .btn-toggle.active-warn { background: var(--warn-dim); border-color: rgba(245,158,11,0.55); color: #fcd34d; }
+
+  .view { display: none; flex: 1; }
+  .view.active { display: flex; flex-direction: column; }
+
+  .panel {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+  }
+  .panel-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; }
+
+  .banner {
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    margin-bottom: 12px;
+    display: none;
+  }
+  .banner.visible { display: block; }
+  .banner-warn { background: var(--warn-dim); border: 1px solid rgba(245,158,11,0.45); color: #fde68a; }
+  .banner-danger { background: var(--danger-dim); border: 1px solid rgba(244,63,94,0.5); color: #fecdd3; }
+  .banner-ok { background: var(--ok-dim); border: 1px solid rgba(16,185,129,0.45); color: #a7f3d0; }
+
+  /* Step 1 */
+  .upload-wrap {
+    max-width: 1120px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 28px 24px 40px;
+    display: grid;
+    grid-template-columns: 1.15fr 0.95fr;
+    gap: 22px;
+    align-items: start;
+  }
+  .dropzone {
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-2);
+    min-height: 320px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone.dragover { border-color: var(--accent); background: rgba(56,189,248,0.08); }
+  .dropzone img.thumb { max-height: 260px; max-width: 100%; border-radius: 8px; background: #141821; }
+  .muted { color: var(--text-2); font-size: 12px; }
+  .mono { font-family: var(--mono); }
+
+  .preset-grid { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+  .preset-card {
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .preset-card:hover { background: var(--bg-hover); }
+  .preset-card.selected { border-color: var(--accent); background: var(--accent-dim); }
+  .preset-card-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 4px; }
+  .preset-card-desc { color: var(--text-1); font-size: 12px; }
+
+  .option-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 12px;
+  }
+  .toggle-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .toggle-switch input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+  /* Step 2 */
+  .progress-wrap {
+    max-width: 880px;
+    width: 100%;
+    margin: 28px auto 40px;
+    padding: 0 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .stage-list { display: flex; flex-direction: column; gap: 8px; }
+  .stage-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge-pending { background: rgba(148,163,184,0.12); color: var(--text-2); }
+  .badge-running { background: var(--accent-dim); color: var(--accent); }
+  .badge-done, .badge-pass, .badge-ok { background: var(--ok-dim); color: var(--ok); }
+  .badge-failed, .badge-fail { background: var(--danger-dim); color: var(--danger); }
+  .badge-warn, .badge-warn_low, .badge-warn_high { background: var(--warn-dim); color: #fcd34d; }
+  .badge-na { background: rgba(148,163,184,0.12); color: var(--text-2); }
+
+  .pause-card {
+    display: none;
+    background: var(--bg-1);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+  }
+  .pause-card.visible { display: block; }
+  .part-map-preview {
+    max-height: 360px;
+    max-width: 100%;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: #141821;
+    display: block;
+    margin: 12px auto;
+  }
+
+  /* Step 3 Workbench */
+  .workbench {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 420px;
+    min-height: calc(100vh - 54px);
+  }
+  .stage-col {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-0);
+    border-right: 1px solid var(--border);
+    min-width: 0;
+  }
+  .viewport-toolbar {
+    padding: 10px 16px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .toolbar-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .seg-group {
+    display: inline-flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    gap: 2px;
+  }
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-1);
+    padding: 4px 9px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .seg-btn.active { background: var(--bg-3); color: var(--accent); font-weight: 600; }
+
+  .canvas-stage {
+    flex: 1;
+    min-height: 440px;
+    position: relative;
+    overflow: hidden;
+    background: #13161e;
+  }
+  #stageCanvas { width: 100%; height: 100%; display: block; }
+
+  .stage-hud {
+    position: absolute;
+    top: 12px;
+    left: 14px;
+    display: flex;
+    gap: 6px;
+    pointer-events: none;
+  }
+  .hud-pill {
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(11,13,18,0.82);
+    border: 1px solid rgba(255,255,255,0.14);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .timeline-bar {
+    padding: 10px 16px 12px;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .timeline-bar input[type="range"] { flex: 1; min-width: 180px; accent-color: var(--accent); cursor: pointer; }
+  .time-readout { font-family: var(--mono); font-size: 12px; min-width: 104px; text-align: right; }
+
+  .inspector {
+    background: var(--bg-1);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-height: calc(100vh - 54px);
+  }
+  .insp-card {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+  }
+  .insp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  .gate-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-size: 12px;
+  }
+  .gate-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .gate-meta { display: flex; flex-direction: column; }
+  .gate-val { font-family: var(--mono); font-size: 11px; color: var(--text-2); text-align: right; }
+
+  .text-input, .select-input {
+    width: 100%;
+    background: var(--bg-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    color: var(--text-0);
+    outline: none;
+  }
+  .text-input:focus, .select-input:focus { border-color: var(--accent); }
+
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip {
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-3);
+    font-size: 11px;
+    color: var(--text-1);
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  .log-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 180px; overflow-y: auto; }
+  .log-item {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    font-size: 11.5px;
+  }
+  .export-grid { display: flex; flex-direction: column; gap: 8px; }
+  .download-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+
+  @media (max-width: 960px) {
+    .upload-wrap, .workbench { grid-template-columns: 1fr; }
+    .inspector { max-height: none; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">PS</div>
+      <span class="brand-title">Portrait Spine Studio</span>
+      <span class="brand-sub">本机离线 · Spine 4.2</span>
+    </div>
+    <nav class="stepper" aria-label="流程步骤">
+      <div id="stepPill1" class="step-pill active"><span class="num">1</span><span>上传与配置</span></div>
+      <div class="step-sep"></div>
+      <div id="stepPill2" class="step-pill"><span class="num">2</span><span>生成与分件</span></div>
+      <div class="step-sep"></div>
+      <div id="stepPill3" class="step-pill"><span class="num">3</span><span>预览、微调与导出</span></div>
+    </nav>
+    <div class="topbar-actions">
+      <span id="serverStatusPill" class="status-pill">空闲就绪</span>
+      <button id="btnNewTask" type="button" class="btn btn-sm">新建任务</button>
+    </div>
+  </header>
+
+  <!-- STEP 1: UPLOAD & CONFIG -->
+  <section id="viewStep1" class="view active">
+    <div class="upload-wrap">
+      <div class="panel">
+        <div class="panel-title">
+          <span>1. 上传角色立绘（PNG / WebP）</span>
+          <span id="fileInfoBadge" class="muted mono">未选择文件</span>
+        </div>
+        <div id="step1Error" class="banner banner-danger"></div>
+        <div id="step1ResizeHint" class="banner banner-warn"></div>
+        <input id="fileInput" type="file" accept="image/png,image/webp,.png,.webp" hidden />
+        <div id="dropzone" class="dropzone">
+          <div id="dropPlaceholder">
+            <div style="font-size:15px;font-weight:600;margin-bottom:6px;">拖拽立绘到此处，或点击选择文件</div>
+            <div class="muted">支持带透明通道的 PNG / WebP；长边超过 2400px 将自动等比缩放并提示</div>
+          </div>
+          <img id="uploadThumb" class="thumb" alt="立绘预览" style="display:none;" />
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title"><span>2. 选择动作预设与流程选项</span></div>
+        <div class="preset-grid" id="presetGrid">
+          <button type="button" class="preset-card selected" data-preset="agile_full">
+            <div class="preset-card-head">
+              <span>轻盈全身</span>
+              <span class="muted mono">agile_full</span>
+            </div>
+            <div class="preset-card-desc">8s 轻盈重心摆动 + 4s 胸腔呼吸 + 灵动发丝与饰品延迟跟动</div>
+          </button>
+          <button type="button" class="preset-card" data-preset="heavy_weapon_full">
+            <div class="preset-card-head">
+              <span>重武器全身</span>
+              <span class="muted mono">heavy_weapon_full</span>
+            </div>
+            <div class="preset-card-desc">沉稳重心与大武器联动摆幅，反向脊柱缓冲与厚重披风波浪</div>
+          </button>
+          <button type="button" class="preset-card" data-preset="bust_half">
+            <div class="preset-card-head">
+              <span>半身立绘</span>
+              <span class="muted mono">bust_half</span>
+            </div>
+            <div class="preset-card-desc">下身稳固锚定，突出精致胸腔呼吸扩张与轻柔头丝飘动</div>
+          </button>
+        </div>
+
+        <div class="option-row">
+          <div>
+            <div style="font-weight:600;">分件后暂停确认</div>
+            <div class="muted">分件完成后展示 part_map.png，确认无误再构建骨骼与动画</div>
+          </div>
+          <label class="toggle-switch">
+            <input id="chkPauseAfterSplit" type="checkbox" />
+            <span>开启</span>
+          </label>
+        </div>
+
+        <div class="option-row">
+          <div style="flex:1;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-weight:600;">初始幅度增益（gain）</span>
+              <span id="initGainVal" class="mono">1.00x</span>
+            </div>
+            <input id="initGainSlider" type="range" min="0.4" max="1.8" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
+          </div>
+        </div>
+
+        <button id="btnStartGenerate" type="button" class="btn btn-primary btn-lg" disabled>开始生成</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 2: PROGRESS / PAUSE / FAIL-STOP -->
+  <section id="viewStep2" class="view">
+    <div class="progress-wrap">
+      <div class="panel">
+        <div class="panel-title">
+          <span>生成流水线进度</span>
+          <span id="jobIdLabel" class="muted mono">--</span>
+        </div>
+        <div id="step2ResizeBanner" class="banner banner-warn"></div>
+        <div id="stageList" class="stage-list"></div>
+      </div>
+
+      <div id="pauseCard" class="pause-card">
+        <div class="panel-title">
+          <span>分件已完成 — 请确认分件图（part_map.png）</span>
+          <span class="badge badge-warn">已暂停</span>
+        </div>
+        <div class="muted">确认角色分层区域合理后点击「确认继续生成」，将基于已保留的中间产物继续构建 Spine 4.2 工程与验收。</div>
+        <img id="partMapImg" class="part-map-preview" alt="分件图预览" />
+        <div id="pauseIntermediates" class="muted mono" style="margin-bottom:12px;word-break:break-all;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button id="btnPauseDiscard" type="button" class="btn btn-danger">放弃任务</button>
+          <button id="btnContinueGenerate" type="button" class="btn btn-ok">确认继续生成</button>
+        </div>
+      </div>
+
+      <div id="failCard" class="banner banner-danger" style="padding:16px;">
+        <div style="font-weight:700;font-size:14px;margin-bottom:6px;">阶段执行失败（已启用 Fail-Stop，未静默放行）</div>
+        <div id="failMessage" style="margin-bottom:8px;"></div>
+        <div id="failIntermediates" class="muted mono" style="margin-bottom:12px;word-break:break-all;"></div>
+        <div style="display:flex;gap:10px;">
+          <button id="btnRetryStage" type="button" class="btn btn-primary btn-sm">重试当前阶段</button>
+          <button id="btnDiscardJob" type="button" class="btn btn-danger btn-sm">放弃任务</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 3: WORKBENCH -->
+  <section id="viewStep3" class="view">
+    <div class="workbench">
+      <div class="stage-col">
+        <div class="viewport-toolbar">
+          <div class="toolbar-group">
+            <div class="seg-group" aria-label="背景切换">
+              <button id="btnBgDark" type="button" class="seg-btn active">深底</button>
+              <button id="btnBgLight" type="button" class="seg-btn">浅底</button>
+              <button id="btnBgChecker" type="button" class="seg-btn">棋盘格</button>
+            </div>
+          </div>
+          <div class="toolbar-group">
+            <button id="btnFrame0" type="button" class="btn btn-sm btn-toggle">第 0 帧对照</button>
+            <button id="btnParts" type="button" class="btn btn-sm btn-toggle">分件叠加</button>
+            <button id="btnBones" type="button" class="btn btn-sm btn-toggle">骨骼 / IK 线框</button>
+          </div>
+        </div>
+
+        <div id="step3ResizeBanner" class="banner banner-warn" style="margin:10px 16px 0;"></div>
+
+        <div class="canvas-stage" id="canvasStage">
+          <canvas id="stageCanvas"></canvas>
+          <div class="stage-hud">
+            <span id="hudBackend" class="hud-pill">WebGL2</span>
+            <span id="hudRigMeta" class="hud-pill">--</span>
+          </div>
+        </div>
+
+        <div class="timeline-bar">
+          <button id="btnPlayPause" type="button" class="btn btn-sm btn-primary">暂停</button>
+          <div class="seg-group" aria-label="播放倍速">
+            <button id="btnSpeed05" type="button" class="seg-btn">0.5x</button>
+            <button id="btnSpeed10" type="button" class="seg-btn active">1.0x</button>
+          </div>
+          <input id="scrubber" type="range" min="0" max="8" step="0.01" value="0" />
+          <span id="timeReadout" class="time-readout">0.00s / 8.00s</span>
+        </div>
+      </div>
+
+      <aside class="inspector">
+        <div class="insp-card">
+          <div class="insp-head">
+            <span>4 项硬门禁验收（Hard Gates）</span>
+            <span id="overallGateBadge" class="badge badge-na">N/A</span>
+          </div>
+          <div id="hardGatesList"></div>
+        </div>
+
+        <div class="insp-card">
+          <div class="insp-head">
+            <span>软位移动态提示（Soft Hints）</span>
+            <span class="muted">仅供参考</span>
+          </div>
+          <div id="softHintsList"></div>
+        </div>
+
+        <div class="insp-card">
+          <div class="insp-head"><span>预设与全局幅度（gain）</span></div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <select id="wbPresetSelect" class="select-input">
+              <option value="agile_full">agile_full — 轻盈全身</option>
+              <option value="heavy_weapon_full">heavy_weapon_full — 重武器全身</option>
+              <option value="bust_half">bust_half — 半身立绘</option>
+            </select>
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                <span>全局增益 gain</span>
+                <span id="wbGainVal" class="mono">1.00x</span>
+              </div>
+              <input id="wbGainSlider" type="range" min="0.2" max="2.2" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
+            </div>
+            <button id="btnApplyMotionParams" type="button" class="btn btn-sm">应用预设 / 幅度（仅重跑动画层）</button>
+          </div>
+        </div>
+
+        <div class="insp-card">
+          <div class="insp-head"><span>自然语言微调（最小层级重跑）</span></div>
+          <div style="display:flex;gap:6px;">
+            <input id="nlInput" type="text" class="text-input" placeholder="例如：右边长发摆动加大 / 整体呼吸更柔和 / 左手固定别动" />
+            <button id="btnRunNlAdjust" type="button" class="btn btn-primary btn-sm">微调</button>
+          </div>
+          <div class="chip-row">
+            <button type="button" class="chip" data-nl="右边长发摆动加大">右边长发摆动加大</button>
+            <button type="button" class="chip" data-nl="整体呼吸更柔和">整体呼吸更柔和</button>
+            <button type="button" class="chip" data-nl="左手固定别动">左手固定别动</button>
+            <button type="button" class="chip" data-nl="重新拆分披风并扩大遮挡补全">重新拆分披风</button>
+          </div>
+          <div id="adjustError" class="banner banner-danger" style="margin:6px 0 0;"></div>
+          <div id="adjustLogList" class="log-list"></div>
+        </div>
+
+        <div class="insp-card">
+          <div class="insp-head"><span>成果导出</span></div>
+          <div class="export-grid">
+            <button id="btnExportSpine" type="button" class="btn btn-ok btn-sm">导出 Spine 4.2 工程包（默认 .zip）</button>
+            <button id="btnExportPreview" type="button" class="btn btn-sm">导出深 / 浅底预览视频（.mp4）</button>
+            <button id="btnExportWeb" type="button" class="btn btn-sm">按需导出透明 Web 视频包</button>
+          </div>
+          <div id="exportNotice" class="banner banner-warn" style="margin:8px 0 0;"></div>
+          <div id="exportError" class="banner banner-danger" style="margin:8px 0 0;"></div>
+          <div id="downloadList" class="download-list"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+  import { PortraitSpinePlayer, normalizeHealthReport } from '/player/player-widget.js';
+
+  const $ = (id) => document.getElementById(id);
+
+  const state = {
+    selectedPreset: 'agile_full',
+    fileName: '',
+    imageBase64: '',
+    currentJob: null,
+    busy: false,
+    pollTimer: null,
+  };
+
+  const player = new PortraitSpinePlayer({
+    canvas: $('stageCanvas'),
+    defaultDuration: 8.0,
+    onStateChange(st) {
+      $('hudBackend').textContent = st.backend === 'webgl2' ? 'WebGL2' : 'Canvas2D';
+      $('btnPlayPause').textContent = st.playing ? '暂停' : '播放';
+      $('btnSpeed05').classList.toggle('active', Math.abs(st.speed - 0.5) < 1e-3);
+      $('btnSpeed10').classList.toggle('active', Math.abs(st.speed - 1.0) < 1e-3);
+      $('btnBgDark').classList.toggle('active', st.background === 'dark');
+      $('btnBgLight').classList.toggle('active', st.background === 'light');
+      $('btnBgChecker').classList.toggle('active', st.background === 'checker');
+      $('btnFrame0').classList.toggle('active-warn', st.compareFrame0);
+      $('btnParts').classList.toggle('active', st.showParts);
+      $('btnBones').classList.toggle('active', st.showBones);
+      $('scrubber').max = String(st.duration || 8.0);
+    },
+    onTimeUpdate(t, dur) {
+      $('scrubber').value = t.toFixed(2);
+      $('timeReadout').textContent = `${t.toFixed(2)}s / ${dur.toFixed(2)}s`;
+    },
+    onRigLoaded(info) {
+      $('hudRigMeta').textContent = `${info.name} · ${info.width}x${info.height} · ${info.bones}骨骼/${info.ik}IK`;
+      $('timeReadout').textContent = `0.00s / ${info.duration.toFixed(2)}s`;
+    },
+  });
+
+  const ro = new ResizeObserver(() => player.resize());
+  ro.observe($('canvasStage'));
+
+  function setStep(stepNum) {
+    for (let i = 1; i <= 3; i += 1) {
+      $(`viewStep${i}`).classList.toggle('active', i === stepNum);
+      const pill = $(`stepPill${i}`);
+      pill.classList.toggle('active', i === stepNum);
+      pill.classList.toggle('done', i < stepNum);
+    }
+    if (stepNum === 3) {
+      requestAnimationFrame(() => player.resize());
+    }
+  }
+
+  function showBanner(el, msg) {
+    if (!msg) {
+      el.textContent = '';
+      el.classList.remove('visible');
+      return;
+    }
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  function setBusy(isBusy) {
+    state.busy = !!isBusy;
+    const pill = $('serverStatusPill');
+    pill.textContent = state.busy ? '任务执行中（串行锁定）' : '空闲就绪';
+    pill.classList.toggle('busy', state.busy);
+    $('btnStartGenerate').disabled = state.busy || !state.imageBase64;
+    $('btnContinueGenerate').disabled = state.busy;
+    $('btnRetryStage').disabled = state.busy;
+    $('btnApplyMotionParams').disabled = state.busy;
+    $('btnRunNlAdjust').disabled = state.busy;
+    $('btnExportSpine').disabled = state.busy;
+    $('btnExportPreview').disabled = state.busy;
+    $('btnExportWeb').disabled = state.busy;
+  }
+
+  async function apiJson(url, options = {}) {
+    const resp = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+    const data = await resp.json().catch(() => ({ ok: false, message: `HTTP ${resp.status}` }));
+    if (!resp.ok) {
+      const err = new Error(data.message || `请求失败（HTTP ${resp.status}）`);
+      err.status = resp.status;
+      err.data = data;
+      throw err;
+    }
+    return data;
+  }
+
+  async function refreshHealth() {
+    try {
+      const h = await apiJson('/api/health');
+      setBusy(h.busy);
+    } catch (_err) {
+      // ignore transient poll errors
+    }
+  }
+
+  function renderStages(stages) {
+    const list = $('stageList');
+    list.innerHTML = '';
+    const mapText = { pending: '等待中', running: '执行中', done: '已完成', failed: '失败' };
+    for (const st of stages || []) {
+      const row = document.createElement('div');
+      row.className = 'stage-item';
+      row.innerHTML = `
+        <span>${st.label}</span>
+        <span class="badge badge-${st.status}">${mapText[st.status] || st.status}</span>
+      `;
+      list.appendChild(row);
+    }
+  }
+
+  function renderHealthReport(rawReport) {
+    const norm = normalizeHealthReport(rawReport);
+    const overall = $('overallGateBadge');
+    overall.className = `badge badge-${norm.overallStatus}`;
+    overall.textContent = norm.overallStatus.toUpperCase();
+
+    const hardEl = $('hardGatesList');
+    hardEl.innerHTML = '';
+    for (const g of norm.gates) {
+      const row = document.createElement('div');
+      row.className = 'gate-row';
+      row.innerHTML = `
+        <div class="gate-meta">
+          <strong>${g.label}</strong>
+          <span class="muted mono">${g.key}</span>
+        </div>
+        <div style="text-align:right;">
+          <div><span class="badge badge-${g.status}">${g.status.toUpperCase()}</span></div>
+          <div class="gate-val">${g.valueText}</div>
+        </div>
+      `;
+      hardEl.appendChild(row);
+    }
+
+    const softEl = $('softHintsList');
+    softEl.innerHTML = '';
+    for (const h of norm.hints) {
+      const row = document.createElement('div');
+      row.className = 'gate-row';
+      row.innerHTML = `
+        <div class="gate-meta">
+          <span>${h.label}</span>
+          <span class="muted">${h.detail || h.key}</span>
+        </div>
+        <div style="text-align:right;">
+          <div><span class="badge badge-${h.status}">${h.status.toUpperCase()}</span></div>
+          <div class="gate-val">${h.valueText}</div>
+        </div>
+      `;
+      softEl.appendChild(row);
+    }
+  }
+
+  function renderAdjustLog(logs) {
+    const el = $('adjustLogList');
+    el.innerHTML = '';
+    if (!logs || logs.length === 0) {
+      el.innerHTML = '<div class="muted">暂无微调记录。输入自然语言后将自动润色并仅重跑最小受影响层级。</div>';
+      return;
+    }
+    for (const item of [...logs].reverse()) {
+      const div = document.createElement('div');
+      div.className = 'log-item';
+      const skipped = (item.skipped_stages || []).join(', ') || '无';
+      div.innerHTML = `
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span class="badge badge-running">Layer: ${item.rerun_layer}</span>
+          <span class="muted mono">gain=${Number(item.gain).toFixed(2)}x</span>
+        </div>
+        <div style="margin-bottom:3px;"><strong>润色指令：</strong>${item.polished_instruction}</div>
+        <div class="muted mono">跳过阶段：${skipped}</div>
+      `;
+      el.appendChild(div);
+    }
+  }
+
+  function renderExports(exportsMap) {
+    const list = $('downloadList');
+    list.innerHTML = '';
+    const entries = Object.values(exportsMap || {});
+    for (const rec of entries) {
+      for (const f of rec.files || []) {
+        const a = document.createElement('a');
+        a.className = 'btn btn-sm';
+        a.href = f.url;
+        a.download = f.filename;
+        a.textContent = `下载 ${f.label} (${f.filename})`;
+        list.appendChild(a);
+      }
+    }
+  }
+
+  async function applyJobState(job) {
+    state.currentJob = job;
+    $('jobIdLabel').textContent = `Job ${job.job_id} · ${job.character}`;
+    renderStages(job.stages);
+    showBanner($('step2ResizeBanner'), job.resize_notice || '');
+    showBanner($('step3ResizeBanner'), job.resize_notice || '');
+
+    if (job.status === 'awaiting_split_confirm') {
+      setStep(2);
+      $('pauseCard').classList.add('visible');
+      $('failCard').classList.remove('visible');
+      $('partMapImg').src = `${job.part_map_url}?v=${Date.now()}`;
+      $('pauseIntermediates').textContent = `已保留中间产物：${Object.values(job.preserved_intermediates || {}).join(' | ')}`;
+      return;
+    }
+
+    if (job.status === 'failed') {
+      setStep(2);
+      $('pauseCard').classList.remove('visible');
+      $('failCard').classList.add('visible');
+      const se = job.stage_error || {};
+      $('failMessage').textContent = `阶段 ${se.failedStage || 'unknown'} [${se.errorCode || 'ERROR'}]：${se.message || '未知错误'}`;
+      $('failIntermediates').textContent = `已保留中间产物：${Object.values(job.preserved_intermediates || {}).join(' | ')}`;
+      return;
+    }
+
+    if (job.status === 'discarded') {
+      state.currentJob = null;
+      $('pauseCard').classList.remove('visible');
+      $('failCard').classList.remove('visible');
+      setStep(1);
+      return;
+    }
+
+    if (job.status === 'ready') {
+      $('pauseCard').classList.remove('visible');
+      $('failCard').classList.remove('visible');
+      setStep(3);
+      $('wbPresetSelect').value = job.preset;
+      $('wbGainSlider').value = String(job.gain);
+      $('wbGainVal').textContent = `${Number(job.gain).toFixed(2)}x`;
+      renderHealthReport(job.health_report);
+      renderAdjustLog(job.adjustment_log);
+      renderExports(job.exports);
+      if (job.rig_url) {
+        const bust = `?v=${job.rig_version || Date.now()}`;
+        await player.loadFromUrl(`${job.rig_url}${bust}`, {
+          healthReportUrl: job.health_report_url ? `${job.health_report_url}${bust}` : null,
+          autoPlay: true,
+        });
+      }
+    }
+  }
+
+  // File handling
+  function handleSelectedFile(file) {
+    if (!file) return;
+    showBanner($('step1Error'), '');
+    showBanner($('step1ResizeHint'), '');
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      state.fileName = file.name;
+      state.imageBase64 = dataUrl;
+      const thumb = $('uploadThumb');
+      thumb.src = dataUrl;
+      thumb.style.display = 'block';
+      $('dropPlaceholder').style.display = 'none';
+      const probe = new Image();
+      probe.onload = () => {
+        $('fileInfoBadge').textContent = `${file.name} (${probe.naturalWidth}×${probe.naturalHeight})`;
+        if (Math.max(probe.naturalWidth, probe.naturalHeight) > 2400) {
+          showBanner(
+            $('step1ResizeHint'),
+            `检测到立绘分辨率 ${probe.naturalWidth}×${probe.naturalHeight} 超过 2400px，预处理阶段将自动等比缩放至 <=2400px。`
+          );
+        }
+      };
+      probe.src = dataUrl;
+      $('btnStartGenerate').disabled = state.busy;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  $('dropzone').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', (e) => {
+    if (e.target.files?.[0]) handleSelectedFile(e.target.files[0]);
+  });
+  $('dropzone').addEventListener('dragover', (e) => {
+    e.preventDefault();
+    $('dropzone').classList.add('dragover');
+  });
+  $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('dragover'));
+  $('dropzone').addEventListener('drop', (e) => {
+    e.preventDefault();
+    $('dropzone').classList.remove('dragover');
+    if (e.dataTransfer.files?.[0]) handleSelectedFile(e.dataTransfer.files[0]);
+  });
+
+  // Preset cards & initial gain
+  $('presetGrid').addEventListener('click', (e) => {
+    const card = e.target.closest('.preset-card');
+    if (!card) return;
+    state.selectedPreset = card.dataset.preset;
+    for (const c of $('presetGrid').querySelectorAll('.preset-card')) {
+      c.classList.toggle('selected', c === card);
+    }
+  });
+  $('initGainSlider').addEventListener('input', (e) => {
+    $('initGainVal').textContent = `${Number(e.target.value).toFixed(2)}x`;
+  });
+  $('wbGainSlider').addEventListener('input', (e) => {
+    $('wbGainVal').textContent = `${Number(e.target.value).toFixed(2)}x`;
+  });
+
+  // Start generation
+  $('btnStartGenerate').addEventListener('click', async () => {
+    if (!state.imageBase64) return;
+    showBanner($('step1Error'), '');
+    setBusy(true);
+    setStep(2);
+    $('pauseCard').classList.remove('visible');
+    $('failCard').classList.remove('visible');
+    renderStages([
+      { id: 'preprocess', label: '输入预处理（<=2400px 缩放）', status: 'running' },
+      { id: 'mivo', label: 'Mivo Canvas 智能抠图', status: 'pending' },
+      { id: 'split_parts', label: '分层分件与遮挡补全', status: 'pending' },
+      { id: 'build_rig', label: '骨骼 / 权重 / Spine 4.2 动画构建', status: 'pending' },
+      { id: 'audit', label: '4 项硬门禁与软提示验收', status: 'pending' },
+    ]);
+
+    try {
+      const job = await apiJson('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: state.fileName,
+          image_base64: state.imageBase64,
+          preset: state.selectedPreset,
+          gain: parseFloat($('initGainSlider').value),
+          pause_after_split: $('chkPauseAfterSplit').checked,
+        }),
+      });
+      await applyJobState(job);
+    } catch (err) {
+      setStep(1);
+      showBanner($('step1Error'), err.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // Continue from split pause
+  $('btnContinueGenerate').addEventListener('click', async () => {
+    if (!state.currentJob) return;
+    setBusy(true);
+    try {
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/continue`, { method: 'POST', body: '{}' });
+      await applyJobState(job);
+    } catch (err) {
+      showBanner($('failCard'), err.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // Retry & Discard
+  $('btnRetryStage').addEventListener('click', async () => {
+    if (!state.currentJob) return;
+    setBusy(true);
+    try {
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/retry`, { method: 'POST', body: '{}' });
+      await applyJobState(job);
+    } catch (err) {
+      $('failMessage').textContent = err.message;
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  async function doDiscard() {
+    if (!state.currentJob) {
+      setStep(1);
+      return;
+    }
+    try {
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/discard`, { method: 'POST', body: '{}' });
+      await applyJobState(job);
+    } catch (_err) {
+      setStep(1);
+    }
+  }
+  $('btnDiscardJob').addEventListener('click', doDiscard);
+  $('btnPauseDiscard').addEventListener('click', doDiscard);
+  $('btnNewTask').addEventListener('click', () => {
+    player.pause();
+    setStep(1);
+  });
+
+  // Player controls
+  $('btnPlayPause').addEventListener('click', () => player.togglePlay());
+  $('btnSpeed05').addEventListener('click', () => player.setSpeed(0.5));
+  $('btnSpeed10').addEventListener('click', () => player.setSpeed(1.0));
+  $('scrubber').addEventListener('input', (e) => {
+    player.pause();
+    player.setTime(parseFloat(e.target.value));
+  });
+  $('btnBgDark').addEventListener('click', () => player.setBackground('dark'));
+  $('btnBgLight').addEventListener('click', () => player.setBackground('light'));
+  $('btnBgChecker').addEventListener('click', () => player.setBackground('checker'));
+  $('btnFrame0').addEventListener('click', () => player.setCompareFrame0(!player.compareFrame0));
+  $('btnParts').addEventListener('click', () => player.setShowParts(!player.showParts));
+  $('btnBones').addEventListener('click', () => player.setShowBones(!player.showBones));
+
+  // Workbench parameter & NL adjustment
+  async function submitAdjustment(payload) {
+    if (!state.currentJob) return;
+    showBanner($('adjustError'), '');
+    setBusy(true);
+    try {
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/adjust`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await applyJobState(job);
+    } catch (err) {
+      showBanner($('adjustError'), err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  $('btnApplyMotionParams').addEventListener('click', () => {
+    submitAdjustment({
+      preset: $('wbPresetSelect').value,
+      gain: parseFloat($('wbGainSlider').value),
+      instruction: '',
+    });
+  });
+
+  $('btnRunNlAdjust').addEventListener('click', () => {
+    const text = $('nlInput').value.trim();
+    if (!text) return;
+    submitAdjustment({ instruction: text });
+    $('nlInput').value = '';
+  });
+
+  document.querySelectorAll('.chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      $('nlInput').value = chip.dataset.nl || '';
+      $('nlInput').focus();
+    });
+  });
+
+  // Exports
+  async function runExport(kind) {
+    if (!state.currentJob) return;
+    showBanner($('exportNotice'), '');
+    showBanner($('exportError'), '');
+    setBusy(true);
+    try {
+      const rec = await apiJson(`/api/jobs/${state.currentJob.job_id}/export`, {
+        method: 'POST',
+        body: JSON.stringify({ kind }),
+      });
+      if (rec.notice) showBanner($('exportNotice'), rec.notice);
+      const latest = await apiJson(`/api/jobs/${state.currentJob.job_id}`);
+      state.currentJob = latest;
+      renderExports(latest.exports);
+    } catch (err) {
+      showBanner($('exportError'), err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  $('btnExportSpine').addEventListener('click', () => runExport('spine_package'));
+  $('btnExportPreview').addEventListener('click', () => runExport('preview_video'));
+  $('btnExportWeb').addEventListener('click', () => runExport('transparent_web'));
+
+  refreshHealth();
+</script>
+</body>
+</html>
