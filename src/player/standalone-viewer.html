@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portrait Spine Studio — Spine 4.2 Offline Viewer</title>
+<style>
+  :root {
+    --bg-app: #0f1116;
+    --bg-panel: #161922;
+    --bg-elev: #1e222e;
+    --border: #2a3040;
+    --text: #e6eaf2;
+    --text-muted: #939db4;
+    --accent: #38bdf8;
+    --accent-soft: rgba(56, 189, 248, 0.16);
+    --amber: #f59e0b;
+    --amber-soft: rgba(245, 158, 11, 0.16);
+    --pass: #22c55e;
+    --pass-soft: rgba(34, 197, 94, 0.15);
+    --fail: #ef4444;
+    --fail-soft: rgba(239, 68, 68, 0.16);
+    --warn: #eab308;
+    --warn-soft: rgba(234, 179, 8, 0.15);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg-app);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  .app {
+    display: grid;
+    grid-template-rows: 48px 1fr 56px;
+    grid-template-columns: 1fr 310px;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* Header */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .brand-title {
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .pill.accent {
+    color: var(--accent);
+    border-color: rgba(56, 189, 248, 0.35);
+    background: var(--accent-soft);
+  }
+
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* Buttons */
+  button, .btn {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    color: var(--text);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  button:hover {
+    background: #262b3a;
+    border-color: #3a4258;
+  }
+
+  button.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  button.active-amber {
+    background: var(--amber-soft);
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .seg-group {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .seg-group button {
+    border: none;
+    border-radius: 0;
+    border-right: 1px solid var(--border);
+    padding: 5px 9px;
+  }
+
+  .seg-group button:last-child {
+    border-right: none;
+  }
+
+  /* Viewport */
+  .stage-wrap {
+    position: relative;
+    background: #141414;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #stageCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .drop-overlay {
+    position: absolute;
+    inset: 18px;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(15, 17, 22, 0.84);
+    color: var(--text-muted);
+    text-align: center;
+    padding: 24px;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+
+  .drop-overlay.hidden {
+    display: none;
+  }
+
+  .drop-overlay.dragover {
+    border-color: var(--accent);
+    background: rgba(15, 23, 36, 0.9);
+    color: var(--text);
+  }
+
+  .drop-overlay h2 {
+    margin: 0;
+    font-size: 16px;
+    color: var(--text);
+  }
+
+  .drop-overlay p {
+    margin: 0;
+    max-width: 420px;
+    line-height: 1.5;
+    font-size: 12px;
+  }
+
+  .error-banner {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(127, 29, 29, 0.92);
+    border: 1px solid var(--fail);
+    color: #fee2e2;
+    font-size: 12px;
+    display: none;
+  }
+
+  .error-banner.visible {
+    display: block;
+  }
+
+  /* Right Inspector */
+  .inspector {
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+
+  .gate-list, .hint-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .gate-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .gate-row:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .gate-name {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  .gate-key {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  .gate-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .status-pass { background: var(--pass-soft); color: var(--pass); }
+  .status-fail { background: var(--fail-soft); color: var(--fail); }
+  .status-warn { background: var(--warn-soft); color: var(--warn); }
+  .status-info { background: var(--accent-soft); color: var(--accent); }
+  .status-na { background: rgba(148, 163, 184, 0.12); color: var(--text-muted); }
+
+  .gate-val {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 12px;
+    font-size: 12px;
+  }
+
+  .meta-k {
+    color: var(--text-muted);
+  }
+
+  .meta-v {
+    font-family: var(--mono);
+    text-align: right;
+    color: var(--text);
+  }
+
+  /* Bottom Transport */
+  .transport {
+    grid-column: 1 / -1;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    overflow-x: auto;
+  }
+
+  .timeline-wrap {
+    flex: 1 1 220px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 180px;
+  }
+
+  #scrubber {
+    flex: 1;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .time-readout {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    min-width: 96px;
+    text-align: right;
+  }
+
+  .divider {
+    width: 1px;
+    height: 22px;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 860px) {
+    .app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 48px 1fr 220px 56px;
+    }
+    .inspector {
+      border-left: none;
+      border-top: 1px solid var(--border);
+    }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-title">Portrait Spine Studio</span>
+      <span id="rigNamePill" class="pill">No rig loaded</span>
+      <span id="backendPill" class="pill accent">WebGL2</span>
+    </div>
+    <div class="topbar-actions">
+      <input id="folderInput" type="file" webkitdirectory multiple hidden>
+      <input id="filesInput" type="file" multiple accept=".json,.png" hidden>
+      <button id="btnOpenFolder" type="button">Open Rig Folder</button>
+      <button id="btnOpenFiles" type="button">Open Files</button>
+    </div>
+  </header>
+
+  <main class="stage-wrap" id="stageWrap">
+    <canvas id="stageCanvas"></canvas>
+    <div id="dropOverlay" class="drop-overlay">
+      <h2>Drop a Spine 4.2 Rig Folder Here</h2>
+      <p>
+        Load any offline rig bundle containing <code>&lt;name&gt;.spine.json</code>,
+        <code>images/*.png</code>, and optional <code>health-report.json</code>.
+        Or pass <code>?rig=./path/to/char.spine.json</code> in the URL.
+      </p>
+      <div style="display:flex; gap:8px; margin-top:4px;">
+        <button id="btnDropFolder" type="button">Select Rig Folder</button>
+        <button id="btnDropFiles" type="button">Select Files</button>
+      </div>
+    </div>
+    <div id="errorBanner" class="error-banner"></div>
+  </main>
+
+  <aside class="inspector">
+    <div>
+      <div class="section-head">
+        <span class="section-title">Hard Quality Gates</span>
+        <span id="overallHealthBadge" class="status-badge status-na">N/A</span>
+      </div>
+      <div class="card">
+        <div id="hardGatesList" class="gate-list"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-head">
+        <span class="section-title">Soft Displacement Hints</span>
+      </div>
+      <div class="card">
+        <div id="softHintsList" class="hint-list"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-head">
+        <span class="section-title">Rig Summary</span>
+      </div>
+      <div class="card">
+        <div class="meta-grid">
+          <span class="meta-k">Spine</span><span id="metaSpine" class="meta-v">--</span>
+          <span class="meta-k">Canvas</span><span id="metaCanvas" class="meta-v">--</span>
+          <span class="meta-k">Bones / IK</span><span id="metaBones" class="meta-v">--</span>
+          <span class="meta-k">Slots</span><span id="metaSlots" class="meta-v">--</span>
+          <span class="meta-k">Loop</span><span id="metaLoop" class="meta-v">8.00s</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <footer class="transport">
+    <button id="btnPlay" type="button" disabled>Play</button>
+
+    <div class="seg-group" aria-label="Playback speed">
+      <button id="btnSpeed05" type="button">0.5x</button>
+      <button id="btnSpeed10" type="button" class="active">1.0x</button>
+    </div>
+
+    <div class="timeline-wrap">
+      <input id="scrubber" type="range" min="0" max="8" step="0.01" value="0" disabled>
+      <span id="timeReadout" class="time-readout">0.00s / 8.00s</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="seg-group" aria-label="Background mode">
+      <button id="btnBgDark" type="button" class="active">Dark</button>
+      <button id="btnBgLight" type="button">Light</button>
+      <button id="btnBgChecker" type="button">Checker</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <button id="btnFrame0" type="button" title="Toggle Setup / Frame 0 comparison (shortcut: 0)">Frame 0</button>
+    <button id="btnParts" type="button" title="Toggle color-coded part hulls">Parts</button>
+    <button id="btnBones" type="button" title="Toggle bone & IK wireframe overlay">Bones / IK</button>
+  </footer>
+</div>
+
+<script type="module">
+  import { PortraitSpinePlayer, normalizeHealthReport } from './player-widget.js';
+
+  const $ = (id) => document.getElementById(id);
+
+  const canvas = $('stageCanvas');
+  const stageWrap = $('stageWrap');
+  const dropOverlay = $('dropOverlay');
+  const errorBanner = $('errorBanner');
+  const scrubber = $('scrubber');
+  const timeReadout = $('timeReadout');
+
+  function showError(msg) {
+    if (!msg) {
+      errorBanner.textContent = '';
+      errorBanner.classList.remove('visible');
+      return;
+    }
+    errorBanner.textContent = msg;
+    errorBanner.classList.add('visible');
+  }
+
+  function renderHealthPanel(report) {
+    const badge = $('overallHealthBadge');
+    badge.className = `status-badge status-${report.overallStatus}`;
+    badge.textContent = report.overallStatus.toUpperCase();
+
+    const hardEl = $('hardGatesList');
+    hardEl.innerHTML = '';
+    for (const g of report.gates) {
+      const row = document.createElement('div');
+      row.className = 'gate-row';
+      row.title = g.detail || g.desc;
+      row.innerHTML = `
+        <div>
+          <div class="gate-name">${g.label}</div>
+          <div class="gate-key">${g.key}</div>
+        </div>
+        <div class="gate-right">
+          <span class="status-badge status-${g.status}">${g.status.toUpperCase()}</span>
+          <span class="gate-val">${g.valueText}</span>
+        </div>
+      `;
+      hardEl.appendChild(row);
+    }
+
+    const softEl = $('softHintsList');
+    softEl.innerHTML = '';
+    for (const h of report.hints) {
+      const row = document.createElement('div');
+      row.className = 'gate-row';
+      row.title = h.detail || '';
+      row.innerHTML = `
+        <div>
+          <div class="gate-name">${h.label}</div>
+          <div class="gate-key">${h.key}</div>
+        </div>
+        <div class="gate-right">
+          <span class="status-badge status-${h.status}">${h.status.toUpperCase()}</span>
+          <span class="gate-val">${h.valueText}</span>
+        </div>
+      `;
+      softEl.appendChild(row);
+    }
+  }
+
+  const player = new PortraitSpinePlayer({
+    canvas,
+    defaultDuration: 8.0,
+    onStateChange(st) {
+      $('backendPill').textContent = st.backend === 'webgl2' ? 'WebGL2' : 'Canvas2D';
+      $('btnPlay').disabled = !st.loaded;
+      $('btnPlay').textContent = st.playing ? 'Pause' : 'Play';
+      scrubber.disabled = !st.loaded;
+      scrubber.max = String(st.duration);
+
+      $('btnSpeed05').classList.toggle('active', Math.abs(st.speed - 0.5) < 1e-3);
+      $('btnSpeed10').classList.toggle('active', Math.abs(st.speed - 1.0) < 1e-3);
+
+      $('btnBgDark').classList.toggle('active', st.background === 'dark');
+      $('btnBgLight').classList.toggle('active', st.background === 'light');
+      $('btnBgChecker').classList.toggle('active', st.background === 'checker');
+
+      $('btnFrame0').classList.toggle('active-amber', st.compareFrame0);
+      $('btnParts').classList.toggle('active', st.showParts);
+      $('btnBones').classList.toggle('active', st.showBones);
+
+      renderHealthPanel(st.healthReport);
+    },
+    onTimeUpdate(t, dur) {
+      scrubber.value = t.toFixed(2);
+      timeReadout.textContent = `${t.toFixed(2)}s / ${dur.toFixed(2)}s`;
+    },
+    onRigLoaded(info) {
+      showError('');
+      dropOverlay.classList.add('hidden');
+      $('rigNamePill').textContent = info.name;
+      $('metaSpine').textContent = info.spineVersion;
+      $('metaCanvas').textContent = `${info.width} x ${info.height}`;
+      $('metaBones').textContent = `${info.bones} / ${info.ik}`;
+      $('metaSlots').textContent = String(info.slots);
+      $('metaLoop').textContent = `${info.duration.toFixed(2)}s`;
+      timeReadout.textContent = `0.00s / ${info.duration.toFixed(2)}s`;
+    },
+  });
+
+  // Initial empty state
+  renderHealthPanel(normalizeHealthReport(null));
+  player.resize();
+
+  const ro = new ResizeObserver(() => player.resize());
+  ro.observe(stageWrap);
+
+  // Transport controls
+  $('btnPlay').addEventListener('click', () => player.togglePlay());
+  $('btnSpeed05').addEventListener('click', () => player.setSpeed(0.5));
+  $('btnSpeed10').addEventListener('click', () => player.setSpeed(1.0));
+  scrubber.addEventListener('input', (e) => {
+    player.pause();
+    player.setTime(parseFloat(e.target.value));
+  });
+
+  $('btnBgDark').addEventListener('click', () => player.setBackground('dark'));
+  $('btnBgLight').addEventListener('click', () => player.setBackground('light'));
+  $('btnBgChecker').addEventListener('click', () => player.setBackground('checker'));
+
+  $('btnFrame0').addEventListener('click', () => player.setCompareFrame0(!player.compareFrame0));
+  $('btnParts').addEventListener('click', () => player.setShowParts(!player.showParts));
+  $('btnBones').addEventListener('click', () => player.setShowBones(!player.showBones));
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      player.togglePlay();
+    } else if (e.key === '0' && !e.repeat) {
+      player.setCompareFrame0(true);
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.key === '0') {
+      player.setCompareFrame0(false);
+    }
+  });
+
+  // File pickers
+  async function handleFileSelection(files) {
+    try {
+      showError('');
+      await player.loadFromFiles(files);
+    } catch (err) {
+      showError(err?.message ?? String(err));
+    }
+  }
+
+  $('btnOpenFolder').addEventListener('click', () => $('folderInput').click());
+  $('btnDropFolder').addEventListener('click', () => $('folderInput').click());
+  $('btnOpenFiles').addEventListener('click', () => $('filesInput').click());
+  $('btnDropFiles').addEventListener('click', () => $('filesInput').click());
+
+  $('folderInput').addEventListener('change', (e) => {
+    if (e.target.files?.length) handleFileSelection(e.target.files);
+    e.target.value = '';
+  });
+  $('filesInput').addEventListener('change', (e) => {
+    if (e.target.files?.length) handleFileSelection(e.target.files);
+    e.target.value = '';
+  });
+
+  // Drag & drop (supports dropped folders via webkitGetAsEntry)
+  async function collectDroppedFiles(dataTransfer) {
+    const out = [];
+    const items = Array.from(dataTransfer.items ?? []);
+    const readEntry = (entry) =>
+      new Promise((resolve) => {
+        if (entry.isFile) {
+          entry.file((file) => {
+            out.push(file);
+            resolve();
+          }, () => resolve());
+        } else if (entry.isDirectory) {
+          const reader = entry.createReader();
+          const readAll = () => {
+            reader.readEntries(async (entries) => {
+              if (!entries.length) return resolve();
+              for (const child of entries) await readEntry(child);
+              readAll();
+            }, () => resolve());
+          };
+          readAll();
+        } else {
+          resolve();
+        }
+      });
+
+    const entries = items
+      .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
+      .filter(Boolean);
+
+    if (entries.length > 0) {
+      for (const entry of entries) await readEntry(entry);
+      return out;
+    }
+    return Array.from(dataTransfer.files ?? []);
+  }
+
+  stageWrap.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropOverlay.classList.add('dragover');
+  });
+  stageWrap.addEventListener('dragleave', () => {
+    dropOverlay.classList.remove('dragover');
+  });
+  stageWrap.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dropOverlay.classList.remove('dragover');
+    const files = await collectDroppedFiles(e.dataTransfer);
+    if (files.length > 0) handleFileSelection(files);
+  });
+
+  // Auto-load from ?rig=...&health=... query parameters
+  const params = new URLSearchParams(window.location.search);
+  const rigParam = params.get('rig');
+  if (rigParam) {
+    const healthParam = params.get('health');
+    player
+      .loadFromUrl(rigParam, {
+        healthReportUrl: healthParam !== null ? healthParam : undefined,
+      })
+      .catch((err) => showError(err?.message ?? String(err)));
+  }
+</script>
+</body>
+</html>

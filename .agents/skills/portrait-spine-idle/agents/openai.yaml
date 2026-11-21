@@ -1,0 +1,6 @@
+interface:
+  display_name: "Portrait Spine Idle"
+  short_description: "2D portrait to Spine 4.2 idle rig with Mivo Canvas, 4 hard gates, and minimal-layer reruns"
+  default_prompt: "Use $portrait-spine-idle to turn this 2D character portrait into a Spine 4.2 idle animation rig, run all 4 hard quality gates, and open the offline preview."
+policy:
+  allow_implicit_invocation: true

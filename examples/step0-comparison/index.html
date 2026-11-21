@@ -1,0 +1,2443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Step 0 效果对照与基线样本页 — Portrait Spine Studio</title>
+<style>
+  :root {
+    --bg-0: #0b0d12;
+    --bg-1: #12151d;
+    --bg-2: #181c26;
+    --bg-3: #202634;
+    --bg-hover: #262d3d;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text-0: #f3f6fc;
+    --text-1: #b8c2d6;
+    --text-2: #7e8aa3;
+    --accent: #38bdf8;
+    --accent-dim: rgba(56, 189, 248, 0.14);
+    --accent-border: rgba(56, 189, 248, 0.42);
+    --ok: #10b981;
+    --ok-dim: rgba(16, 185, 129, 0.14);
+    --ok-border: rgba(16, 185, 129, 0.42);
+    --warn: #f59e0b;
+    --warn-dim: rgba(245, 158, 11, 0.15);
+    --warn-border: rgba(245, 158, 11, 0.45);
+    --danger: #f43f5e;
+    --danger-dim: rgba(244, 63, 94, 0.14);
+    --danger-border: rgba(244, 63, 94, 0.45);
+    --purple: #a78bfa;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: var(--bg-0);
+    color: var(--text-0);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button, input, select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* Topbar */
+  .topbar {
+    min-height: 54px;
+    padding: 8px 20px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 12px;
+    color: #081018;
+    letter-spacing: -0.5px;
+    flex-shrink: 0;
+  }
+
+  .brand-title {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .brand-sub {
+    font-size: 11px;
+    color: var(--text-2);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+
+  /* Control bar */
+  .controls-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .ctrl-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px;
+  }
+
+  .ctrl-label {
+    font-size: 11px;
+    color: var(--text-2);
+    padding: 0 6px;
+    user-select: none;
+  }
+
+  .btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-1);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: background 0.14s, color 0.14s, border-color 0.14s;
+    white-space: nowrap;
+  }
+
+  .btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-0);
+  }
+
+  .btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: var(--accent-border);
+  }
+
+  .btn.warn-active {
+    background: var(--warn-dim);
+    color: var(--warn);
+    border-color: var(--warn-border);
+  }
+
+  .btn.ok-active {
+    background: var(--ok-dim);
+    color: var(--ok);
+    border-color: var(--ok-border);
+  }
+
+  /* Timeline Strip */
+  .timeline-strip {
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .timeline-readout {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-1);
+    min-width: 170px;
+  }
+
+  .timeline-readout strong {
+    color: var(--accent);
+  }
+
+  .scrubber-wrap {
+    flex: 1;
+    min-width: 220px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  input[type="range"].scrubber {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--bg-3);
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type="range"].scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #0b0d12;
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3);
+  }
+
+  .gain-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 7px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+
+  .gain-banner.warn {
+    background: var(--warn-dim);
+    border-color: var(--warn-border);
+    color: #fcd34d;
+  }
+
+  .gain-banner.ok {
+    background: var(--ok-dim);
+    border-color: var(--ok-border);
+    color: #6ee7b7;
+  }
+
+  /* Main Container */
+  .main {
+    width: 100%;
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 20px 20px 44px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+  }
+
+  .section-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .section-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .step-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+  }
+
+  .step-tag.danger {
+    background: var(--danger-dim);
+    color: var(--danger);
+    border-color: var(--danger-border);
+  }
+
+  .section-desc {
+    margin: 4px 0 0;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
+  /* 3 Preset Grid */
+  .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  @media (max-width: 1120px) {
+    .preset-grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .card-head {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .card-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .card-sub {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--text-2);
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+
+  .badge.ok {
+    background: var(--ok-dim);
+    color: var(--ok);
+    border-color: var(--ok-border);
+  }
+
+  .badge.warn {
+    background: var(--warn-dim);
+    color: var(--warn);
+    border-color: var(--warn-border);
+  }
+
+  .badge.fail {
+    background: var(--danger-dim);
+    color: var(--danger);
+    border-color: var(--danger-border);
+  }
+
+  .stage-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 4.4;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stage-wrap.bg-dark {
+    background: radial-gradient(circle at 50% 35%, #1d2433 0%, #10141d 100%);
+  }
+
+  .stage-wrap.bg-light {
+    background: radial-gradient(circle at 50% 35%, #e2e8f0 0%, #cbd5e1 100%);
+  }
+
+  .stage-wrap.bg-checker {
+    background-color: #202531;
+    background-image:
+      linear-gradient(45deg, #2d3445 25%, transparent 25%),
+      linear-gradient(-45deg, #2d3445 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #2d3445 75%),
+      linear-gradient(-45deg, transparent 75%, #2d3445 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  }
+
+  canvas.stage-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .stage-hud {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    pointer-events: none;
+  }
+
+  .hud-pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: rgba(11, 13, 18, 0.78);
+    color: #dbe6f7;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    backdrop-filter: blur(4px);
+  }
+
+  .card-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .metric-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .metric-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 10px;
+    align-items: center;
+    padding: 7px 9px;
+    border-radius: 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+
+  .metric-row.warn {
+    border-color: var(--warn-border);
+    background: rgba(245, 158, 11, 0.08);
+  }
+
+  .metric-name {
+    font-size: 12px;
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  .metric-val {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-0);
+  }
+
+  .metric-ref {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-2);
+  }
+
+  .meter-track {
+    grid-column: 1 / -1;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    position: relative;
+    overflow: hidden;
+    margin-top: 2px;
+  }
+
+  .meter-ref-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(16, 185, 129, 0.35);
+  }
+
+  .meter-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 0.08s linear;
+  }
+
+  .meter-fill.warn { background: var(--warn); }
+  .meter-fill.ok { background: var(--ok); }
+
+  .spec-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: auto;
+  }
+
+  .spec-tag {
+    font-size: 11px;
+    color: var(--text-2);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 7px;
+  }
+
+  /* Hard Gate Counterexamples Section */
+  .gate-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+
+  .gate-tab {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 8px 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-1);
+    transition: all 0.14s;
+  }
+
+  .gate-tab:hover {
+    background: var(--bg-2);
+    color: var(--text-0);
+  }
+
+  .gate-tab.active {
+    background: var(--bg-2);
+    border-color: var(--accent-border);
+    color: var(--text-0);
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.2);
+  }
+
+  .gate-tab code {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+  }
+
+  .gate-panel {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .gate-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .gate-header h3 {
+    margin: 0;
+    font-size: 15px;
+  }
+
+  .gate-header p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--text-2);
+    max-width: 820px;
+  }
+
+  .gate-compare {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  @media (max-width: 860px) {
+    .gate-compare { grid-template-columns: 1fr; }
+  }
+
+  .gate-box {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .gate-box.fail-box { border-color: var(--danger-border); }
+  .gate-box.pass-box { border-color: var(--ok-border); }
+
+  .gate-box-head {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .gate-canvas-wrap {
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    position: relative;
+  }
+
+  .gate-canvas-wrap.bg-dark { background: #10141d; }
+  .gate-canvas-wrap.bg-light { background: #cbd5e1; }
+  .gate-canvas-wrap.bg-checker {
+    background-color: #202531;
+    background-image:
+      linear-gradient(45deg, #2d3445 25%, transparent 25%),
+      linear-gradient(-45deg, #2d3445 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #2d3445 75%),
+      linear-gradient(-45deg, transparent 75%, #2d3445 75%);
+    background-size: 18px 18px;
+    background-position: 0 0, 0 9px, 9px -9px, -9px 0px;
+  }
+
+  .gate-box-foot {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--text-1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border);
+  }
+
+  .mono-metric {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+  }
+
+  /* Summary Baseline Table */
+  .baseline-table-wrap {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow-x: auto;
+  }
+
+  table.baseline-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  table.baseline-table th,
+  table.baseline-table td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  table.baseline-table th {
+    background: var(--bg-2);
+    color: var(--text-2);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  table.baseline-table tr:last-child td { border-bottom: none; }
+  table.baseline-table code {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--accent);
+  }
+
+  .footer-note {
+    font-size: 11.5px;
+    color: var(--text-2);
+    text-align: center;
+    padding-top: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">PS</div>
+      <div>
+        <span class="brand-title">Step 0 效果对照与基线样本页</span>
+        <span class="brand-sub">Portrait Spine Studio · 8.0s 无缝循环 · 离线零依赖</span>
+      </div>
+    </div>
+
+    <div class="controls-bar">
+      <div class="ctrl-group" role="group" aria-label="播放控制">
+        <button id="btnPlay" class="btn active" type="button">暂停</button>
+        <button id="btnReset" class="btn" type="button">归零 0.00s</button>
+      </div>
+
+      <div class="ctrl-group" role="group" aria-label="播放倍速">
+        <span class="ctrl-label">倍速</span>
+        <button class="btn speed-btn" data-speed="0.5" type="button">0.5x</button>
+        <button class="btn speed-btn active" data-speed="1" type="button">1.0x</button>
+      </div>
+
+      <div class="ctrl-group" role="group" aria-label="Gain 倍率">
+        <span class="ctrl-label">Gain</span>
+        <button class="btn gain-btn" data-gain="0.7" type="button">0.7x</button>
+        <button class="btn gain-btn ok-active" data-gain="1" type="button">1.0x 基线</button>
+        <button class="btn gain-btn" data-gain="1.3" type="button">1.3x</button>
+        <button class="btn gain-btn" data-gain="1.5" type="button">1.5x 压测</button>
+      </div>
+
+      <div class="ctrl-group" role="group" aria-label="画布背景">
+        <span class="ctrl-label">背景</span>
+        <button class="btn bg-btn active" data-bg="bg-dark" type="button">深灰</button>
+        <button class="btn bg-btn" data-bg="bg-light" type="button">浅灰</button>
+        <button class="btn bg-btn" data-bg="bg-checker" type="button">棋盘格</button>
+      </div>
+
+      <div class="ctrl-group" role="group" aria-label="骨架叠加">
+        <button id="btnOverlay" class="btn active" type="button">骨架 / IK 叠加：开</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Timeline & Gain Status Strip -->
+  <div class="timeline-strip">
+    <div class="timeline-readout" id="timeReadout">
+      t = <strong>0.00 s</strong> / 8.00 s · F 000/240
+    </div>
+    <div class="scrubber-wrap">
+      <input id="timeScrubber" class="scrubber" type="range" min="0" max="8" step="0.01" value="0" aria-label="循环时间轴" />
+    </div>
+    <div id="gainBanner" class="gain-banner ok">
+      当前 Gain = 1.0x（标定生产基线）：三套预设位移均落在参考区间内
+    </div>
+  </div>
+
+  <main class="main">
+    <!-- Section 1: 3 Core Presets Side-by-Side -->
+    <section>
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">
+            <span class="step-tag">PRESETS × 3</span>
+            三类核心角色预设并排对照（Erika v2 / Rain 实测谐波标定）
+          </h2>
+          <p class="section-desc">
+            统一 8.0s 循环（主摆动 k=1 / 8s，呼吸 k=2 / 4s），严格满足首尾归零公式 f(t) = gain · Σ(½·p2p·[sin(2πk(t-lag)/8) - sin(-2πk·lag/8)])。切换上方 Gain 可实时观测超幅软告警（SOFT WARN）。
+          </p>
+        </div>
+      </div>
+
+      <div class="preset-grid">
+        <!-- Card 1: Agile Full-Body (Erika v2) -->
+        <article class="card" id="card-erika">
+          <div class="card-head">
+            <div>
+              <h3 class="card-title">1. 敏捷全身（艾瑞卡基线）</h3>
+              <p class="card-sub">Erika v2 · 8s 呼吸/重心摆动 · 双脚+左手 2-bone IK · 偶发耳部抽动</p>
+            </div>
+            <span class="badge ok" id="badge-erika">PASS</span>
+          </div>
+          <div class="stage-wrap bg-dark" data-stage-bg>
+            <canvas id="canvas-erika" class="stage-canvas" width="440" height="484"></canvas>
+            <div class="stage-hud">
+              <span class="hud-pill">812×1446 标定</span>
+              <span class="hud-pill">IK × 3</span>
+              <span class="hud-pill" id="hud-erika-ear">耳部抽动：待机</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="metric-list" id="metrics-erika"></div>
+            <div class="spec-tags">
+              <span class="spec-tag">k=1 8s 摆动 / k=2 4s 呼吸</span>
+              <span class="spec-tag">发束 4 节链 lag +0.35s/节</span>
+              <span class="spec-tag">右耳 2.9s (12°) / 左耳 6.1s (9°)</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 2: Heavy Weapon Full-Body (Rain) -->
+        <article class="card" id="card-rain">
+          <div class="card-head">
+            <div>
+              <h3 class="card-title">2. 重装持械全身（雷恩基线）</h3>
+              <p class="card-sub">Rain · 沉稳躯干反稳 · 双手刚体大剑 IK · 披风/毛领/飘带大滞后</p>
+            </div>
+            <span class="badge ok" id="badge-rain">PASS</span>
+          </div>
+          <div class="stage-wrap bg-dark" data-stage-bg>
+            <canvas id="canvas-rain" class="stage-canvas" width="440" height="484"></canvas>
+            <div class="stage-hud">
+              <span class="hud-pill">4 组 2-bone IK</span>
+              <span class="hud-pill">刚体 weapon_ctrl</span>
+              <span class="hud-pill">4 节飘带链</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="metric-list" id="metrics-rain"></div>
+            <div class="spec-tags">
+              <span class="spec-tag">hips tx 31px / ty 11.2px</span>
+              <span class="spec-tag">大剑 tx 43px / ty 17px (lag 0.35s)</span>
+              <span class="spec-tag">毛领 growth 1.65x · 飘带 growth 1.30x</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 3: Half-Body / Bust -->
+        <article class="card" id="card-bust">
+          <div class="card-head">
+            <div>
+              <h3 class="card-title">3. 半身无脚（胸像立绘）</h3>
+              <p class="card-sub">Bust · 底边腰胯锚定防露底 · 胸廓呼吸 + 头部反稳定 + 发丝飘动</p>
+            </div>
+            <span class="badge ok" id="badge-bust">PASS</span>
+          </div>
+          <div class="stage-wrap bg-dark" data-stage-bg>
+            <canvas id="canvas-bust" class="stage-canvas" width="440" height="484"></canvas>
+            <div class="stage-hud">
+              <span class="hud-pill">底边腰胯硬锚定</span>
+              <span class="hud-pill">头部反稳 -75%</span>
+              <span class="hud-pill">露底 0.00px</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="metric-list" id="metrics-bust"></div>
+            <div class="spec-tags">
+              <span class="spec-tag">腰胯底边 ty ≤ 0.5px</span>
+              <span class="spec-tag">ribcage sx/sy 呼吸膨胀</span>
+              <span class="spec-tag">发束 4 节链 lag +0.35s/节</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Section 2: Hard Quality-Gate Counterexamples -->
+    <section>
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">
+            <span class="step-tag danger">HARD GATES × 4</span>
+            硬门禁反例对照区（PASS vs FAIL 交互演示）
+          </h2>
+          <p class="section-desc">
+            以下 4 项为自动化验收硬门禁（任一项不达标即阻断交付），切换标签对比真实缺陷现象与合规实现。
+          </p>
+        </div>
+      </div>
+
+      <div class="gate-tabs" role="tablist">
+        <button class="gate-tab active" data-gate="no_holes" type="button">
+          <span>1. 补全破洞</span><code>no_holes</code>
+        </button>
+        <button class="gate-tab" data-gate="anchor_stability" type="button">
+          <span>2. 脚底滑步</span><code>anchor_stability</code>
+        </button>
+        <button class="gate-tab" data-gate="setup_identity" type="button">
+          <span>3. 循环跳帧</span><code>setup_identity</code>
+        </button>
+        <button class="gate-tab" data-gate="rest_diff" type="button">
+          <span>4. 静止帧一致</span><code>rest_diff ≤ 2</code>
+        </button>
+      </div>
+
+      <div class="gate-panel">
+        <div class="gate-header">
+          <div>
+            <h3 id="gateTitle">no_holes：补全深度不足导致关节撕裂露黑洞 vs 充足 Amodal 补全零破洞</h3>
+            <p id="gateDesc">当肩部、颈部或发束发生旋转位移时，若底层部件的 Amodal 遮挡补全深度不足（&lt;16px），边缘会产生新月形黑色/透明破洞；标准要求补全外扩 ≥32px，确保在 1.5x 压测倍率下仍保持零破洞。</p>
+          </div>
+          <span class="badge fail" id="gateRuleBadge">硬门禁阈值：maxHolePx == 0</span>
+        </div>
+
+        <div class="gate-compare">
+          <!-- FAIL side -->
+          <div class="gate-box fail-box">
+            <div class="gate-box-head">
+              <strong id="gateFailTitle">FAIL 反例：未做充足 Amodal 补全（关节撕裂露黑洞）</strong>
+              <span class="badge fail">FAIL</span>
+            </div>
+            <div class="gate-canvas-wrap bg-dark" data-stage-bg>
+              <canvas id="canvas-gate-fail" class="stage-canvas" width="560" height="350"></canvas>
+            </div>
+            <div class="gate-box-foot">
+              <span id="gateFailNote">肩颈旋转牵拉暴露底层缺口，红圈标示破洞区域</span>
+              <span class="mono-metric" id="gateFailMetric">maxHolePx = 11.4 px</span>
+            </div>
+          </div>
+
+          <!-- PASS side -->
+          <div class="gate-box pass-box">
+            <div class="gate-box-head">
+              <strong id="gatePassTitle">PASS 基线：Amodal 遮挡补全 ≥32px（全程零破洞）</strong>
+              <span class="badge ok">PASS</span>
+            </div>
+            <div class="gate-canvas-wrap bg-dark" data-stage-bg>
+              <canvas id="canvas-gate-pass" class="stage-canvas" width="560" height="350"></canvas>
+            </div>
+            <div class="gate-box-foot">
+              <span id="gatePassNote">底层延续像素完整覆盖活动包络，无任何裂隙</span>
+              <span class="mono-metric" id="gatePassMetric">maxHolePx = 0.0 px</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Calibrated Parameter Reference Table -->
+    <section>
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">
+            <span class="step-tag">CALIBRATION</span>
+            标定参数总览（提取自 Erika v2 / Rain 实测基线）
+          </h2>
+          <p class="section-desc">
+            用于 Step 0 立项对齐及后续 Rig 生成脚本的参数下限/上限校验。
+          </p>
+        </div>
+      </div>
+
+      <div class="baseline-table-wrap">
+        <table class="baseline-table">
+          <thead>
+            <tr>
+              <th>预设类别</th>
+              <th>循环与谐波</th>
+              <th>核心参考幅度（1.0x p2p）</th>
+              <th>链式相位滞后与放大</th>
+              <th>锚点与硬约束</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>敏捷全身</strong><br /><span style="color:var(--text-2)">Erika v2 基线</span></td>
+              <td><code>T=8.0s</code> · 摆动 <code>k=1</code> · 呼吸 <code>k=2</code></td>
+              <td>胸/头 <code>8–22 px</code> · 发束末端 <code>14–42 px</code></td>
+              <td><code>+0.35s/节</code> · 振幅递推 <code>1.35x/节</code> · 耳抽动 <code>2.9s/6.1s</code></td>
+              <td>双脚 2-bone IK + 左手叉腰 IK，脚踝漂移 <code>≤1.5px</code></td>
+            </tr>
+            <tr>
+              <td><strong>重装持械全身</strong><br /><span style="color:var(--text-2)">Rain 基线</span></td>
+              <td><code>T=8.0s</code> · 摆动 <code>k=1</code> · 呼吸 <code>k=2</code></td>
+              <td>重甲核心 <code>12–34 px</code> · 刚体大剑 <code>20–55 px</code> · 飘带 <code>22–64 px</code></td>
+              <td>毛领 <code>1.65x</code> · 4 节飘带 <code>1.30x</code> · 尾环 <code>lag 1.55s</code></td>
+              <td>双腿 + 双手握剑 4 组 2-bone IK，头部反稳抑制晕动</td>
+            </tr>
+            <tr>
+              <td><strong>半身无脚</strong><br /><span style="color:var(--text-2)">胸像立绘基线</span></td>
+              <td><code>T=8.0s</code> · 微摆 <code>k=1</code> · 呼吸 <code>k=2</code></td>
+              <td>胸廓 <code>4–14 px</code> · 头部残余 <code>2–8 px</code> · 发丝 <code>10–28 px</code></td>
+              <td>发束 4 节链 <code>+0.35s/节</code> · 振幅递推 <code>1.35x/节</code></td>
+              <td>底边腰胯硬锚定（<code>ty ≤ 0.5px</code>），零露底缝隙</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="footer-note">
+      Portrait Spine Studio · Step 0 效果对照与基线样本页 · 单文件离线运行（无任何外部网络资源）
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const LOOP = 8.0;
+  const TWO_PI = Math.PI * 2;
+  const DEG = Math.PI / 180;
+
+  // Global playback state
+  const state = {
+    playing: true,
+    t: 0,
+    speed: 1.0,
+    gain: 1.0,
+    bg: 'bg-dark',
+    showOverlay: true,
+    activeGate: 'no_holes',
+    lastTs: null
+  };
+
+  // Zero-at-start harmonic: f(t) = gain * sum(0.5 * p2p * (sin(2*pi*k*(t - lag)/8) - sin(-2*pi*k*lag/8)))
+  function harmonic(t, terms, gain) {
+    let acc = 0;
+    for (let i = 0; i < terms.length; i++) {
+      const p2p = terms[i][0];
+      const k = terms[i][1];
+      const lag = terms[i][2];
+      const w = (TWO_PI * k) / LOOP;
+      acc += 0.5 * p2p * (Math.sin(w * (t - lag)) - Math.sin(-w * lag));
+    }
+    return acc * gain;
+  }
+
+  // Raw harmonic WITHOUT zero-at-start offset (for setup_identity FAIL counterexample)
+  function harmonicRaw(t, terms, gain) {
+    let acc = 0;
+    for (let i = 0; i < terms.length; i++) {
+      const p2p = terms[i][0];
+      const k = terms[i][1];
+      const lag = terms[i][2];
+      const w = (TWO_PI * k) / LOOP;
+      acc += 0.5 * p2p * Math.sin(w * (t - lag));
+    }
+    return acc * gain;
+  }
+
+  // C1 smoothstep ear twitch (exact Erika v2 timing: 0.25s up, 0.80s down)
+  function earTwitch(t, start, ampDeg, gain) {
+    const up = 0.25;
+    const down = 0.80;
+    if (t >= start && t < start + up) {
+      const u = (t - start) / up;
+      return ampDeg * gain * u * u * (3 - 2 * u);
+    }
+    if (t >= start + up && t < start + up + down) {
+      const u = (t - start - up) / down;
+      return ampDeg * gain * (1 - u * u * (3 - 2 * u));
+    }
+    return 0;
+  }
+
+  // Analytic 2-bone IK solver in 2D canvas coordinates (y-down)
+  function solveTwoBoneIK(rootX, rootY, targetX, targetY, L1, L2, bendSign) {
+    const dx = targetX - rootX;
+    const dy = targetY - rootY;
+    const rawDist = Math.hypot(dx, dy);
+    const minDist = Math.abs(L1 - L2) + 0.001;
+    const maxDist = L1 + L2 - 0.001;
+    const d = Math.max(minDist, Math.min(maxDist, rawDist));
+    const baseAngle = Math.atan2(dy, dx);
+    const cosA = Math.max(-1, Math.min(1, (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d)));
+    const angleA = Math.acos(cosA);
+    const a1 = baseAngle + bendSign * angleA;
+    const midX = rootX + Math.cos(a1) * L1;
+    const midY = rootY + Math.sin(a1) * L1;
+    const a2 = Math.atan2(targetY - midY, targetX - midX);
+    const endX = midX + Math.cos(a2) * L2;
+    const endY = midY + Math.sin(a2) * L2;
+    return { midX, midY, endX, endY, a1, a2 };
+  }
+
+  // Forward kinematics helper for multi-link soft chains
+  function solveChain(rootX, rootY, baseAngle, linkLens, t, rootP2P, growth, baseLag, lagStep, k2Factor, gain) {
+    const pts = [{ x: rootX, y: rootY }];
+    let cx = rootX;
+    let cy = rootY;
+    let curAngle = baseAngle;
+    for (let i = 0; i < linkLens.length; i++) {
+      const lag = baseLag + i * lagStep;
+      const p2p = rootP2P * Math.pow(growth, i);
+      const dRot = harmonic(t, [
+        [p2p, 1, lag],
+        [p2p * k2Factor, 2, lag + 0.08]
+      ], gain);
+      curAngle += dRot * DEG;
+      cx += Math.cos(curAngle) * linkLens[i];
+      cy += Math.sin(curAngle) * linkLens[i];
+      pts.push({ x: cx, y: cy });
+    }
+    return pts;
+  }
+
+  // Draw tapered ribbon/hair/sash along polyline
+  function drawTaperedChain(ctx, pts, wStart, wEnd, fillStyle, strokeStyle) {
+    if (pts.length < 2) return;
+    const left = [];
+    const right = [];
+    for (let i = 0; i < pts.length; i++) {
+      const prev = pts[Math.max(0, i - 1)];
+      const next = pts[Math.min(pts.length - 1, i + 1)];
+      const tx = next.x - prev.x;
+      const ty = next.y - prev.y;
+      const len = Math.hypot(tx, ty) || 1;
+      const nx = -ty / len;
+      const ny = tx / len;
+      const u = i / (pts.length - 1);
+      const halfW = (wStart + (wEnd - wStart) * u) * 0.5;
+      left.push({ x: pts[i].x + nx * halfW, y: pts[i].y + ny * halfW });
+      right.push({ x: pts[i].x - nx * halfW, y: pts[i].y - ny * halfW });
+    }
+    ctx.beginPath();
+    ctx.moveTo(left[0].x, left[0].y);
+    for (let i = 1; i < left.length; i++) ctx.lineTo(left[i].x, left[i].y);
+    for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+    ctx.closePath();
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+    if (strokeStyle) {
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+  }
+
+  // Draw rounded limb capsule
+  function drawLimb(ctx, x1, y1, x2, y2, r1, r2, fill, stroke) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    ctx.beginPath();
+    ctx.moveTo(x1 + nx * r1, y1 + ny * r1);
+    ctx.lineTo(x2 + nx * r2, y2 + ny * r2);
+    ctx.arc(x2, y2, r2, Math.atan2(ny, nx), Math.atan2(-ny, -nx), false);
+    ctx.lineTo(x1 - nx * r1, y1 - ny * r1);
+    ctx.arc(x1, y1, r1, Math.atan2(-ny, -nx), Math.atan2(ny, nx), false);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+  }
+
+  // Overlay drawing helpers
+  function drawBoneLine(ctx, x1, y1, x2, y2, color) {
+    ctx.save();
+    ctx.strokeStyle = color || '#38bdf8';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.fillStyle = '#0b0d12';
+    ctx.beginPath();
+    ctx.arc(x1, y1, 3.6, 0, TWO_PI);
+    ctx.fill();
+    ctx.strokeStyle = color || '#38bdf8';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawIKPin(ctx, x, y, label, color) {
+    ctx.save();
+    const c = color || '#10b981';
+    ctx.strokeStyle = c;
+    ctx.fillStyle = c;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y);
+    ctx.lineTo(x + 6, y);
+    ctx.moveTo(x, y - 6);
+    ctx.lineTo(x, y + 6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, TWO_PI);
+    ctx.stroke();
+    if (label) {
+      ctx.font = '600 10px ui-monospace, monospace';
+      ctx.fillText(label, x + 8, y + 3);
+    }
+    ctx.restore();
+  }
+
+  function drawFloorLine(ctx, y, w, label) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(24, y);
+    ctx.lineTo(w - 24, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (label) {
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.72)';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText(label, 28, y - 5);
+    }
+    ctx.restore();
+  }
+
+  // =========================================================================
+  // PRESET 1: Agile Full-Body (Erika v2 Calibrated Baseline)
+  // =========================================================================
+  function evaluateErika(t, gain) {
+    // Scaled from 812x1446 source to 440x484 canvas (~0.31x visual scale; metrics reported in source 1446px space)
+    const hipBaseX = 212;
+    const hipBaseY = 266;
+    const hipDx = harmonic(t, [[14.0, 1, 0.15]], gain) * 0.34;
+    const hipDy = harmonic(t, [[6.4, 2, 0.25]], gain) * 0.34;
+    const hipX = hipBaseX + hipDx;
+    const hipY = hipBaseY + hipDy;
+
+    const spineRot = harmonic(t, [[1.6, 1, 0.0]], gain) * DEG;
+    const chestRot = spineRot + harmonic(t, [[1.3, 1, 0.25]], gain) * DEG;
+    const breathTy = harmonic(t, [[-5.2, 2, 0.0]], gain) * 0.34;
+    const ribSx = 1 + harmonic(t, [[0.012, 2, 0.10]], gain);
+    const ribSy = 1 + harmonic(t, [[0.020, 2, 0.10]], gain);
+
+    const chestX = hipX + Math.sin(spineRot) * 52;
+    const chestY = hipY - Math.cos(spineRot) * 52 + breathTy;
+
+    const neckRot = chestRot + harmonic(t, [[-0.9, 1, 0.50]], gain) * DEG;
+    const headRot = neckRot + harmonic(t, [[-1.6, 1, 0.75], [0.9, 2, 0.60]], gain) * DEG;
+    const neckX = chestX + Math.sin(chestRot) * 44;
+    const neckY = chestY - Math.cos(chestRot) * 44;
+    const headX = neckX + Math.sin(neckRot) * 20;
+    const headY = neckY - Math.cos(neckRot) * 20;
+
+    // Ears with calibrated Erika v2 occasional twitch (ear_R @ 2.9s 12deg, ear_L @ 6.1s 9deg)
+    const earLT = earTwitch(t, 6.1, 9.0, gain);
+    const earRT = earTwitch(t, 2.9, 12.0, gain);
+    const earLRot = headRot + (-0.65 + (harmonic(t, [[2.4, 1, 1.3]], gain) - earLT) * DEG);
+    const earRRot = headRot + (0.55 + (harmonic(t, [[2.4, 1, 1.1]], gain) + earRT) * DEG);
+
+    // Legs with 2-bone IK pinned to floor ankles
+    const ankleL = { x: 174, y: 426 };
+    const ankleR = { x: 248, y: 428 };
+    const hipL = { x: hipX - 20, y: hipY + 10 };
+    const hipR = { x: hipX + 22, y: hipY + 10 };
+    const legL = solveTwoBoneIK(hipL.x, hipL.y, ankleL.x, ankleL.y, 82, 82, -1);
+    const legR = solveTwoBoneIK(hipR.x, hipR.y, ankleR.x, ankleR.y, 82, 82, 1);
+
+    // Left arm IK pinned to hip claw point
+    const shL = { x: chestX - 30, y: chestY - 26 };
+    const wristTargetL = { x: hipX - 26, y: hipY - 4 };
+    const armL = solveTwoBoneIK(shL.x, shL.y, wristTargetL.x, wristTargetL.y, 44, 44, 1);
+
+    // Right arm free breathing sway
+    const shR = { x: chestX + 30, y: chestY - 24 };
+    const shRRot = 0.62 + harmonic(t, [[-2.0, 1, 0.55], [2.4, 2, 0.50]], gain) * DEG;
+    const elRX = shR.x + Math.cos(shRRot) * 44;
+    const elRY = shR.y + Math.sin(shRRot) * 44;
+    const elRRot = shRRot + 0.28 + harmonic(t, [[-1.6, 1, 0.85], [2.2, 2, 0.85]], gain) * DEG;
+    const handRX = elRX + Math.cos(elRRot) * 44;
+    const handRY = elRY + Math.sin(elRRot) * 44;
+
+    // Soft chains: back_hair (4), hair_strand_L/R (4), loincloth (3), tail (6)
+    const backHair = solveChain(neckX + 12, neckY - 8, 1.05 + chestRot * 0.4, [32, 34, 34, 34], t, 4.2, 1.35, 0.45, 0.35, 0.35, gain);
+    const strandL = solveChain(headX - 24, headY + 4, 1.62 + headRot * 0.6, [18, 18, 18, 18], t, 3.2, 1.30, 0.50, 0.35, 0.30, gain);
+    const strandR = solveChain(headX + 24, headY + 4, 1.48 + headRot * 0.6, [18, 18, 18, 18], t, 3.2, 1.30, 0.55, 0.35, 0.30, gain);
+    const loincloth = solveChain(hipX, hipY + 12, Math.PI * 0.5, [22, 22, 22], t, 3.4, 1.32, 0.40, 0.35, 0.35, gain);
+    const tail = solveChain(hipX + 24, hipY + 18, 0.42, [22, 22, 22, 20, 20, 18], t, 4.6, 1.32, 0.45, 0.38, 0.30, gain);
+
+    return {
+      hipX, hipY, hipBaseX, hipBaseY, spineRot, chestX, chestY, chestRot, ribSx, ribSy,
+      neckX, neckY, headX, headY, headRot, earLRot, earRRot, earLT, earRT,
+      hipL, hipR, ankleL, ankleR, legL, legR, shL, wristTargetL, armL,
+      shR, elRX, elRY, handRX, handRY, backHair, strandL, strandR, loincloth, tail
+    };
+  }
+
+  function drawErika(ctx, t, gain, showOverlay) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    drawFloorLine(ctx, 434, W, 'FLOOR ANCHOR · IK LOCKED');
+
+    const p = evaluateErika(t, gain);
+
+    // Back hair & tail (behind body)
+    drawTaperedChain(ctx, p.backHair, 44, 10, '#1e293b', '#38bdf8');
+    drawTaperedChain(ctx, p.tail, 18, 7, '#334155', '#94a3b8');
+
+    // Legs (IK solved)
+    drawLimb(ctx, p.hipL.x, p.hipL.y, p.legL.midX, p.legL.midY, 13, 10, '#334155', '#64748b');
+    drawLimb(ctx, p.legL.midX, p.legL.midY, p.legL.endX, p.legL.endY, 10, 7, '#0f172a', '#38bdf8');
+    drawLimb(ctx, p.hipR.x, p.hipR.y, p.legR.midX, p.legR.midY, 13, 10, '#334155', '#64748b');
+    drawLimb(ctx, p.legR.midX, p.legR.midY, p.legR.endX, p.legR.endY, 10, 7, '#0f172a', '#38bdf8');
+
+    // Boots (pinned to floor)
+    drawLimb(ctx, p.ankleL.x - 10, p.ankleL.y + 4, p.ankleL.x + 12, p.ankleL.y + 4, 6, 5, '#1e293b', '#38bdf8');
+    drawLimb(ctx, p.ankleR.x - 8, p.ankleR.y + 4, p.ankleR.x + 14, p.ankleR.y + 4, 6, 5, '#1e293b', '#38bdf8');
+
+    // Loincloth
+    drawTaperedChain(ctx, p.loincloth, 22, 12, '#0ea5e9', '#bae6fd');
+
+    // Hips / Waist
+    ctx.save();
+    ctx.translate(p.hipX, p.hipY);
+    ctx.rotate(p.spineRot * 0.5);
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(-28, -12, 56, 24, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Torso / Ribcage (breathing scale)
+    ctx.save();
+    ctx.translate(p.chestX, p.chestY);
+    ctx.rotate(p.chestRot);
+    ctx.scale(p.ribSx, p.ribSy);
+    const gTorso = ctx.createLinearGradient(0, -34, 0, 34);
+    gTorso.addColorStop(0, '#0284c7');
+    gTorso.addColorStop(1, '#1e3a5f');
+    ctx.fillStyle = gTorso;
+    ctx.strokeStyle = '#7dd3fc';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-26, -28);
+    ctx.lineTo(26, -28);
+    ctx.lineTo(18, 34);
+    ctx.lineTo(-18, 34);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Arms (L = IK on hip, R = breathing)
+    drawLimb(ctx, p.shL.x, p.shL.y, p.armL.midX, p.armL.midY, 9, 7, '#475569', '#94a3b8');
+    drawLimb(ctx, p.armL.midX, p.armL.midY, p.armL.endX, p.armL.endY, 8, 6, '#0f172a', '#38bdf8');
+    drawLimb(ctx, p.shR.x, p.shR.y, p.elRX, p.elRY, 9, 7, '#475569', '#94a3b8');
+    drawLimb(ctx, p.elRX, p.elRY, p.handRX, p.handRY, 8, 6, '#0f172a', '#38bdf8');
+
+    // Neck & Head
+    drawLimb(ctx, p.chestX, p.chestY - 24, p.neckX, p.neckY, 8, 7, '#e2c4b0', null);
+    ctx.save();
+    ctx.translate(p.headX, p.headY);
+    ctx.rotate(p.headRot);
+
+    // Ears
+    ctx.save();
+    ctx.translate(-16, -20);
+    ctx.rotate(p.earLRot - p.headRot);
+    ctx.fillStyle = '#334155';
+    ctx.strokeStyle = '#7dd3fc';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(-8, 4);
+    ctx.lineTo(-2, -34);
+    ctx.lineTo(10, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(16, -20);
+    ctx.rotate(p.earRRot - p.headRot);
+    ctx.fillStyle = '#334155';
+    ctx.strokeStyle = '#7dd3fc';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(-10, 4);
+    ctx.lineTo(2, -36);
+    ctx.lineTo(8, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Head silhouette
+    ctx.fillStyle = '#f1d5c3';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0, -4, 24, 28, 0, 0, TWO_PI);
+    ctx.fill();
+    ctx.stroke();
+
+    // Hair crown & bangs
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.arc(0, -10, 25, Math.PI * 1.05, Math.PI * -0.05, false);
+    ctx.lineTo(22, 4);
+    ctx.lineTo(8, -6);
+    ctx.lineTo(-2, 6);
+    ctx.lineTo(-14, -5);
+    ctx.lineTo(-23, 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // Eyes
+    ctx.fillStyle = '#0284c7';
+    ctx.fillRect(-11, -3, 6, 4);
+    ctx.fillRect(5, -3, 6, 4);
+    ctx.restore();
+
+    // Front hair strands
+    drawTaperedChain(ctx, p.strandL, 12, 4, '#1e293b', '#7dd3fc');
+    drawTaperedChain(ctx, p.strandR, 12, 4, '#1e293b', '#7dd3fc');
+
+    if (showOverlay) {
+      drawBoneLine(ctx, p.hipX, p.hipY, p.chestX, p.chestY, '#38bdf8');
+      drawBoneLine(ctx, p.chestX, p.chestY, p.neckX, p.neckY, '#38bdf8');
+      drawBoneLine(ctx, p.neckX, p.neckY, p.headX, p.headY, '#38bdf8');
+      drawBoneLine(ctx, p.hipL.x, p.hipL.y, p.legL.midX, p.legL.midY, '#a78bfa');
+      drawBoneLine(ctx, p.legL.midX, p.legL.midY, p.legL.endX, p.legL.endY, '#a78bfa');
+      drawBoneLine(ctx, p.hipR.x, p.hipR.y, p.legR.midX, p.legR.midY, '#a78bfa');
+      drawBoneLine(ctx, p.legR.midX, p.legR.midY, p.legR.endX, p.legR.endY, '#a78bfa');
+      drawBoneLine(ctx, p.shL.x, p.shL.y, p.armL.midX, p.armL.midY, '#f59e0b');
+      drawBoneLine(ctx, p.armL.midX, p.armL.midY, p.armL.endX, p.armL.endY, '#f59e0b');
+      for (let i = 0; i < p.backHair.length - 1; i++) {
+        drawBoneLine(ctx, p.backHair[i].x, p.backHair[i].y, p.backHair[i + 1].x, p.backHair[i + 1].y, '#22d3ee');
+      }
+      drawIKPin(ctx, p.ankleL.x, p.ankleL.y, 'IK_L', '#10b981');
+      drawIKPin(ctx, p.ankleR.x, p.ankleR.y, 'IK_R', '#10b981');
+      drawIKPin(ctx, p.wristTargetL.x, p.wristTargetL.y, 'HIP_IK', '#f59e0b');
+    }
+
+    // Update ear twitch HUD
+    const earHud = document.getElementById('hud-erika-ear');
+    if (earHud) {
+      if (p.earRT > 0.3) earHud.textContent = '右耳抽动：+' + p.earRT.toFixed(1) + '°';
+      else if (p.earLT > 0.3) earHud.textContent = '左耳抽动：+' + p.earLT.toFixed(1) + '°';
+      else earHud.textContent = '耳部抽动：待机';
+    }
+
+    // Return live source-scale displacement telemetry
+    const headDisp = Math.hypot((p.headX - 212) / 0.34, (p.headY - 150) / 0.34);
+    const tip = p.backHair[p.backHair.length - 1];
+    const baseTip = evaluateErika(0, 1).backHair[p.backHair.length - 1];
+    const hairDisp = Math.hypot((tip.x - baseTip.x) / 0.34, (tip.y - baseTip.y) / 0.34);
+    return {
+      headNow: headDisp,
+      headP2P: 15.2 * gain,
+      hairNow: hairDisp,
+      hairP2P: 28.4 * gain,
+      ankleDrift: 0.0
+    };
+  }
+
+  // =========================================================================
+  // PRESET 2: Heavy Weapon Full-Body (Rain Calibrated Baseline)
+  // =========================================================================
+  function evaluateRain(t, gain) {
+    // Exact Rain harmonic ratios from rain_spine.py (scaled visually by 0.25 to fit 440x484)
+    const S = 0.26;
+    const hipBaseX = 228;
+    const hipBaseY = 274;
+    const hipDx = harmonic(t, [[31, 1, 0.25], [3, 2, 0.15]], gain) * S;
+    const hipDy = harmonic(t, [[11.2, 2, 0.20]], gain) * S;
+    const hipRot = harmonic(t, [[1.2, 1, 0.25]], gain) * DEG;
+    const hipX = hipBaseX + hipDx;
+    const hipY = hipBaseY + hipDy;
+
+    const spineRot = hipRot + harmonic(t, [[-2.8, 1, -0.20]], gain) * DEG;
+    const chestRot = spineRot + harmonic(t, [[-1.0, 1, -0.20]], gain) * DEG;
+    const chestDy = harmonic(t, [[-12, 2, 0.0]], gain) * S;
+    const chestX = hipX + Math.sin(spineRot) * 56;
+    const chestY = hipY - Math.cos(spineRot) * 56 + chestDy;
+
+    // Counter-stabilized neck & head
+    const neckRot = chestRot + harmonic(t, [[4.0, 1, -0.80]], gain) * DEG;
+    const headRot = neckRot + harmonic(t, [[0.8, 1, -0.80], [-0.8, 2, 0.30]], gain) * DEG;
+    const headX = chestX + Math.sin(neckRot) * 54;
+    const headY = chestY - Math.cos(neckRot) * 54;
+
+    // Rigid Greatsword (weapon_ctrl): tx 43px, ty 17px, rotate -2.5deg / -0.8deg
+    const swBaseX = 186;
+    const swBaseY = 242;
+    const swX = swBaseX + harmonic(t, [[43, 1, 0.35]], gain) * S;
+    const swY = swBaseY + harmonic(t, [[17, 2, 0.35]], gain) * S;
+    const swRot = -0.78 + harmonic(t, [[-2.5, 1, 0.45], [-0.8, 2, 0.50]], gain) * DEG;
+
+    // Sword grip points in world space (rigidly attached to sword)
+    const cosS = Math.cos(swRot);
+    const sinS = Math.sin(swRot);
+    const gripL = { x: swX - cosS * 18, y: swY - sinS * 18 };
+    const gripR = { x: swX + cosS * 16, y: swY + sinS * 16 };
+    const bladeTip = { x: swX - cosS * 168, y: swY - sinS * 168 };
+    const pommel = { x: swX + cosS * 44, y: swY + sinS * 44 };
+
+    // 2-bone IK for both arms to sword grips
+    const shL = { x: chestX - 44, y: chestY - 26 };
+    const shR = { x: chestX + 44, y: chestY - 22 };
+    const armL = solveTwoBoneIK(shL.x, shL.y, gripL.x, gripL.y, 48, 48, 1);
+    const armR = solveTwoBoneIK(shR.x, shR.y, gripR.x, gripR.y, 50, 50, -1);
+
+    // 2-bone IK for both legs pinned to floor
+    const hipL = { x: hipX - 28, y: hipY + 12 };
+    const hipR = { x: hipX + 30, y: hipY + 14 };
+    const ankleL = { x: 150, y: 426 };
+    const ankleR = { x: 292, y: 422 };
+    const legL = solveTwoBoneIK(hipL.x, hipL.y, ankleL.x, ankleL.y, 88, 86, -1);
+    const legR = solveTwoBoneIK(hipR.x, hipR.y, ankleR.x, ankleR.y, 86, 86, 1);
+
+    // Fur mane chains (growth 1.65x, 2 links) & 4-bone sash chains (growth 1.30x)
+    const maneL = solveChain(chestX - 38, chestY - 24, 2.25, [22, 24], t, 5.8, 1.65, 0.30, 0.35, 0.45, gain);
+    const maneR = solveChain(chestX + 38, chestY - 22, 0.85, [22, 24], t, 6.2, 1.65, 0.36, 0.35, 0.48, gain);
+    const sashL = solveChain(hipX - 24, hipY + 18, 1.72, [24, 24, 24, 24], t, 2.6, 1.30, 0.35, 0.35, 0.55, gain);
+    const sashR = solveChain(hipX + 26, hipY + 18, 1.38, [24, 24, 24, 24], t, 2.3, 1.30, 0.43, 0.35, 0.55, gain);
+    const swordChain = solveChain(swX - cosS * 40, swY - sinS * 40, Math.PI * 0.52, [18, 18, 18], t, 5.0, 1.35, 0.65, 0.35, 0.45, gain);
+
+    return {
+      hipX, hipY, hipRot, chestX, chestY, chestRot, headX, headY, headRot,
+      swX, swY, swRot, gripL, gripR, bladeTip, pommel,
+      shL, shR, armL, armR, hipL, hipR, ankleL, ankleR, legL, legR,
+      maneL, maneR, sashL, sashR, swordChain
+    };
+  }
+
+  function drawRain(ctx, t, gain, showOverlay) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    drawFloorLine(ctx, 434, W, 'FLOOR ANCHOR · 4× 2-BONE IK');
+
+    const p = evaluateRain(t, gain);
+
+    // Sashes (behind/side)
+    drawTaperedChain(ctx, p.sashL, 18, 10, '#7f1d1d', '#f59e0b');
+    drawTaperedChain(ctx, p.sashR, 18, 10, '#7f1d1d', '#f59e0b');
+
+    // Ring ornaments at sash tips
+    const slEnd = p.sashL[p.sashL.length - 1];
+    const srEnd = p.sashR[p.sashR.length - 1];
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.arc(slEnd.x, slEnd.y + 4, 6, 0, TWO_PI); ctx.stroke();
+    ctx.beginPath(); ctx.arc(srEnd.x, srEnd.y + 4, 6, 0, TWO_PI); ctx.stroke();
+
+    // Heavy armored legs
+    drawLimb(ctx, p.hipL.x, p.hipL.y, p.legL.midX, p.legL.midY, 17, 13, '#334155', '#94a3b8');
+    drawLimb(ctx, p.legL.midX, p.legL.midY, p.legL.endX, p.legL.endY, 14, 10, '#1e293b', '#f59e0b');
+    drawLimb(ctx, p.hipR.x, p.hipR.y, p.legR.midX, p.legR.midY, 17, 13, '#334155', '#94a3b8');
+    drawLimb(ctx, p.legR.midX, p.legR.midY, p.legR.endX, p.legR.endY, 14, 10, '#1e293b', '#f59e0b');
+
+    // Greaves/Feet
+    drawLimb(ctx, p.ankleL.x - 14, p.ankleL.y + 4, p.ankleL.x + 14, p.ankleL.y + 4, 7, 6, '#0f172a', '#f59e0b');
+    drawLimb(ctx, p.ankleR.x - 12, p.ankleR.y + 4, p.ankleR.x + 16, p.ankleR.y + 4, 7, 6, '#0f172a', '#f59e0b');
+
+    // Pelvis armor
+    ctx.save();
+    ctx.translate(p.hipX, p.hipY);
+    ctx.rotate(p.hipRot);
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.roundRect(-38, -14, 76, 30, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Heavy torso chestplate
+    ctx.save();
+    ctx.translate(p.chestX, p.chestY);
+    ctx.rotate(p.chestRot);
+    const gChest = ctx.createLinearGradient(0, -38, 0, 38);
+    gChest.addColorStop(0, '#475569');
+    gChest.addColorStop(1, '#1e293b');
+    ctx.fillStyle = gChest;
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(-44, -34);
+    ctx.lineTo(44, -34);
+    ctx.lineTo(30, 38);
+    ctx.lineTo(-30, 38);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Fur mane chains around collar
+    drawTaperedChain(ctx, p.maneL, 28, 12, '#78716c', '#d6d3d1');
+    drawTaperedChain(ctx, p.maneR, 28, 12, '#78716c', '#d6d3d1');
+
+    // Head
+    ctx.save();
+    ctx.translate(p.headX, p.headY);
+    ctx.rotate(p.headRot);
+    ctx.fillStyle = '#e7c6b3';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 22, 26, 0, 0, TWO_PI);
+    ctx.fill();
+    ctx.stroke();
+    // Wild mane hair top
+    ctx.fillStyle = '#44403c';
+    ctx.beginPath();
+    ctx.moveTo(-26, -4);
+    ctx.lineTo(-18, -32);
+    ctx.lineTo(0, -26);
+    ctx.lineTo(18, -34);
+    ctx.lineTo(26, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Rigid Greatsword (weapon_ctrl)
+    ctx.save();
+    ctx.translate(p.swX, p.swY);
+    ctx.rotate(p.swRot);
+    // Blade
+    const gBlade = ctx.createLinearGradient(-168, 0, -28, 0);
+    gBlade.addColorStop(0, '#f8fafc');
+    gBlade.addColorStop(0.6, '#94a3b8');
+    gBlade.addColorStop(1, '#475569');
+    ctx.fillStyle = gBlade;
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-172, 0);
+    ctx.lineTo(-142, -16);
+    ctx.lineTo(-26, -13);
+    ctx.lineTo(-26, 13);
+    ctx.lineTo(-142, 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // Crossguard & hilt
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(-30, -24, 10, 48);
+    ctx.fillStyle = '#451a03';
+    ctx.fillRect(-20, -5, 64, 10);
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath();
+    ctx.arc(46, 0, 7, 0, TWO_PI);
+    ctx.fill();
+    ctx.restore();
+
+    // Sword hanging chain
+    drawTaperedChain(ctx, p.swordChain, 7, 4, '#fbbf24', '#fef3c7');
+
+    // Both arms solved via 2-bone IK gripping the rigid greatsword
+    drawLimb(ctx, p.shL.x, p.shL.y, p.armL.midX, p.armL.midY, 13, 10, '#64748b', '#cbd5e1');
+    drawLimb(ctx, p.armL.midX, p.armL.midY, p.armL.endX, p.armL.endY, 11, 8, '#334155', '#fbbf24');
+    drawLimb(ctx, p.shR.x, p.shR.y, p.armR.midX, p.armR.midY, 13, 10, '#64748b', '#cbd5e1');
+    drawLimb(ctx, p.armR.midX, p.armR.midY, p.armR.endX, p.armR.endY, 11, 8, '#334155', '#fbbf24');
+
+    if (showOverlay) {
+      drawBoneLine(ctx, p.hipX, p.hipY, p.chestX, p.chestY, '#38bdf8');
+      drawBoneLine(ctx, p.chestX, p.chestY, p.headX, p.headY, '#38bdf8');
+      drawBoneLine(ctx, p.pommel.x, p.pommel.y, p.bladeTip.x, p.bladeTip.y, '#f59e0b');
+      drawBoneLine(ctx, p.shL.x, p.shL.y, p.armL.midX, p.armL.midY, '#fbbf24');
+      drawBoneLine(ctx, p.armL.midX, p.armL.midY, p.armL.endX, p.armL.endY, '#fbbf24');
+      drawBoneLine(ctx, p.shR.x, p.shR.y, p.armR.midX, p.armR.midY, '#fbbf24');
+      drawBoneLine(ctx, p.armR.midX, p.armR.midY, p.armR.endX, p.armR.endY, '#fbbf24');
+      drawBoneLine(ctx, p.hipL.x, p.hipL.y, p.legL.midX, p.legL.midY, '#a78bfa');
+      drawBoneLine(ctx, p.legL.midX, p.legL.midY, p.legL.endX, p.legL.endY, '#a78bfa');
+      drawBoneLine(ctx, p.hipR.x, p.hipR.y, p.legR.midX, p.legR.midY, '#a78bfa');
+      drawBoneLine(ctx, p.legR.midX, p.legR.midY, p.legR.endX, p.legR.endY, '#a78bfa');
+      drawIKPin(ctx, p.ankleL.x, p.ankleL.y, 'IK_L', '#10b981');
+      drawIKPin(ctx, p.ankleR.x, p.ankleR.y, 'IK_R', '#10b981');
+      drawIKPin(ctx, p.gripL.x, p.gripL.y, 'GRIP_L', '#f59e0b');
+      drawIKPin(ctx, p.gripR.x, p.gripR.y, 'GRIP_R', '#f59e0b');
+    }
+
+    const base = evaluateRain(0, 1);
+    const coreDisp = Math.hypot((p.chestX - base.chestX) / 0.26, (p.chestY - base.chestY) / 0.26);
+    const swordDisp = Math.hypot((p.bladeTip.x - base.bladeTip.x) / 0.26, (p.bladeTip.y - base.bladeTip.y) / 0.26);
+    const sashEnd = p.sashL[p.sashL.length - 1];
+    const baseSash = base.sashL[base.sashL.length - 1];
+    const sashDisp = Math.hypot((sashEnd.x - baseSash.x) / 0.26, (sashEnd.y - baseSash.y) / 0.26);
+    return {
+      coreNow: coreDisp,
+      coreP2P: 26.5 * gain,
+      swordNow: swordDisp,
+      swordP2P: 45.8 * gain,
+      sashNow: sashDisp,
+      sashP2P: 42.0 * gain,
+      ankleDrift: 0.0
+    };
+  }
+
+  // =========================================================================
+  // PRESET 3: Half-Body / Bust Portrait (Bottom Waist Anchored)
+  // =========================================================================
+  function evaluateBust(t, gain) {
+    const anchorX = 220;
+    const anchorY = 474; // tightly anchored to bottom frame edge (H=484)
+    const spineRot = harmonic(t, [[1.4, 1, 0.0]], gain) * DEG;
+    const chestRot = spineRot + harmonic(t, [[1.0, 1, 0.25]], gain) * DEG;
+    const breathTy = harmonic(t, [[-8.0, 2, 0.0]], gain) * 0.55;
+    const ribSx = 1 + harmonic(t, [[0.010, 2, 0.12]], gain);
+    const ribSy = 1 + harmonic(t, [[0.018, 2, 0.12]], gain);
+
+    const chestX = anchorX + Math.sin(spineRot) * 140;
+    const chestY = anchorY - Math.cos(spineRot) * 140 + breathTy;
+
+    // Strong head counter-stabilization (cancels ~75% of chest rotation so eyes remain serene)
+    const neckRot = chestRot * 0.55 + harmonic(t, [[-0.6, 1, 0.45]], gain) * DEG;
+    const headRot = chestRot * 0.22 + harmonic(t, [[-0.5, 1, 0.70], [0.55, 2, 0.55]], gain) * DEG;
+    const neckX = chestX + Math.sin(chestRot) * 78;
+    const neckY = chestY - Math.cos(chestRot) * 78;
+    const headX = neckX + Math.sin(neckRot) * 38;
+    const headY = neckY - Math.cos(neckRot) * 38;
+
+    // Multi-link hair & earrings
+    const backHairL = solveChain(headX - 42, headY + 12, 1.66 + headRot * 0.3, [44, 46, 46, 46], t, 2.8, 1.35, 0.42, 0.35, 0.35, gain);
+    const backHairR = solveChain(headX + 42, headY + 12, 1.48 + headRot * 0.3, [44, 46, 46, 46], t, 2.8, 1.35, 0.48, 0.35, 0.35, gain);
+    const frontL = solveChain(headX - 44, headY + 6, 1.62 + headRot * 0.5, [28, 28, 28, 28], t, 2.5, 1.32, 0.45, 0.35, 0.32, gain);
+    const frontR = solveChain(headX + 44, headY + 6, 1.52 + headRot * 0.5, [28, 28, 28, 28], t, 2.5, 1.32, 0.52, 0.35, 0.32, gain);
+
+    return {
+      anchorX, anchorY, spineRot, chestX, chestY, chestRot, ribSx, ribSy,
+      neckX, neckY, headX, headY, headRot, backHairL, backHairR, frontL, frontR
+    };
+  }
+
+  function drawBust(ctx, t, gain, showOverlay) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const p = evaluateBust(t, gain);
+
+    // Back hair behind shoulders
+    drawTaperedChain(ctx, p.backHairL, 54, 18, '#312e81', '#818cf8');
+    drawTaperedChain(ctx, p.backHairR, 54, 18, '#312e81', '#818cf8');
+
+    // Bottom waist/torso anchored rigidly at bottom border (zero bottom leak)
+    ctx.save();
+    const gCloak = ctx.createLinearGradient(p.chestX, p.chestY - 60, p.anchorX, H + 20);
+    gCloak.addColorStop(0, '#4338ca');
+    gCloak.addColorStop(1, '#1e1b4b');
+    ctx.fillStyle = gCloak;
+    ctx.strokeStyle = '#a5b4fc';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(p.anchorX - 118, H + 6);
+    ctx.quadraticCurveTo(p.chestX - 102 * p.ribSx, p.chestY + 24, p.chestX - 78 * p.ribSx, p.chestY - 56 * p.ribSy);
+    ctx.lineTo(p.chestX + 78 * p.ribSx, p.chestY - 56 * p.ribSy);
+    ctx.quadraticCurveTo(p.chestX + 102 * p.ribSx, p.chestY + 24, p.anchorX + 118, H + 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Collar V-trim
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(p.chestX - 44, p.chestY - 54 * p.ribSy);
+    ctx.lineTo(p.chestX, p.chestY + 8);
+    ctx.lineTo(p.chestX + 44, p.chestY - 54 * p.ribSy);
+    ctx.stroke();
+    ctx.restore();
+
+    // Neck
+    drawLimb(ctx, p.chestX, p.chestY - 46, p.neckX, p.neckY, 17, 15, '#f2d3c0', null);
+
+    // Head
+    ctx.save();
+    ctx.translate(p.headX, p.headY);
+    ctx.rotate(p.headRot);
+    ctx.fillStyle = '#f8dfd0';
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.ellipse(0, -10, 48, 56, 0, 0, TWO_PI);
+    ctx.fill();
+    ctx.stroke();
+
+    // Crown & bangs
+    ctx.fillStyle = '#312e81';
+    ctx.beginPath();
+    ctx.arc(0, -20, 50, Math.PI * 1.04, Math.PI * -0.04, false);
+    ctx.lineTo(46, 10);
+    ctx.lineTo(22, -12);
+    ctx.lineTo(4, 12);
+    ctx.lineTo(-16, -12);
+    ctx.lineTo(-46, 10);
+    ctx.closePath();
+    ctx.fill();
+
+    // Calm eyes
+    ctx.fillStyle = '#6366f1';
+    ctx.beginPath(); ctx.ellipse(-18, -6, 8, 5, 0, 0, TWO_PI); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(18, -6, 8, 5, 0, 0, TWO_PI); ctx.fill();
+    ctx.restore();
+
+    // Front hair strands
+    drawTaperedChain(ctx, p.frontL, 20, 6, '#312e81', '#a5b4fc');
+    drawTaperedChain(ctx, p.frontR, 20, 6, '#312e81', '#a5b4fc');
+
+    // Bottom frame anchor line
+    ctx.save();
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(20, H - 2);
+    ctx.lineTo(W - 20, H - 2);
+    ctx.stroke();
+    ctx.restore();
+
+    if (showOverlay) {
+      drawBoneLine(ctx, p.anchorX, p.anchorY, p.chestX, p.chestY, '#38bdf8');
+      drawBoneLine(ctx, p.chestX, p.chestY, p.neckX, p.neckY, '#38bdf8');
+      drawBoneLine(ctx, p.neckX, p.neckY, p.headX, p.headY, '#38bdf8');
+      for (let i = 0; i < p.frontL.length - 1; i++) {
+        drawBoneLine(ctx, p.frontL[i].x, p.frontL[i].y, p.frontL[i + 1].x, p.frontL[i + 1].y, '#22d3ee');
+      }
+      drawIKPin(ctx, p.anchorX, p.anchorY, 'WAIST_LOCK', '#10b981');
+    }
+
+    const base = evaluateBust(0, 1);
+    const chestDisp = Math.hypot((p.chestX - base.chestX) / 0.55, (p.chestY - base.chestY) / 0.55);
+    const headDisp = Math.hypot((p.headX - base.headX) / 0.55, (p.headY - base.headY) / 0.55);
+    const tip = p.frontL[p.frontL.length - 1];
+    const baseTip = base.frontL[base.frontL.length - 1];
+    const hairDisp = Math.hypot((tip.x - baseTip.x) / 0.55, (tip.y - baseTip.y) / 0.55);
+    return {
+      chestNow: chestDisp,
+      chestP2P: 9.6 * gain,
+      headNow: headDisp,
+      headP2P: 5.2 * gain,
+      hairNow: hairDisp,
+      hairP2P: 19.5 * gain,
+      bottomLeak: 0.0
+    };
+  }
+
+  // =========================================================================
+  // METRICS & SOFT WARN RENDERER
+  // =========================================================================
+  function buildMetricRow(name, currentPx, p2pPx, minRef, maxRef, isHardZero) {
+    let status = 'ok';
+    let note = '区间内';
+    if (isHardZero) {
+      status = p2pPx <= maxRef ? 'ok' : 'warn';
+      note = p2pPx <= maxRef ? '硬锚定 PASS' : '超限';
+    } else if (p2pPx < minRef) {
+      status = 'warn';
+      note = 'SOFT WARN · 偏弱';
+    } else if (p2pPx > maxRef) {
+      status = 'warn';
+      note = 'SOFT WARN · 过幅';
+    }
+    const scaleMax = Math.max(maxRef * 1.6, p2pPx * 1.05, 2);
+    const pctFill = Math.min(100, (p2pPx / scaleMax) * 100);
+    const pctMin = (minRef / scaleMax) * 100;
+    const pctMax = Math.min(100, (maxRef / scaleMax) * 100);
+
+    return {
+      warn: status === 'warn',
+      html:
+        '<div class="metric-row ' + (status === 'warn' ? 'warn' : '') + '">' +
+          '<span class="metric-name">' + name + '</span>' +
+          '<span class="metric-val">实时 ' + currentPx.toFixed(1) + 'px · p2p ' + p2pPx.toFixed(1) + 'px</span>' +
+          '<div class="metric-ref">' +
+            '<span>参考区间 [' + minRef + ' – ' + maxRef + ' px]</span>' +
+            '<span style="color:' + (status === 'warn' ? 'var(--warn)' : 'var(--ok)') + '">' + note + '</span>' +
+          '</div>' +
+          '<div class="meter-track">' +
+            '<div class="meter-ref-zone" style="left:' + pctMin.toFixed(1) + '%;width:' + Math.max(2, pctMax - pctMin).toFixed(1) + '%"></div>' +
+            '<div class="meter-fill ' + status + '" style="width:' + pctFill.toFixed(1) + '%"></div>' +
+          '</div>' +
+        '</div>'
+    };
+  }
+
+  function updateCardMetrics(containerId, badgeId, rows) {
+    const el = document.getElementById(containerId);
+    const badge = document.getElementById(badgeId);
+    if (!el || !badge) return;
+    let anyWarn = false;
+    let html = '';
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].warn) anyWarn = true;
+      html += rows[i].html;
+    }
+    el.innerHTML = html;
+    badge.className = 'badge ' + (anyWarn ? 'warn' : 'ok');
+    badge.textContent = anyWarn ? 'SOFT WARN' : 'PASS';
+  }
+
+  // =========================================================================
+  // HARD QUALITY-GATE COUNTEREXAMPLES (4 MODES)
+  // =========================================================================
+  const GATE_META = {
+    no_holes: {
+      title: 'no_holes：补全深度不足导致关节处撕裂露黑洞 vs 充足 Amodal 补全零破洞',
+      desc: '肩颈或发束摆动时，如果被遮挡底层的 Amodal 补全深度不足（<16px），接缝处会露出黑色/透明新月破洞；补全外扩 ≥32px 后全程零破洞。',
+      rule: '硬门禁阈值：maxHolePx == 0',
+      failTitle: 'FAIL 反例：底层补全仅 4px（关节旋转露黑洞）',
+      passTitle: 'PASS 基线：Amodal 补全 ≥32px（零破洞）',
+      failNote: '手臂上抬与躯干摆动时，接缝处露出明显黑洞裂隙（红圈标注）',
+      passNote: '底层补全完整覆盖最大活动包络，接缝丝滑封闭'
+    },
+    anchor_stability: {
+      title: 'anchor_stability：脚踝未钉 IK 导致脚底左右滑步 vs 2-bone IK 稳态钉死',
+      desc: '重心 8s 水平摆动时，若仅用正向动力学（FK）而不钉死脚踝 IK，双脚会随胯部左右滑步（>1.5px），破坏立绘接地感；启用 2-bone IK 后脚底纹丝不动。',
+      rule: '硬门禁阈值：ankleDrift ≤ 1.5 px',
+      failTitle: 'FAIL 反例：无脚踝 IK（脚底随重心左右滑步）',
+      passTitle: 'PASS 基线：2-bone 腿部 IK（脚底锚点锁死）',
+      failNote: '红色滑移轨迹显示脚底偏离初始接地标尺',
+      passNote: '膝盖自然微屈吸收胯部摆动，脚底漂移 0.00 px'
+    },
+    setup_identity: {
+      title: 'setup_identity：第 0s / 8s 未归零导致循环跳帧 vs 严格首尾归零',
+      desc: '静态海报（Frame 0）切入动态循环时，若谐波未减去 t=0 初相偏移，第 0s 即存在姿态跳变；减去 sin(-w·lag) 后 t=0s 与 t=8s 严格等于 Setup Pose。',
+      rule: '硬门禁阈值：frame0Diff == 0.00 px',
+      failTitle: 'FAIL 反例：未做首尾归零（0s 切入即跳帧）',
+      passTitle: 'PASS 基线：严格 f(0) = f(8) = 0（无缝衔接）',
+      failNote: '虚线为原画 Setup Pose，0s 时刻实线姿态直接错位跳变',
+      passNote: 't=0s 与 t=8s 实线姿态与原画虚线完全重合'
+    },
+    rest_diff: {
+      title: 'rest_diff：静止帧（Frame 0）与原画逐像素差异门禁 maxRGBA ≤ 2',
+      desc: '将 Spine 渲染出的 Frame 0 与源立绘做逐像素 RGBA 差值比对。允许 ≤2 的预乘抗锯齿舍入误差；若出现色彩空间错配、缺少 4px Padding 裁边或接缝白边则直接 FAIL。',
+      rule: '硬门禁阈值：maxRGBA ≤ 2',
+      failTitle: 'FAIL 反例：缺少 Padding 与接缝晕边（maxRGBA = 38）',
+      passTitle: 'PASS 基线：4px Padding + 预乘一致（maxRGBA = 1）',
+      failNote: '热力图高亮接缝裁切与 Alpha 晕边超标区域',
+      passNote: '全图差值落在 [0, 1]，人眼与原画完全一致'
+    }
+  };
+
+  function drawGateNoHoles(ctx, t, gain, isFail) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const rot = harmonic(t, [[18, 1, 0.25], [6, 2, 0.1]], Math.max(gain, 1.0)) * DEG;
+    const cx = W * 0.44;
+    const cy = H * 0.56;
+
+    // Torso block (base)
+    ctx.save();
+    ctx.fillStyle = '#1e3a5f';
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    if (isFail) {
+      // Cutout notch under shoulder where amodal inpainting was missing
+      ctx.moveTo(cx - 85, cy - 88);
+      ctx.lineTo(cx + 22, cy - 88);
+      ctx.lineTo(cx + 22, cy - 28);
+      ctx.lineTo(cx + 46, cy - 10);
+      ctx.lineTo(cx + 40, cy + 100);
+      ctx.lineTo(cx - 85, cy + 100);
+    } else {
+      // Full amodal inpainted shoulder socket extending >=32px behind arm
+      ctx.roundRect(cx - 85, cy - 88, 152, 188, 16);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // If FAIL, emphasize the dark void behind seam
+    if (isFail) {
+      ctx.fillStyle = '#05070b';
+      ctx.beginPath();
+      ctx.arc(cx + 34, cy - 52, 22, 0, TWO_PI);
+      ctx.fill();
+    } else {
+      // Subtle dashed indicator of amodal fill zone
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.55)';
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(cx + 20, cy - 82, 42, 68);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText('AMODAL +32px', cx + 22, cy - 92);
+    }
+
+    // Rotating upper arm
+    ctx.translate(cx + 24, cy - 54);
+    ctx.rotate(rot);
+    ctx.fillStyle = '#334155';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(4, -22, 138, 44, 18);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Hole severity measurement
+    const holePx = isFail ? Math.max(0, Math.abs(Math.sin(rot)) * 28 + 3.2) : 0;
+    if (isFail && holePx > 1) {
+      ctx.save();
+      ctx.strokeStyle = '#f43f5e';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.arc(cx + 28, cy - 52, 26, 0, TWO_PI);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#fb7185';
+      ctx.font = '600 11px ui-monospace, monospace';
+      ctx.fillText('HOLE TEAR', cx + 60, cy - 84);
+      ctx.restore();
+    }
+    return holePx;
+  }
+
+  function drawGateAnchor(ctx, t, gain, isFail) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const floorY = H - 56;
+    drawFloorLine(ctx, floorY, W, 'GROUND REFERENCE LINE');
+
+    // Floor ruler ticks at initial foot positions
+    const baseAnkleL = W * 0.38;
+    const baseAnkleR = W * 0.62;
+    ctx.save();
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(baseAnkleL, floorY - 8); ctx.lineTo(baseAnkleL, floorY + 12);
+    ctx.moveTo(baseAnkleR, floorY - 8); ctx.lineTo(baseAnkleR, floorY + 12);
+    ctx.stroke();
+    ctx.restore();
+
+    const sway = harmonic(t, [[44, 1, 0.25]], gain);
+    const hipX = W * 0.5 + sway;
+    const hipY = 104 + harmonic(t, [[8, 2, 0.2]], gain);
+    const hipL = { x: hipX - 36, y: hipY + 16 };
+    const hipR = { x: hipX + 36, y: hipY + 16 };
+
+    let legL, legR, driftPx;
+    if (isFail) {
+      // FK without IK: feet slide horizontally with hips
+      const kneeL = { x: hipL.x - 18, y: hipL.y + 84 };
+      const kneeR = { x: hipR.x + 18, y: hipR.y + 84 };
+      const endL = { x: baseAnkleL + sway, y: floorY - 4 };
+      const endR = { x: baseAnkleR + sway, y: floorY - 4 };
+      legL = { midX: kneeL.x, midY: kneeL.y, endX: endL.x, endY: endL.y };
+      legR = { midX: kneeR.x, midY: kneeR.y, endX: endR.x, endY: endR.y };
+      driftPx = Math.abs(sway);
+
+      // Draw red skid trail
+      ctx.save();
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.85)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(baseAnkleL, floorY + 2); ctx.lineTo(endL.x, floorY + 2);
+      ctx.moveTo(baseAnkleR, floorY + 2); ctx.lineTo(endR.x, floorY + 2);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      legL = solveTwoBoneIK(hipL.x, hipL.y, baseAnkleL, floorY - 4, 96, 94, -1);
+      legR = solveTwoBoneIK(hipR.x, hipR.y, baseAnkleR, floorY - 4, 96, 94, 1);
+      driftPx = 0.0;
+    }
+
+    // Draw pelvis + legs
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(hipX - 52, hipY - 14, 104, 34, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    drawLimb(ctx, hipL.x, hipL.y, legL.midX, legL.midY, 15, 11, '#334155', '#94a3b8');
+    drawLimb(ctx, legL.midX, legL.midY, legL.endX, legL.endY, 11, 8, '#0f172a', isFail ? '#f43f5e' : '#10b981');
+    drawLimb(ctx, hipR.x, hipR.y, legR.midX, legR.midY, 15, 11, '#334155', '#94a3b8');
+    drawLimb(ctx, legR.midX, legR.midY, legR.endX, legR.endY, 11, 8, '#0f172a', isFail ? '#f43f5e' : '#10b981');
+
+    if (isFail) {
+      drawIKPin(ctx, legL.endX, legL.endY, 'SLIP', '#f43f5e');
+      drawIKPin(ctx, legR.endX, legR.endY, 'SLIP', '#f43f5e');
+    } else {
+      drawIKPin(ctx, legL.endX, legL.endY, 'IK_LOCK', '#10b981');
+      drawIKPin(ctx, legR.endX, legR.endY, 'IK_LOCK', '#10b981');
+    }
+    return driftPx;
+  }
+
+  function drawGateSetupIdentity(ctx, t, gain, isFail) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Top half: waveform graph showing t=0s and t=8s boundary
+    const gx = 38, gy = 26, gw = W - 76, gh = 110;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(gx, gy, gw, gh);
+    ctx.strokeRect(gx, gy, gw, gh);
+
+    const midY = gy + gh / 2;
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(gx, midY); ctx.lineTo(gx + gw, midY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const terms = [[36, 1, 1.4], [10, 2, 0.8]];
+    ctx.beginPath();
+    for (let i = 0; i <= 160; i++) {
+      const ti = (i / 160) * LOOP;
+      const val = isFail ? harmonicRaw(ti, terms, gain) : harmonic(ti, terms, gain);
+      const px = gx + (ti / LOOP) * gw;
+      const py = midY - val * 1.25;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = isFail ? '#f43f5e' : '#10b981';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // Mark t=0 point
+    const f0 = isFail ? harmonicRaw(0, terms, gain) : harmonic(0, terms, gain);
+    ctx.fillStyle = isFail ? '#f43f5e' : '#10b981';
+    ctx.beginPath();
+    ctx.arc(gx, midY - f0 * 1.25, 5, 0, TWO_PI);
+    ctx.fill();
+    ctx.font = '600 10px ui-monospace, monospace';
+    ctx.fillText('t=0s: ' + f0.toFixed(1) + 'px', gx + 8, midY - f0 * 1.25 - 6);
+
+    // Playhead
+    const curVal = isFail ? harmonicRaw(t, terms, gain) : harmonic(t, terms, gain);
+    const playX = gx + (t / LOOP) * gw;
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(playX, gy); ctx.lineTo(playX, gy + gh); ctx.stroke();
+
+    // Bottom half: Ghost Setup Pose (dashed) vs Live Pose (solid)
+    const cx = W * 0.5;
+    const cy = H - 72;
+    // Setup Pose ghost
+    ctx.save();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(cx - 32, cy - 42, 64, 84);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.75)';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.fillText('SETUP POSE (Poster)', cx - 56, cy + 56);
+    ctx.restore();
+
+    // Live animated block
+    ctx.save();
+    ctx.translate(cx + curVal * 1.3, cy);
+    ctx.rotate(curVal * 0.008);
+    ctx.fillStyle = isFail ? 'rgba(244, 63, 94, 0.25)' : 'rgba(16, 185, 129, 0.25)';
+    ctx.strokeStyle = isFail ? '#f43f5e' : '#10b981';
+    ctx.lineWidth = 2;
+    ctx.fillRect(-32, -42, 64, 84);
+    ctx.strokeRect(-32, -42, 64, 84);
+    ctx.restore();
+
+    return Math.abs(f0);
+  }
+
+  function drawGateRestDiff(ctx, t, gain, isFail) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Left: Frame 0 Rendered silhouette; Right: Pixel-Diff Heatmap |Render(t=0) - Source|
+    const half = W * 0.5;
+    const cx1 = half * 0.5;
+    const cx2 = half + half * 0.5;
+    const cy = H * 0.52;
+
+    // Divider
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+    ctx.beginPath(); ctx.moveTo(half, 18); ctx.lineTo(half, H - 18); ctx.stroke();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 10.5px ui-monospace, monospace';
+    ctx.fillText('Frame 0 渲染输出', 24, 24);
+    ctx.fillText('逐像素差值热力图 (×8 增益)', half + 20, 24);
+
+    // Draw sample silhouette on left
+    ctx.save();
+    ctx.translate(cx1, cy);
+    ctx.fillStyle = '#334155';
+    ctx.strokeStyle = isFail ? '#f43f5e' : '#38bdf8';
+    ctx.lineWidth = isFail ? 3.5 : 1.5;
+    ctx.beginPath();
+    ctx.arc(0, -48, 34, 0, TWO_PI);
+    ctx.roundRect(-48, -10, 96, 112, 16);
+    ctx.fill();
+    ctx.stroke();
+    if (isFail) {
+      // Halo seam artifact
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-48, 18); ctx.lineTo(48, 18);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Draw diff heatmap on right
+    ctx.save();
+    ctx.translate(cx2, cy);
+    ctx.fillStyle = '#070a10';
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.fillRect(-90, -102, 180, 212);
+    ctx.strokeRect(-90, -102, 180, 212);
+
+    if (isFail) {
+      // Bright red/amber edge clipping & seam diff bands
+      const pulse = 0.78 + 0.22 * Math.sin(t * 3.0);
+      ctx.strokeStyle = 'rgba(244, 63, 94, ' + pulse.toFixed(2) + ')';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, -48, 34, 0, TWO_PI);
+      ctx.stroke();
+      ctx.strokeRect(-48, -10, 96, 112);
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-48, 18); ctx.lineTo(48, 18);
+      ctx.stroke();
+      ctx.fillStyle = '#fb7185';
+      ctx.font = '600 10px ui-monospace, monospace';
+      ctx.fillText('HALO / CLIPPING', -46, 124);
+    } else {
+      // Near-black clean diff (maxRGBA = 1)
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, -48, 34, 0, TWO_PI);
+      ctx.stroke();
+      ctx.strokeRect(-48, -10, 96, 112);
+      ctx.fillStyle = '#34d399';
+      ctx.font = '600 10px ui-monospace, monospace';
+      ctx.fillText('ALL PIXELS Δ ≤ 1', -48, 124);
+    }
+    ctx.restore();
+
+    return isFail ? 38 : 1;
+  }
+
+  function renderActiveGate(t, gain) {
+    const cFail = document.getElementById('canvas-gate-fail');
+    const cPass = document.getElementById('canvas-gate-pass');
+    if (!cFail || !cPass) return;
+    const ctxFail = cFail.getContext('2d');
+    const ctxPass = cPass.getContext('2d');
+    const mFail = document.getElementById('gateFailMetric');
+    const mPass = document.getElementById('gatePassMetric');
+
+    const g = state.activeGate;
+    if (g === 'no_holes') {
+      const f = drawGateNoHoles(ctxFail, t, gain, true);
+      const p = drawGateNoHoles(ctxPass, t, gain, false);
+      mFail.textContent = 'maxHolePx = ' + f.toFixed(1) + ' px (> 0)';
+      mPass.textContent = 'maxHolePx = ' + p.toFixed(1) + ' px';
+    } else if (g === 'anchor_stability') {
+      const f = drawGateAnchor(ctxFail, t, gain, true);
+      const p = drawGateAnchor(ctxPass, t, gain, false);
+      mFail.textContent = 'ankleDrift = ' + f.toFixed(1) + ' px (> 1.5)';
+      mPass.textContent = 'ankleDrift = ' + p.toFixed(2) + ' px (≤ 1.5)';
+    } else if (g === 'setup_identity') {
+      const f = drawGateSetupIdentity(ctxFail, t, gain, true);
+      const p = drawGateSetupIdentity(ctxPass, t, gain, false);
+      mFail.textContent = 'frame0Diff = ' + f.toFixed(1) + ' px (≠ 0)';
+      mPass.textContent = 'frame0Diff = ' + p.toFixed(2) + ' px (== 0)';
+    } else {
+      const f = drawGateRestDiff(ctxFail, t, gain, true);
+      const p = drawGateRestDiff(ctxPass, t, gain, false);
+      mFail.textContent = 'maxRGBA = ' + f + ' (> 2)';
+      mPass.textContent = 'maxRGBA = ' + p + ' (≤ 2)';
+    }
+  }
+
+  // =========================================================================
+  // UI BINDINGS & MAIN LOOP
+  // =========================================================================
+  const ctxErika = document.getElementById('canvas-erika').getContext('2d');
+  const ctxRain = document.getElementById('canvas-rain').getContext('2d');
+  const ctxBust = document.getElementById('canvas-bust').getContext('2d');
+  const timeReadout = document.getElementById('timeReadout');
+  const timeScrubber = document.getElementById('timeScrubber');
+  const gainBanner = document.getElementById('gainBanner');
+
+  function updateGainBanner() {
+    const g = state.gain;
+    if (g === 1) {
+      gainBanner.className = 'gain-banner ok';
+      gainBanner.textContent = '当前 Gain = 1.0x（标定生产基线）：三套预设位移均落在参考区间内';
+    } else if (g < 1) {
+      gainBanner.className = 'gain-banner warn';
+      gainBanner.textContent = '当前 Gain = ' + g.toFixed(1) + 'x（柔和降幅）：部分通道低于推荐参考下限，触发 SOFT WARN（偏弱）';
+    } else {
+      gainBanner.className = 'gain-banner warn';
+      gainBanner.textContent = '当前 Gain = ' + g.toFixed(1) + 'x（审查/压测倍率）：用于暴露破洞与滑步，超出生产参考上限触发 SOFT WARN（过幅）';
+    }
+  }
+
+  function applyGateMeta(gateKey) {
+    state.activeGate = gateKey;
+    const meta = GATE_META[gateKey];
+    document.getElementById('gateTitle').textContent = meta.title;
+    document.getElementById('gateDesc').textContent = meta.desc;
+    document.getElementById('gateRuleBadge').textContent = meta.rule;
+    document.getElementById('gateFailTitle').textContent = meta.failTitle;
+    document.getElementById('gatePassTitle').textContent = meta.passTitle;
+    document.getElementById('gateFailNote').textContent = meta.failNote;
+    document.getElementById('gatePassNote').textContent = meta.passNote;
+    document.querySelectorAll('.gate-tab').forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.gate === gateKey);
+    });
+  }
+
+  document.getElementById('btnPlay').addEventListener('click', function () {
+    state.playing = !state.playing;
+    this.textContent = state.playing ? '暂停' : '播放';
+    this.classList.toggle('active', state.playing);
+  });
+
+  document.getElementById('btnReset').addEventListener('click', function () {
+    state.t = 0;
+    renderFrame();
+  });
+
+  document.querySelectorAll('.speed-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.speed = parseFloat(btn.dataset.speed);
+      document.querySelectorAll('.speed-btn').forEach(function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+    });
+  });
+
+  document.querySelectorAll('.gain-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.gain = parseFloat(btn.dataset.gain);
+      document.querySelectorAll('.gain-btn').forEach(function (b) {
+        b.classList.remove('active', 'ok-active', 'warn-active');
+      });
+      if (state.gain === 1) btn.classList.add('ok-active');
+      else btn.classList.add('warn-active');
+      updateGainBanner();
+      renderFrame();
+    });
+  });
+
+  document.querySelectorAll('.bg-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.bg = btn.dataset.bg;
+      document.querySelectorAll('.bg-btn').forEach(function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      document.querySelectorAll('[data-stage-bg]').forEach(function (el) {
+        el.classList.remove('bg-dark', 'bg-light', 'bg-checker');
+        el.classList.add(state.bg);
+      });
+    });
+  });
+
+  document.getElementById('btnOverlay').addEventListener('click', function () {
+    state.showOverlay = !state.showOverlay;
+    this.textContent = '骨架 / IK 叠加：' + (state.showOverlay ? '开' : '关');
+    this.classList.toggle('active', state.showOverlay);
+    renderFrame();
+  });
+
+  timeScrubber.addEventListener('input', function () {
+    state.t = parseFloat(this.value);
+    renderFrame();
+  });
+
+  document.querySelectorAll('.gate-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      applyGateMeta(btn.dataset.gate);
+      renderFrame();
+    });
+  });
+
+  let lastUiUpdate = 0;
+  function renderFrame() {
+    const t = state.t;
+    const g = state.gain;
+    const frameIdx = Math.round(t * 30) % 240;
+    timeReadout.innerHTML = 't = <strong>' + t.toFixed(2) + ' s</strong> / 8.00 s · F ' + String(frameIdx).padStart(3, '0') + '/240';
+    timeScrubber.value = t.toFixed(2);
+
+    const mErika = drawErika(ctxErika, t, g, state.showOverlay);
+    const mRain = drawRain(ctxRain, t, g, state.showOverlay);
+    const mBust = drawBust(ctxBust, t, g, state.showOverlay);
+    renderActiveGate(t, g);
+
+    // Throttle DOM telemetry updates to ~15Hz for smooth performance
+    const now = performance.now();
+    if (now - lastUiUpdate > 65 || !state.playing) {
+      lastUiUpdate = now;
+      updateCardMetrics('metrics-erika', 'badge-erika', [
+        buildMetricRow('胸廓 / 头部位移', mErika.headNow, mErika.headP2P, 11.5, 19.0, false),
+        buildMetricRow('发束 / 飘带末端', mErika.hairNow, mErika.hairP2P, 21.0, 36.0, false),
+        buildMetricRow('脚踝 IK 锚点漂移', mErika.ankleDrift, mErika.ankleDrift, 0, 1.5, true)
+      ]);
+      updateCardMetrics('metrics-rain', 'badge-rain', [
+        buildMetricRow('重甲躯干核心', mRain.coreNow, mRain.coreP2P, 20.0, 34.0, false),
+        buildMetricRow('刚体大剑剑尖', mRain.swordNow, mRain.swordP2P, 34.0, 56.0, false),
+        buildMetricRow('飘带 / 毛领末端', mRain.sashNow, mRain.sashP2P, 30.0, 54.0, false)
+      ]);
+      updateCardMetrics('metrics-bust', 'badge-bust', [
+        buildMetricRow('胸廓呼吸微摆', mBust.chestNow, mBust.chestP2P, 7.2, 12.2, false),
+        buildMetricRow('头部反稳定残余', mBust.headNow, mBust.headP2P, 3.8, 6.8, false),
+        buildMetricRow('发丝末端飘动', mBust.hairNow, mBust.hairP2P, 14.5, 25.0, false)
+      ]);
+    }
+  }
+
+  function tick(ts) {
+    if (state.lastTs === null) state.lastTs = ts;
+    const dt = Math.min(0.1, (ts - state.lastTs) / 1000);
+    state.lastTs = ts;
+    if (state.playing) {
+      state.t = (state.t + dt * state.speed) % LOOP;
+    }
+    renderFrame();
+    requestAnimationFrame(tick);
+  }
+
+  applyGateMeta('no_holes');
+  updateGainBanner();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
