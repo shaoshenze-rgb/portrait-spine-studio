@@ -118,5 +118,82 @@ class CanvasLayerRigTests(unittest.TestCase):
         self.assertEqual(result['moduleContract']['materialMode'], 'canvas_layers')
         self.assertFalse(result['moduleContract']['exportAllowed'])
 
+    def test_preview_mode_preserves_point_and_lists_placement_warning(self):
+        path = self.parts/'parts.json'; material = json.loads(path.read_text())
+        material['parts'][0]['pivot'] = [50, 32]; path.write_text(json.dumps(material))
+        plan = copy.deepcopy(self.plan); plan['modules'][0]['pivot'] = [50/64, .5]
+        result = compile_canvas_layer_bindings(self.parts, plan, self.root/'preview',
+            evidence_root=self.root, character='preview_test', strict_placement=False)
+        self.assertEqual(result['character'], 'preview_test')
+        self.assertEqual(result['bones'][1]['pos'], [50., 32.])
+        self.assertTrue(result['placementWarnings'])
+        build_rig(self.parts, result, self.root/'preview-rig')
+        renderer = SpineRenderer(self.root/'preview-rig')
+        np.testing.assert_array_equal(renderer.frame(0), renderer.frame(8))
+
+    def test_preview_mode_keeps_input_issues_and_completion_as_advisories(self):
+        plan = copy.deepcopy(self.plan)
+        plan['input_issues'] = [{'notes': 'visible flame needs review'}]
+        plan['occlusions'] = [{'front': 'flame', 'back': 'body', 'completion': 'local',
+            'polygons': [[[.4, .4], [.6, .4], [.6, .6], [.4, .6]]]}]
+        result = compile_canvas_layer_bindings(self.parts, plan, self.root/'preview',
+            evidence_root=self.root, strict_placement=False)
+        notes = result['moduleContract']['advisoryNotes']
+        self.assertEqual(notes['input_issues'], plan['input_issues'])
+        self.assertEqual(notes['occlusions'], plan['occlusions'])
+        self.assertFalse(result['moduleContract']['exportAllowed'])
+
+    def test_preview_grounded_bust_is_not_silently_changed_to_airborne(self):
+        plan = copy.deepcopy(self.plan); plan['pose_type'] = 'grounded'
+        result = compile_canvas_layer_bindings(self.parts, plan, self.root/'preview',
+            evidence_root=self.root, strict_placement=False)
+        self.assertEqual(result['pose_type'], 'grounded')
+        build_rig(self.parts, result, self.root/'preview-rig')
+
+    def test_preview_grounded_full_keeps_foot_anchor_and_rigid_ik(self):
+        from src.studio.vision_schema import rasterize_polygons
+        root = self.root/'grounded'; root.mkdir(); w, h = 128, 160
+        shapes = {'body': [(50,40),(78,40),(78,78),(50,78)],
+                  'head': [(54,10),(74,10),(74,40),(54,40)],
+                  'upper': [(56,78),(67,78),(52,112),(41,108)],
+                  'lower': [(41,108),(52,112),(68,145),(56,145)],
+                  'foot': [(54,145),(74,145),(74,156),(54,156)]}
+        roles = dict(body='torso', head='head', upper='upper_leg', lower='lower_leg', foot='foot')
+        parents = dict(body=None, head='body', upper='body', lower='upper', foot=None)
+        pivots = dict(body=[64,75], head=[64,40], upper=[61,78], lower=[47,109], foot=[62,145])
+        source = root/'source.png'; Image.new('RGBA', (w,h)).save(source)
+        material = {'version':1, 'material_mode':'canvas_layers', 'source_image':str(source),
+                    'source_sha256':sha(source), 'image_size':[w,h], 'pieces':[]}
+        modules = []
+        for order, (name, polygon) in enumerate(shapes.items()):
+            mask = rasterize_polygons([[[x/w,y/h] for x,y in polygon]], w, h)
+            rgba = np.zeros((h,w,4),np.uint8); rgba[mask] = [30+order*35,70,140,255]
+            path = root/(name+'.png'); Image.fromarray(rgba).save(path)
+            kind = 'static' if name == 'foot' else 'rigid'
+            material['pieces'].append({'id':name, 'module_id':name, 'kind':'rigid', 'parent':parents[name],
+                'pivot':pivots[name], 'draw_order':order, 'image':str(path), 'sha256':sha(path),
+                'provenance':{'scene_id':'test','node_id':name,'task_id':'test','operation':'split-layers',
+                    'source_asset_sha256':sha(source),'result_asset_sha256':sha(path),'transform':[[1,0,0],[0,1,0]]}})
+            m = {'id':name,'role':roles[name],'motion_type':kind,'parent':parents[name],
+                 'pivot':[pivots[name][0]/w,pivots[name][1]/h],'confidence':.95}
+            if name == 'foot': m['static_reason'] = 'declared ground contact'
+            modules.append(m)
+        parts = root/'parts'; materialize_canvas_layer_parts(material, parts, evidence_root=root)
+        connections = [{'id':n, 'type':'joint','a':parents[n],'b':n,'point':m['pivot']}
+                       for n,m in zip(shapes,modules) if parents[n]]
+        connections.append({'id':'anchor','type':'foot_anchor','a':'upper','b':'foot',
+                            'point':[62/w,145/h],'chain':['upper','lower']})
+        plan = {'pose_type':'grounded','anatomy':'humanoid_full','modules':modules,'connections':connections}
+        spec = compile_canvas_layer_bindings(parts, plan, root/'binding', evidence_root=root, strict_placement=False)
+        made = build_rig(parts, spec, root/'rig')
+        self.assertEqual(spec['moduleContract']['contacts'][-1]['type'], 'foot')
+        self.assertEqual(len(spec['ik']), 1)
+        self.assertLess(made['report']['moduleMotionPreflight']['rigidAnchorMaxDriftPx'], .001)
+        renderer = SpineRenderer(root/'rig'); positions = []
+        for t in np.linspace(0,8,17):
+            renderer.pose(float(t)); foot = renderer.sk.by_name['module_foot']
+            positions.append([foot.worldX, foot.worldY])
+        self.assertLess(np.ptp(positions, axis=0).max(), 1e-8)
+
 
 if __name__ == '__main__': unittest.main()

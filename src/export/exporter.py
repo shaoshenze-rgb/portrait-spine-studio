@@ -59,12 +59,13 @@ def export_standalone_html(
     *,
     health_report_path: Optional[Union[str, Path]] = None,
     require_approved: bool = True,
+    user_signoff_path: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Write a zero-request single-file HTML preview with inlined runtime, JSON and PNGs."""
     rdir = Path(rig_dir).resolve()
     dest = Path(out_path).resolve()
     if require_approved:
-        ensure_export_approved(rdir, health_report_path=health_report_path)
+        ensure_export_approved(rdir, health_report_path=health_report_path, user_signoff_path=user_signoff_path)
 
     rep_path = rdir / "rig-build-report.json"
     if not rep_path.is_file():
@@ -192,6 +193,7 @@ def export_default_package(
     render_previews: bool = True,
     preview_fps: int = 15,
     preview_max_frames: Optional[int] = None,
+    user_signoff_path: Optional[Union[str, Path]] = None,
     ffmpeg_bin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Export default deliverable: Spine 4.2 project zip + dark/light preview MP4s.
@@ -204,7 +206,7 @@ def export_default_package(
     """
     rdir = Path(rig_dir).resolve()
     odir = Path(out_dir).resolve()
-    ensure_export_approved(rdir, health_report_path=health_report_path)
+    ensure_export_approved(rdir, health_report_path=health_report_path, user_signoff_path=user_signoff_path)
     odir.mkdir(parents=True, exist_ok=True)
 
     rep_path = rdir / "rig-build-report.json"
@@ -229,6 +231,9 @@ def export_default_package(
         if hr_path.is_file():
             zf.write(hr_path, arcname="health-report.json")
             zip_entries.append("health-report.json")
+        if user_signoff_path is not None:
+            zf.write(user_signoff_path, arcname="user-signoff.json")
+            zip_entries.append("user-signoff.json")
         img_dir = rdir / "images"
         for img in sorted(img_dir.glob("*.png")):
             arc = f"images/{img.name}"
@@ -291,6 +296,7 @@ def export_transparent_web(
     *,
     fps: int = 30,
     max_frames: Optional[int] = None,
+    user_signoff_path: Optional[Union[str, Path]] = None,
     ffmpeg_bin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """On-demand transparent web video export:
@@ -301,7 +307,7 @@ def export_transparent_web(
     """
     rdir = Path(rig_dir).resolve()
     odir = Path(out_dir).resolve()
-    ensure_export_approved(rdir)
+    ensure_export_approved(rdir, user_signoff_path=user_signoff_path)
     odir.mkdir(parents=True, exist_ok=True)
 
     ff = ffmpeg_bin or find_ffmpeg()

@@ -302,11 +302,54 @@ def actual_review_binding(rig_dir: Union[str, Path], *, source_image: Union[str,
                                   analysis_file=analysis_file, job_id=job_id)[0]
 
 
+def _ensure_user_signoff(rdir, signoff_path, health_report_path=None):
+    """Explicit human acceptance overrides advisory QC, not broken artifacts."""
+    try:
+        signoff = json.loads(Path(signoff_path).read_text(encoding="utf-8"))
+        if (signoff.get("decision") != "pass" or not any(
+                isinstance(signoff.get(key), str) and signoff[key].strip()
+                for key in ("user_quote", "reviewer"))):
+            raise ExportApprovalError("人工签收必须明确 pass 并有用户原话或验收人。")
+        build = json.loads((rdir / "rig-build-report.json").read_text(encoding="utf-8"))
+        spine = json.loads((rdir / build["spineFile"]).read_text(encoding="utf-8"))
+        images = rdir / "images"
+        required = {slot["attachment"] for slot in spine["slots"]}
+        if not required or not spine.get("bones"):
+            raise ExportApprovalError("骨架或贴图清单为空。")
+        for name in required:
+            with Image.open(images / (name + ".png")) as image:
+                image.verify()
+        report_path = Path(health_report_path) if health_report_path else rdir / "health-report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+        if report_path.exists():
+            rest = report.get("hardGates", {}).get("rest_diff")
+            if not isinstance(rest, dict) or rest.get("passed") is not True:
+                raise ExportApprovalError("rest_diff 缺失或失败，不能以人工签收覆盖基础结构错误。")
+            checks = report.get("quality", {}).get("bindingMotion", {}).get("checks", {})
+            rigid_checks = [checks.get("rigidity"), checks.get("rigid"),
+                            report.get("structuralChecks", {}).get("weapon_rigidity")]
+            for check in rigid_checks:
+                if isinstance(check, dict) and (check.get("status") == "fail" or check.get("passed") is False):
+                    raise ExportApprovalError("刚体结构明确失败，不能以人工签收覆盖。")
+        # Preserve all machine findings. Human release is a separate decision.
+        return {**report, "userSignoff": signoff, "exportAuthorization": {
+            "basis": "explicit_user_signoff", "exportAllowed": True,
+            "signoffPath": str(Path(signoff_path).resolve()),
+            "materialMode": (build.get("moduleContract") or {}).get("materialMode", "source_sliced")}}
+    except ExportApprovalError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ExportApprovalError("人工签收或骨架/贴图/基础检查文件缺失、不可读。") from exc
+
+
 def ensure_export_approved(rig_dir: Union[str, Path], *,
-                           health_report_path: Union[str, Path, None] = None) -> Dict[str, Any]:
+                           health_report_path: Union[str, Path, None] = None,
+                           user_signoff_path: Union[str, Path, None] = None) -> Dict[str, Any]:
     """Public exporter gate; a stored boolean without an exact explicit review is insufficient."""
     from .module_quality import recompute_quality, RULES_VERSION
     rdir = Path(rig_dir).resolve()
+    if user_signoff_path is not None:
+        return _ensure_user_signoff(rdir, user_signoff_path, health_report_path)
     try:
         build_path = rdir / 'rig-build-report.json'
         if build_path.exists():

@@ -1,7 +1,7 @@
 """Compile Canvas material binding candidates using existing typed rig rules.
 
-This is not Studio intake or final QC: original-art review and the independent
-layer quality adapter remain required. Candidate export is explicitly blocked.
+This is not Studio intake or visual approval. Preview mode records placement
+warnings; formal export requires a separate explicit human signoff.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -21,22 +22,27 @@ from src.studio.vision_schema import VisionReviewRequired, rasterize_polygons
 from .module_rig import (_bone, _topological, _validate_rig_mask_placement, validate_module_rig_spec)
 
 
-def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
+def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
+                                  character="canvas_layers", strict_placement=True):
     """Create a new, explicit binding candidate. Never infer or move joint points."""
     import base64
+    advisory_notes = {}
+    placement_warnings = []
     allowed = {'pose_type', 'anatomy', 'modules', 'connections', 'uncertainties',
                'occlusions', 'input_issues', 'boundary_refinements'}
     if not isinstance(plan, dict) or set(plan) - allowed:
         raise ValueError('Canvas binding plan contains unsupported fields')
-    # Until these semantics are integrated, stop rather than rebuild them as
-    # empty lists and erase the caller's declared risks or intended corrections.
+    # Strict callers keep their original rejection behavior. Preview callers
+    # retain declarations as advisories without executing completion requests.
     if not isinstance(plan.get('occlusions', []), list):
         raise ValueError('occlusions must be a list')
     for key in ('input_issues', 'boundary_refinements'):
         value = plan.get(key, [])
         if not isinstance(value, list):
             raise ValueError(key + ' must be a list')
-        if value:
+        if value and not strict_placement:
+            advisory_notes[key] = copy.deepcopy(value)
+        elif value:
             raise VisionReviewRequired('Canvas绑定候选尚未支持声明 ' + key + '；保留原输入待审，不丢弃后继续。')
     root = Path(evidence_root).resolve()
     manifest_path = resolve_evidence_path(Path(parts_dir) / 'parts.json', root=root)
@@ -49,9 +55,10 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
     if hashlib.sha256(original.read_bytes()).hexdigest() != material['originalSourceSHA256']:
         raise ValueError('Original source changed after materialization')
     setup, _, _ = read_evidence_rgba(material['source'], material['sourceSHA256'], (w, h), root=root)
-    if plan.get('pose_type') != 'airborne':
+    if strict_placement and plan.get('pose_type') != 'airborne':
         raise VisionReviewRequired('Canvas绑定候选当前仅验证浮空主链；站立足锚须完成专门接入，不自动降级。')
-    if any(c.get('type') == 'foot_anchor' or (c.get('hidden_by') and c.get('type') != 'attachment')
+    if any((strict_placement and c.get('type') == 'foot_anchor') or
+           (c.get('hidden_by') and c.get('type') != 'attachment')
            for c in plan.get('connections', [])):
         raise VisionReviewRequired('Canvas绑定候选不假冒足锚或隐藏关节验证。')
     modules = copy.deepcopy(plan.get('modules', []))
@@ -69,7 +76,10 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
         if mid not in by_id or name in arrays:
             raise ValueError('Missing module or duplicate layer piece')
         m = by_id[mid]
-        if m.get('parent') != part['parent'] or m.get('motion_type') != part['kind']:
+        grounded_foot = (not strict_placement and plan.get('pose_type') == 'grounded'
+                         and m.get('role') == 'foot' and m.get('motion_type') == 'static'
+                         and part['kind'] == 'rigid')
+        if m.get('parent') != part['parent'] or (m.get('motion_type') != part['kind'] and not grounded_foot):
             raise ValueError('Binding cannot change material module parent or motion kind')
         if not np.allclose(np.asarray(m['pivot']) * [w, h], part['pivot'], atol=1e-5, rtol=0):
             raise ValueError('Binding cannot silently move the declared material pivot')
@@ -98,11 +108,21 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
         raw = buf.getvalue(); hashes[name] = hashlib.sha256(raw).hexdigest()
         m['pieces'].append({'id': name, 'draw_order': part['drawOrder'],
                             'mask_png_base64': base64.b64encode(raw).decode(), 'mask_sha256': hashes[name]})
+    declared_occlusions = copy.deepcopy(plan.get('occlusions', []))
+    if not strict_placement and declared_occlusions:
+        advisory_notes['occlusions'] = copy.deepcopy(declared_occlusions)
+        # Layers already contain their material. Do not execute legacy completion
+        # requests here; retain them verbatim as unresolved preview advisories.
+        for oc in declared_occlusions:
+            if oc.get('completion', 'none') != 'none':
+                oc['completion'] = 'none'
+                for key in ('provided', 'completion_polygons', 'derive_band'):
+                    oc.pop(key, None)
     contract = validate_module_contract({
         'version': 2, 'input_sha256': material['sourceSHA256'], 'image_size': [w, h],
-        'coord_mode': 'normalized', 'pose_type': 'airborne', 'anatomy': plan.get('anatomy'),
+        'coord_mode': 'normalized', 'pose_type': plan.get('pose_type'), 'anatomy': plan.get('anatomy'),
         'modules': modules, 'connections': copy.deepcopy(plan.get('connections', [])),
-        'occlusions': copy.deepcopy(plan.get('occlusions', [])), 'uncertainties': plan.get('uncertainties', []),
+        'occlusions': declared_occlusions, 'uncertainties': plan.get('uncertainties', []),
     }, input_sha256=material['sourceSHA256'], image_size=(w, h), material_mode='canvas_layers')
     modules = _topological(contract['modules'])
     body = np.zeros((h, w), bool)
@@ -114,13 +134,17 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
     target_arrays, occlusion_rows = {}, []
     for oc in contract['occlusions']:
         pair = (oc['front'], oc['back'])
+        if not strict_placement and pair not in referenced:
+            continue
         if pair not in referenced or oc['completion'] != 'none':
             raise VisionReviewRequired('Canvas occlusions当前仅支持隐藏附件引用的none声明，不能丢弃其他补全语义。')
         front, back = pair
         zone = rasterize_polygons(oc['polygons'], w, h)
         missing = zone & ~arrays[back]
         if not missing.any() or (missing & (alphas[front] == 0)).any():
-            raise VisionReviewRequired('显式隐藏附件域有静止未遮区域，不能裁掉缺口后授权。')
+            if strict_placement:
+                raise VisionReviewRequired('显式隐藏附件域有静止未遮区域，不能裁掉缺口后授权。')
+            placement_warnings.append({'occlusion': list(pair), 'message': '显式隐藏附件域有静止未遮区域，预览待人眼验收。'})
         target_arrays[pair] = missing
         occlusion_rows.append({'front': front, 'back': back, 'completionMode': 'none',
             'polygons': [[[x*w, y*h] for x, y in polygon] for polygon in oc['polygons']],
@@ -131,17 +155,36 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
     for c in contract['connections']:
         if not c.get('hidden_by'): continue
         target = [target_arrays[(ref['front'], ref['back'])] for ref in c['hidden_by']]
-        attachment_support[c['id']] = validate_hidden_attachment_region(
-            module_masks[c['a']], target, [c['point'][0]*w, c['point'][1]*h])
-    try:
-        _validate_rig_mask_placement(modules, contract['connections'], module_masks, w, h, body_h,
-                                     hidden_attachment_support=attachment_support)
-    except VisionReviewRequired as exc:
-        from src.studio.connection_diagnostics import inspect_canvas_connections
-        exc.code='CONNECTION_REVIEW_REQUIRED'
-        exc.details={'connection_diagnostics':inspect_canvas_connections(pdir,plan,evidence_root=root),
-                     'next_action':'canvas_handoff workflow inspect; source-based planning before repair'}
-        raise
+        try:
+            attachment_support[c['id']] = validate_hidden_attachment_region(
+                module_masks[c['a']], target, [c['point'][0]*w, c['point'][1]*h])
+        except VisionReviewRequired as exc:
+            if strict_placement: raise
+            placement_warnings.append({'connection': c['id'], 'message': str(exc)})
+    if strict_placement:
+        try:
+            _validate_rig_mask_placement(modules, contract['connections'], module_masks, w, h, body_h,
+                                         hidden_attachment_support=attachment_support)
+        except VisionReviewRequired as exc:
+            from src.studio.connection_diagnostics import inspect_canvas_connections
+            exc.code = 'CONNECTION_REVIEW_REQUIRED'
+            exc.details = {'connection_diagnostics': inspect_canvas_connections(pdir, plan, evidence_root=root),
+                           'next_action': 'canvas_handoff workflow inspect; source-based planning before repair'}
+            raise
+    else:
+        # Check modules and connections separately so all warnings survive,
+        # while original pivots, parent relationships and motion stay intact.
+        for module in modules:
+            try:
+                _validate_rig_mask_placement([module], [], module_masks, w, h, body_h)
+            except VisionReviewRequired as exc:
+                placement_warnings.append({'module': module['id'], 'message': str(exc)})
+        for connection in contract['connections']:
+            try:
+                _validate_rig_mask_placement([], [connection], module_masks, w, h, body_h,
+                                             hidden_attachment_support=attachment_support)
+            except VisionReviewRequired as exc:
+                placement_warnings.append({'connection': connection['id'], 'message': str(exc)})
     out = Path(out_dir).absolute()
     out.resolve().relative_to(root)
     if out.exists() or out.is_symlink(): raise ValueError('Use a new binding directory')
@@ -171,19 +214,31 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
             item = ({'type': 'mesh', 'recipe': 'chain', 'chain': 'bend_'+mid,
                      'cell': max(8, min(24, round(body_h/80)))} if soft else {'type': 'region', 'bone': driver})
             skin[name] = {**item, 'module_id': mid, 'piece_id': name, 'semantic_role': m['role']}
-        row = {'id': mid, 'role': m['role'], 'shape': m['motion_type'], 'parent': m['parent'],
+        row = {'id': mid, 'role': m['role'], 'shape': 'soft' if m['motion_type'] == 'soft' else 'rigid', 'parent': m['parent'],
                'bone': driver, 'pivot': pos, 'pieces': names, 'visibleMasks': [paths[n] for n in names],
                'maskSemantics': 'independent_layer_support_not_exclusive_source_ownership',
-               'motion': 'required', 'motionProfile': m['motion'], 'motionType': m['motion_type'],
+               'motion': 'static' if m['motion_type'] == 'static' else 'required', 'motionProfile': m['motion'], 'motionType': m['motion_type'],
                'softBones': soft, 'confidence': m['confidence'], 'side': m.get('side')}
+        if m.get('static_reason'): row['staticReason'] = m['static_reason']
         if soft: row['centerline'] = [point(p) for p in m['centerline']]
         if m.get('locked_root'): row['lockedRoot'] = True
         projection.append(row)
-    contacts = []
+    contacts, ik = [], []
+    by_bone = {b["name"]: b for b in bones}
     for c in contract['connections']:
         contact = {'id': c['id'], 'type': c['type'], **{side: {
             'module': c[side], 'piece': next(m for m in projection if m['id']==c[side])['pieces'][0],
             'point': point(c['point'])} for side in ('a', 'b')}}
+        if c['type'] == 'foot_anchor':
+            upper, lower = c['chain']; b = c['b']
+            up, low, target = by_bone[_bone(upper)], by_bone[_bone(lower)], by_bone[_bone(b)]
+            up['aim'], low['aim'] = low['pos'], target['pos']
+            if min(math.dist(up['pos'], low['pos']), math.dist(low['pos'], target['pos'])) < 1.0:
+                raise VisionReviewRequired('刚体足锚肢段退化，不能生成足锚。')
+            ik.append({'name': 'contact_'+c['id'], 'bones': [_bone(upper), _bone(lower)], 'target': _bone(b)})
+            contact.update(type='foot', world=point(c['point']), chain=[_bone(upper), _bone(lower)])
+            contact['a'] = {'module': lower, 'piece': next(m for m in projection if m['id'] == lower)['pieces'][0],
+                            'point': point(c['point'])}
         if c.get('hidden_by'): contact['hiddenBy'] = copy.deepcopy(c['hidden_by'])
         contacts.append(contact)
     projected = {'sourceVersion': 2, 'version': 1, 'ruleVersion': MODULE_RULE_VERSION,
@@ -192,10 +247,12 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root):
         'canvas': [w, h], 'modules': projection, 'requiredModules': list(by_id), 'contacts': contacts,
         'occlusions': occlusion_rows, 'visibleMaskSHA256': hashes,
         'partsJsonSHA256': hashlib.sha256(manifest_bytes).hexdigest(),
-        'semanticFidelity': 'pending_original_art_and_full_loop_review'}
-    rig = {'character': 'canvas_layers', 'duration': 8., 'fps': 30, 'key_step': .125,
-           'origin': [w/2., float(h)], 'body_height_px': body_h, 'pose_type': 'airborne',
-           'bones': bones, 'chains': chains, 'skin': skin, 'ik': [],
+        'semanticFidelity': 'pending_original_art_and_full_loop_review',
+        'advisoryNotes': advisory_notes}
+    rig = {'character': character, 'duration': 8., 'fps': 30, 'key_step': .125,
+           'origin': [w/2., float(h)], 'body_height_px': body_h, 'pose_type': contract['pose_type'],
+           'bones': bones, 'chains': chains, 'skin': skin, 'ik': ik,
+           'placementWarnings': placement_warnings,
            'moduleContract': projected, 'preserve_visual_joints': True}
     validate_module_rig_spec(rig)
     (out/'rig-spec.json').write_text(json.dumps(rig, ensure_ascii=False, indent=2))
