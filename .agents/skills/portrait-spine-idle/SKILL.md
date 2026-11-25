@@ -1,6 +1,6 @@
 ---
 name: portrait-spine-idle
-description: 将角色立绘经一次 Canvas 粗拆、净化与补底制作成 Spine 待机动画，先预览再微调、签收导出。用于立绘制作与返修。
+description: 触发词「spine动画」（用户说“spine动画”或“Spine动画”时直接触发）。在对话中接收立绘素材，经一次 Canvas 粗拆、净化与原图补底，产出 8 秒 Spine 待机预览，支持本地网页交互微调或对话反馈后签收导出。
 ---
 
 # Portrait Spine Idle

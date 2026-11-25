@@ -1,6 +1,6 @@
 interface:
-  display_name: "Portrait Spine Idle"
-  short_description: "一次画布粗拆后先出八秒 Spine 预览，自动净化补底、局部微调并人工签收导出"
-  default_prompt: "用 $portrait-spine-idle 将这张立绘经一次 Canvas 粗拆、净化与原图补底制作成八秒预览，保持硬物保形和自然软摆，只修动态穿帮，验收后导出。"
+  display_name: "Spine动画"
+  short_description: "触发词「spine动画」：对话投喂立绘，一次画布粗拆并自动净化补底，出八秒预览并在网页/对话微调后导出"
+  default_prompt: "spine动画：将这张立绘经一次 Canvas 粗拆、净化与原图补底制作成八秒 Spine 待机预览，保持硬物保形和自然软摆，只修动态穿帮，验收后导出。"
 policy:
   allow_implicit_invocation: true
