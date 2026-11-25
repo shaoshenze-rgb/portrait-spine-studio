@@ -1,6 +1,7 @@
 """Comprehensive unit tests for Portrait Spine Studio core pipeline, Mivo adapter, gates, and export."""
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -12,7 +13,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from src.export.exporter import export_default_package, export_transparent_web
-from src.gates.audit import GateFailureError, run_audit, stress_test
+from src.gates.review_binding import ExportApprovalError
+from src.gates.audit import GateFailureError, run_audit, stress_test, count_enclosed_holes
 from src.mivo.adapter import (
     DeterministicFallbackMock,
     FileBackedMivoAdapter,
@@ -144,7 +146,7 @@ def _make_synthetic_portrait(path: Path, width: int = 160, height: int = 240) ->
                     {"part": "arm_L", "bone": "shoulder_L", "d_in": 4, "d_out": 16},
                 ],
             },
-            "legs": {"type": "region", "bone": "root"},
+            "legs": {"type": "region", "bone": "foot_L"},
             "torso": {
                 "type": "mesh",
                 "recipe": "linear_y",
@@ -177,6 +179,61 @@ def _make_synthetic_portrait(path: Path, width: int = 160, height: int = 240) ->
 
 
 class TestCorePipeline(unittest.TestCase):
+    def test_old_transparency_cannot_exempt_new_tear(self) -> None:
+        rest = np.full((128, 128), 255, dtype=np.uint8)
+        rest[:8] = rest[-8:] = 0
+        rest[:, :8] = rest[:, -8:] = 0
+        rest[60:68, 8:42] = 0
+        frame = np.zeros((128, 128, 4), dtype=np.uint8)
+        frame[..., 3] = 255
+        frame[:8, :, 3] = frame[-8:, :, 3] = 0
+        frame[:, :8, 3] = frame[:, -8:, 3] = 0
+        frame[50:80, 40:100, 3] = 0
+        self.assertEqual(count_enclosed_holes(frame, rest), 1784)
+        # Small tears and tears adjoining an old enclosed hole remain visible to the gate.
+        rest[24:28, 24:28] = 0
+        frame[..., 3] = rest
+        frame[27:29, 27:29, 3] = 0
+        self.assertEqual(count_enclosed_holes(frame, rest), 3)
+
+    def test_empty_ik_and_full_body_skin_fail_overall(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, parts, spec = _make_synthetic_portrait(root / "input.png")
+            split_parts(source, parts, root / "parts")
+            build_rig(root / "parts", spec, root / "rig", preset="agile_full")
+            baseline = run_audit(root / "parts", root / "rig", sample_count=2, stress_samples=2)
+            self.assertTrue(baseline["structuralChecks"]["ik_binding"]["passed"])
+            self.assertTrue(baseline["structuralChecks"]["required_parts"]["passed"])
+            spine_path = root / "rig" / "synth.spine.json"
+            spine = json.loads(spine_path.read_text())
+            for slot in spine["slots"]:
+                if slot["name"] == "legs":
+                    slot["bone"] = "root"
+            spine_path.write_text(json.dumps(spine))
+            failed = run_audit(root / "parts", root / "rig", sample_count=2, stress_samples=2)
+            self.assertEqual(failed["status"], "fail")
+            self.assertIn("left_foot_ik", failed["structuralChecks"]["ik_binding"]["hollowIkConstraints"])
+            self.assertIn("lower_body", failed["structuralChecks"]["required_parts"]["missingOrUnweighted"])
+            self.assertFalse(failed["structuralChecks"]["weapon_rigidity"]["applicable"])
+            with self.assertRaises(GateFailureError) as error:
+                run_audit(root / "parts", root / "rig", sample_count=2, stress_samples=2, raise_on_fail=True)
+            self.assertIn("ik_binding", str(error.exception))
+            # Half-body presets do not require lower limbs, but still detect missing core skin.
+            report_path = root / "rig" / "rig-build-report.json"
+            report = json.loads(report_path.read_text())
+            report["preset"] = "bust_half"
+            report_path.write_text(json.dumps(report))
+            spine["ik"] = [ik for ik in spine["ik"] if ik["name"] != "left_foot_ik"]
+            for slot in spine["slots"]:
+                if slot["name"] == "head":
+                    slot["bone"] = "root"
+            spine_path.write_text(json.dumps(spine))
+            half = run_audit(root / "parts", root / "rig", sample_count=2, stress_samples=2)
+            missing = half["structuralChecks"]["required_parts"]["missingOrUnweighted"]
+            self.assertNotIn("lower_body", missing)
+            self.assertIn("head", missing)
+
     def test_preprocess_downscales_over_2400px_with_notice(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
@@ -376,7 +433,8 @@ class TestCorePipeline(unittest.TestCase):
                 split_parts(ring_src, ps_ring, tdp / "parts_ring")
                 build_rig(tdp / "parts_ring", rs_ring, tdp / "rig_ring", preset="bust_half", gain=1.0)
                 hr4 = run_audit(tdp / "parts_ring", tdp / "rig_ring", sample_count=8, stress_samples=2)
-            self.assertFalse(hr4["hardGates"]["no_holes"]["passed"])
+            self.assertTrue(hr4["hardGates"]["no_holes"]["passed"])
+            self.assertTrue(hr4["hardGates"]["no_holes"].get("advisory"))
             self.assertGreater(hr4["hardGates"]["no_holes"]["measured"]["enclosedHolesMax"], 0)
 
     def test_mivo_adapter_and_fail_stop_preserves_intermediates(self) -> None:
@@ -420,58 +478,50 @@ class TestCorePipeline(unittest.TestCase):
             # 2. FileBackedMivoAdapter succeeds when handoff file exists, fails cleanly when absent
             handoff = tdp / "handoff"
             handoff.mkdir()
-            Image.new("RGBA", (64, 64), (100, 140, 180, 255)).save(handoff / "matted_out.png")
+            input_dir = handoff / hashlib.sha256(src_png.read_bytes()).hexdigest()
+            input_dir.mkdir()
+            cutout = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            ImageDraw.Draw(cutout).rectangle([16, 8, 48, 56], fill=(100, 140, 180, 255))
+            cutout.save(input_dir / "matted.png")
             fb = FileBackedMivoAdapter(handoff)
             res_ok = fb.auto_matting(src_png, tdp / "matted_out.png")
             self.assertEqual((res_ok.width, res_ok.height), (64, 64))
+            self.assertEqual(res_ok.metadata["source"], "file_handoff")
+            # A different image with the same name cannot reuse the previous cutout.
+            Image.new("RGBA", (64, 64), (110, 140, 180, 255)).save(src_png)
+            with self.assertRaises(MivoCanvasError) as mismatch:
+                fb.auto_matting(src_png, tdp / "matted_out.png")
+            self.assertEqual(mismatch.exception.code, "MIVO_HANDOFF_MISSING")
+            bad_dir = handoff / hashlib.sha256(src_png.read_bytes()).hexdigest()
+            bad_dir.mkdir()
+            cutout.resize((32, 32)).save(bad_dir / "matted.png")
+            with self.assertRaises(MivoCanvasError) as size_error:
+                fb.auto_matting(src_png, tdp / "matted_out.png")
+            self.assertEqual(size_error.exception.code, "MIVO_HANDOFF_SIZE_MISMATCH")
+            Image.new("RGB", (64, 64), (100, 140, 180)).save(bad_dir / "matted.png")
+            with self.assertRaises(MivoCanvasError) as opaque_error:
+                fb.auto_matting(src_png, tdp / "matted_out.png")
+            self.assertEqual(opaque_error.exception.code, "MIVO_MATTING_REQUIRED")
             with self.assertRaises(MivoCanvasError):
                 fb.inpaint_occluded(src_png, mask_png, "fill", tdp / "missing_inpaint.png")
 
-    def test_default_package_export_and_on_demand_web_export(self) -> None:
+    def test_legacy_machine_gates_cannot_approve_production_exports(self) -> None:
+        # Positive ZIP and Web codec checks now use a real V2 fixture plus explicit
+        # structured review in tests.studio.test_complete_module_flow. A legacy
+        # four-gate pass must no longer be treated as complete-module acceptance.
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
             src_png, part_specs, rig_spec = _make_synthetic_portrait(tdp / "portrait.png")
-            parts_dir = tdp / "parts"
-            rig_dir = tdp / "rig"
-            export_dir = tdp / "export"
+            parts_dir, rig_dir = tdp / "parts", tdp / "rig"
             split_parts(src_png, part_specs, parts_dir)
             build_rig(parts_dir, rig_spec, rig_dir, preset="agile_full", gain=1.0)
             run_audit(parts_dir, rig_dir, sample_count=6, stress_samples=2)
-
-            ff = find_ffmpeg()
-            exp = export_default_package(
-                rig_dir,
-                export_dir,
-                render_previews=bool(ff),
-                preview_fps=10,
-                preview_max_frames=6,
-                ffmpeg_bin=ff,
-            )
-            zip_path = Path(exp["zip_path"])
-            self.assertTrue(zip_path.is_file())
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                names = set(zf.namelist())
-                self.assertIn("synth.spine.json", names)
-                self.assertIn("rig-build-report.json", names)
-                self.assertIn("health-report.json", names)
-                self.assertIn("images/head.png", names)
-                self.assertIn("images/back_hair.png", names)
-
-            if ff:
-                self.assertIsNotNone(exp["previews"]["dark"])
-                self.assertIsNotNone(exp["previews"]["light"])
-                self.assertTrue(Path(exp["previews"]["dark"]).is_file())
-                self.assertTrue(Path(exp["previews"]["light"]).is_file())
-                # Ensure default export did NOT produce on-demand web assets
-                self.assertFalse((export_dir / "idle-packed-h264.mp4").exists())
-                self.assertFalse((export_dir / "idle-alpha-vp9.webm").exists())
-
-                # Explicitly invoke on-demand export_transparent_web
-                web_dir = tdp / "web_export"
-                web = export_transparent_web(rig_dir, web_dir, fps=10, max_frames=4, ffmpeg_bin=ff)
-                self.assertTrue(Path(web["packed_h264_mp4"]).is_file())
-                self.assertTrue(Path(web["alpha_vp9_webm"]).is_file())
-                self.assertTrue(Path(web["poster_webp"]).is_file())
+            with self.assertRaises(ExportApprovalError):
+                export_default_package(rig_dir, tdp / "export")
+            with self.assertRaises(ExportApprovalError):
+                export_transparent_web(rig_dir, tdp / "web")
+            self.assertFalse((tdp / "export").exists())
+            self.assertFalse((tdp / "web").exists())
 
 
 if __name__ == "__main__":

@@ -63,16 +63,47 @@ PRESETS: Dict[str, Dict[str, Any]] = {
                 "rotate": [(0.40, 1, 1.10), (0.12, 2, HALF_PI + 0.90)],
             },
             "shoulder_R": {
-                "rotate": [(0.30, 1, 0.55 + math.pi), (0.40, 2, HALF_PI + 0.50)],
+                "rotate": _p2p_terms([(1, -2.6, 0.45), (2, 1.4, 0.40)]),
             },
             "elbow_R": {
-                "rotate": [(0.22, 1, 0.85 + math.pi), (0.32, 2, HALF_PI + 0.85)],
+                "rotate": _p2p_terms([(1, -3.0, 0.75), (2, 1.6, 0.70)]),
             },
             "hand_R": {
-                "rotate": _p2p_terms([(1, 3.6, 0.95), (2, 1.4, 0.90)]),
+                "rotate": _p2p_terms([(1, 3.6, 1.00), (2, 1.4, 0.95)]),
+            },
+            "weapon_R": {
+                "rotate": _p2p_terms([(1, 2.2, 1.25), (2, 0.9, 1.15)]),
             },
             "shoulder_L": {
+                "rotate": _p2p_terms([(1, 2.4, 0.55), (2, -1.3, 0.45)]),
                 "ty": [(-1.70, 2, HALF_PI)],
+            },
+            "elbow_L": {
+                "rotate": _p2p_terms([(1, 2.8, 0.85), (2, -1.5, 0.75)]),
+            },
+            "hand_L": {
+                "rotate": _p2p_terms([(1, -3.2, 1.10), (2, 1.3, 1.00)]),
+            },
+            "weapon_L": {
+                "rotate": _p2p_terms([(1, -2.0, 1.35), (2, 0.8, 1.20)]),
+            },
+            "thigh_L": {
+                "rotate": _p2p_terms([(1, 2.8, 0.30), (2, 1.2, 0.25)]),
+            },
+            "shin_L": {
+                "rotate": _p2p_terms([(1, -3.4, 0.65), (2, 1.5, 0.55)]),
+            },
+            "foot_L": {
+                "rotate": _p2p_terms([(1, 3.0, 0.95), (2, 1.2, 0.85)]),
+            },
+            "thigh_R": {
+                "rotate": _p2p_terms([(1, -2.6, 0.40), (2, 1.1, 0.30)]),
+            },
+            "shin_R": {
+                "rotate": _p2p_terms([(1, 3.2, 0.75), (2, -1.4, 0.60)]),
+            },
+            "foot_R": {
+                "rotate": _p2p_terms([(1, -2.8, 1.05), (2, 1.1, 0.90)]),
             },
             "pouch": {
                 "rotate": [(0.30, 1, 1.00), (0.10, 2, HALF_PI + 0.80)],
@@ -131,6 +162,48 @@ PRESETS: Dict[str, Dict[str, Any]] = {
                 "tx": _p2p_terms([(1, 32.0, 0.35)]),
                 "ty": _p2p_terms([(2, 13.0, 0.35)]),
                 "rotate": _p2p_terms([(1, -2.2, 0.45), (2, -0.7, 0.50)]),
+            },
+            "shoulder_R": {
+                "rotate": _p2p_terms([(1, -2.0, 0.45), (2, 1.0, 0.40)]),
+            },
+            "elbow_R": {
+                "rotate": _p2p_terms([(1, -2.4, 0.80), (2, 1.2, 0.70)]),
+            },
+            "hand_R": {
+                "rotate": _p2p_terms([(1, 2.6, 1.05), (2, 1.0, 0.95)]),
+            },
+            "weapon_R": {
+                "rotate": _p2p_terms([(1, 1.8, 1.30), (2, 0.7, 1.20)]),
+            },
+            "shoulder_L": {
+                "rotate": _p2p_terms([(1, 1.9, 0.55), (2, -1.0, 0.45)]),
+            },
+            "elbow_L": {
+                "rotate": _p2p_terms([(1, 2.2, 0.85), (2, -1.1, 0.75)]),
+            },
+            "hand_L": {
+                "rotate": _p2p_terms([(1, -2.4, 1.15), (2, 1.0, 1.00)]),
+            },
+            "weapon_L": {
+                "rotate": _p2p_terms([(1, -1.6, 1.35), (2, 0.6, 1.25)]),
+            },
+            "thigh_L": {
+                "rotate": _p2p_terms([(1, 2.0, 0.30), (2, 0.9, 0.25)]),
+            },
+            "shin_L": {
+                "rotate": _p2p_terms([(1, -2.4, 0.65), (2, 1.1, 0.55)]),
+            },
+            "foot_L": {
+                "rotate": _p2p_terms([(1, 2.2, 0.95), (2, 0.9, 0.85)]),
+            },
+            "thigh_R": {
+                "rotate": _p2p_terms([(1, -1.9, 0.40), (2, 0.8, 0.30)]),
+            },
+            "shin_R": {
+                "rotate": _p2p_terms([(1, 2.2, 0.75), (2, -1.0, 0.60)]),
+            },
+            "foot_R": {
+                "rotate": _p2p_terms([(1, -2.0, 1.05), (2, 0.8, 0.90)]),
             },
             "earring": {
                 "rotate": _p2p_terms([(1, 7.0, 0.60), (2, 2.8, 0.65)]),
@@ -227,21 +300,35 @@ def _classify_chain(chain_name: str) -> str:
     return "default"
 
 
+ROLE_DEFAULT_MOTION: Dict[str, Dict[str, Any]] = {
+    "head": {"rotate": _p2p_terms([(1, 1.6, 0.60), (2, 0.45, 0.55)])},
+    "body": {"rotate": _p2p_terms([(1, 1.0, 0.25)])},
+    "arm": {"rotate": _p2p_terms([(1, 2.4, 0.55), (2, 1.2, 0.50)])},
+    "hand": {"rotate": _p2p_terms([(1, 3.0, 0.95), (2, 1.2, 0.90)])},
+    "weapon": {"rotate": _p2p_terms([(1, 1.8, 1.25), (2, 0.7, 1.15)])},
+    "leg": {"rotate": _p2p_terms([(1, 2.4, 0.45), (2, 1.0, 0.40)])},
+    "soft": {"rotate": _p2p_terms([(1, 3.6, 0.70), (2, 1.4, 0.65)])},
+}
+
+
 def resolve_preset_motion(
     preset_name: str,
     bone_names: Iterable[str],
     chains: Optional[Dict[str, List[str]]] = None,
     overrides: Optional[Dict[str, Dict[str, Any]]] = None,
     duration: Optional[float] = None,
+    bone_roles: Optional[Dict[str, str]] = None,
+    ik_driven_bones: Optional[Iterable[str]] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Build per-bone harmonic motion table from a preset, chain waves, and explicit overrides."""
+    """Build per-bone harmonic motion table from a preset, chain waves, role fallbacks, and overrides."""
     preset = get_preset(preset_name)
     dur = float(duration or preset["duration"])
     valid_bones = set(bone_names)
+    ik_set = set(ik_driven_bones or ())
     motion: Dict[str, Dict[str, Any]] = {}
 
     for bname, channels in preset["bones"].items():
-        if bname in valid_bones:
+        if bname in valid_bones and bname not in ik_set:
             motion[bname] = copy.deepcopy(channels)
 
     if chains:
@@ -249,7 +336,7 @@ def resolve_preset_motion(
         for cname, link_bones in chains.items():
             wv = waves.get(cname) or waves.get(_classify_chain(cname)) or waves["default"]
             for i, bn in enumerate(link_bones):
-                if bn not in valid_bones:
+                if bn not in valid_bones or bn in ik_set:
                     continue
                 lag = wv["base_lag_s"] + i * wv["lag_per_link_s"]
                 p2p = wv["root_p2p"] * (wv["growth"] ** i)
@@ -259,6 +346,12 @@ def resolve_preset_motion(
                         for k, factor in wv["k"]
                     ]
                 }
+
+    # Give user-added custom bones a sensible role-matched rhythm automatically
+    if bone_roles:
+        for bname, role in bone_roles.items():
+            if bname in valid_bones and bname not in motion and bname not in ik_set and role in ROLE_DEFAULT_MOTION:
+                motion[bname] = copy.deepcopy(ROLE_DEFAULT_MOTION[role])
 
     if overrides:
         for bname, ch in overrides.items():

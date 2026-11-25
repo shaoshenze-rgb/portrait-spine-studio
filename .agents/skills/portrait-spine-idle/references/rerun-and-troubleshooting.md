@@ -1,35 +1,59 @@
-# Minimal Rerun & Troubleshooting Reference
+# 完整模块的修改与故障处理
 
-## 1. Minimal-Rerun Decision Table
+先区分输入缺陷、语义归属、接触遮挡和动作表现，再选择最低重跑层。接口和V2字段以[使用指南](../../../../docs/usage.md)及[模块合同](../../../../docs/contracts/complete-modules.md)为准。
 
-Always classify a user's natural-language feedback into Layer A, B, or C before re-running. Never discard `parts/` or re-run Mivo matting when only animation or rigging parameters changed.
+| 变化 | 当前正确路径 |
+| --- | --- |
+| 全局幅度或统一动作预设 | 修改合法gain/预设，重建动作并重新QC；旧视觉通过失效。不能归零或超过统一上限。 |
+| 模块边界、刚软类型、父级/锚点、姿态 | 回到对话实际看图更新V2，再apply-analysis；绑定页再次确认。 |
+| 握持、双端连接、遮挡露底 | 复核完整连接与前后关系；仅有已声明遮挡形状的窄带可local补全，无法表达或补全不可靠时待审。 |
+| 白边、输入噪点、背景残留 | 记录input_issues，保留当前原件，不能删alpha、伪装效果组或归给人体。 |
+| 未支持主鱼尾/闭环结构 | 明确合同能力与真实未决，不能强造双腿、改半身删掉内容。 |
 
-| Layer | Natural-Language Signals | Files / Fields Modified | Command Flag | Executed Stages | Cache / Reuse Guarantee |
-| --- | --- | --- | --- | --- | --- |
-| **A (Motion)** | Amplitude, speed/phase feel, softer breathing, stronger hair/tail wave, global `gain`, preset switch | `rig_spec.motion`, `--gain`, `--preset` | `--partial-rerun motion` | `build_rig` -> `audit` -> `export` -> `preview.html` | Reuses existing `preprocessed.png` and `parts/` untouched |
-| **B (Rig / IK / Weights)** | Anchor lock ("左手固定别动"), IK bend flip ("膝盖/手肘反折"), seam sliding ("袖口拉扯"), bone pivot tweak | `rig_spec.bones`, `rig_spec.chains`, `rig_spec.ik`, `rig_spec.skin` (`contact_dist`, `cell`, `ranges`) | `--partial-rerun rig` | `build_rig` -> `audit` -> `export` -> `preview.html` | Reuses existing `preprocessed.png` and `parts/` untouched |
-| **C (Split / Inpaint)** | Split new part ("把右侧披风拆出来"), fix occlusion tear/hole, refine boundary seam or colour guide | `parts_spec` (`own`, `band`, `depth`, `guides`, `centerline`) + matching `rig_spec` entries | `--partial-rerun split` | `split_parts` -> `build_rig` -> `audit` -> `export` -> `preview.html` | Unaffected parts hit SHA-256 fill cache in `parts/work/fill_<name>_<hash>.npy` |
+V2的硬模块保持统一世界变换，软模块只轻弯；不得用旧contact_dist混权、linear_y人体变形、IK stretch或按颜色/距离重新归属。旧V1测试可显式诊断，但状态和导出不能冒充完整模块生产通过。
 
-## 2. Three Core Preset Baselines
+## 常见停点
 
-All presets generate zero-at-start 8.0s periodic loops (`fps=30`, `key_step=0.125s` by default) scaled by global `gain`:
+- MODULE_CONTRACT_REQUIRED / MODULE_PLAN_REQUIRED：生产需要V2完整模块，重新看本次原图规划；不把旧关键点包装成modules。
+- INPUT_REVIEW_REQUIRED：源图已发现明确输入缺陷，先解决或保留待审，不能假作模型分件成功。
+- VISION_REVIEW_REQUIRED：低置信、未覆盖、冲突、未支持关系或不可可靠补全。根据实际图修正，不扩大兜底。
+- MODULE_REPLAN_REQUIRED：旧骨级编辑不能改变完整模块合同，回对话修改规划。
+- MODULE_CONTACT_UNREACHABLE：硬体足锚不允许伸长；检查真实关节与统一动作可达性，不挪点或冻结整人。
+- QUALITY_REVIEW_REQUIRED：部分检查尚未覆盖或需视觉判断，不是已通过。
+- EXPORT_APPROVAL_REQUIRED：缺少V2完整机器/视觉通过，或当前文件与已观察版本不一致；重新检查，而不是手填exportAllowed。
 
-| Preset | Best For | Key Motion Traits | Soft Displacement Ranges (`px`, advisory) |
-| --- | --- | --- | --- |
-| `agile_full` | Nimble full-body characters (e.g. Erika) | 8s hip sway (`10px`), 4s breath (`4.4px`), lively ear twitch & hair/tail waves | `head`: 4-28, `chest`: 3-20, `hips`: 2-18, `hair_tip`: 8-65 |
-| `heavy_weapon_full` | Grounded heavy-weapon full-body characters (e.g. Rain) | Larger hip & `weapon_ctrl` sway (`22px`/`32px`), counter-rotated spine/neck, deep mane/sash waves | `head`: 6-38, `chest`: 6-34, `hips`: 8-36, `hair_tip`: 12-85 |
-| `bust_half` | Half-body / bust portraits without legs | Anchored lower torso/hips (`1.6px`), refined ribcage breath expansion, gentle head & hair drift | `head`: 2.5-22, `chest`: 2-14, `hips`: 0-8, `hair_tip`: 5-48 |
+quality中的inputOwnership/bindingMotion/machineQC/visual/overall分别回读。尤其不能把原孔随动都算新裂，也不能将新裂口连接到旧孔后整片豁免。硬体的实际最终变换、软形变和纹理、接触扫掠都要有证据；实际硬门禁与通用反例保留；negativeSpace/no_holes 以及软体数值应变按现役规则记录为提示项，翻面、退化、刚体变形、真实未补区域外露仍不能放行。
 
-## 3. Troubleshooting the 4 Hard Gates
+run_e2e.py只是已有规格的开发诊断入口：允许检查当前骨架与失败HTML，默认导出同样受真实文件和显式视觉批准约束。它不代替当前对话看图、绑定确认或最终视觉观察，不提供跳QC导出开关。
 
-| Gate | Threshold | Common Root Cause | Targeted Fix (Minimal Layer) |
-| --- | --- | --- | --- |
-| **`rest_diff`** | `maxRGBA <= 2` | Semi-transparent pixels dropped by `own` polygons, or overlapping feather ramp gaps | **Layer C**: Expand `own` coverage so every `alpha > 0` pixel is owned; verify `drawOrder` back-to-front. |
-| **`setup_identity`** | `frame0VsSetup == 0`, `frameLoopEndVsSetup == 0`, `setupVsPartsMaxRGBA <= 2` | Non-zero animation offset at `t=0` / `t=duration`, or custom keyframe breaking periodic zero-at-start formula | **Layer A/B**: Ensure all motion channels use harmonic zero-at-start terms (or explicit `0` at `t=0` and `t=duration`), and re-check IK target setup position equals bone tip at rest. |
-| **`no_holes`** | `enclosedHolesMax == 0` (loop + `1.6x` stress) | Foreground part shifts beyond underlying part's `depth` fill, or missing occluded fill under neck/arm/hair | **Layer C** (increase `depth` / add `guides` or Mivo `inpaint_occluded`) or **Layer A** (reduce excessive translation/rotation amplitude). |
-| **`anchor_stability`** | `maxDriftPx <= 1.5` | IK target drifts beyond `L1 + L2` reach of 2-bone chain (e.g. hip translation too large for arm length) or wrong `bendPositive` | **Layer B** (adjust IK target parent/position or `bendPositive`) or **Layer A** (reduce parent bone `tx`/`ty` so target stays within reach). |
+已有去底结果必须复用原请求原件；网络/下载中断先查已存在结果，不重复收费。所有本轮生成物、记录、缓存放项目内，不修改Cindy凭证或安装专用连接插件。
 
-## 4. Mivo Canvas & Fail-Stop Recovery
+## 遮挡移开后的完整性
 
-- On any failure, `StageRunner` writes `<out_dir>/stage-error.json` with `failedStage`, `errorCode`, `message`, `preservedIntermediates`, and `recoveryActions: ["retry", "discard"]`.
-- Never delete prior intermediates automatically; inspect `preservedIntermediates`, fix the failing input or spec, and rerun from the appropriate layer.
+验收目标是最终画面正常，不是所有隐藏材质都完整。若整个实际循环中，明确的前层始终遮住未补区域，则无需补全；只处理真正会露出的缺口。对被围巾等遮住的刚体自然关节，使用现有 occlusions 并由 connection.hidden_by 精确引用，保留原关节点，按 hiddenJointCoverage 的完整输出帧时刻检查遮挡是否持续成立，同时检查父子漂移。不得用任意第三层、源图不透明或单帧截图代替动态证据。声明或数据不可靠时仍待审，不以“无需补全”豁免重要错位和实际露底。
+
+修复优先处理正常尺寸播放中明显影响躯干、四肢、头部/头发、武器及关键关节的错归、断开或错位。零星碎边、抗锯齿和不影响主要轮廓/动作的细小残片记录在观察说明中，不把逐像素清零当成收尾条件；现有保形、翻面、接触、可见像素保真硬检查不因此放宽。没有新的明确需求时，不新增模块类别、编辑功能或生成通路。
+
+人工调整归属时，每一步记录来源/目标模块、选区与排除区、各来源转移像素数、操作前后掩码SHA；将调整记录从原掩码回放，逐件与最终掩码比较。包括恢复腰甲等后置操作，不能只记录主循环内的几笔修改。未记录差异必须先补证，不能直接交付。
+
+头发、披风饰边和肩甲靠连续轮廓与结构归属区分，不按“白/亮”整框迁移。手背金指节随手，胸前金纹随躯干；自然腰布的竖褶不能仅因颜色接近裤料就改挂腿。确认关键关节点仍有效时保留其位置，不因一次归属修改而把所有关节按质心重新移动。
+
+同时检查真实前后层级：腰甲覆盖腰布时，腰布的补底必须处于腰甲后面。互斥可见掩码能让错误 draw_order 在静止时也拼出原图，因此 rest_diff=0 不能证明层级正确；先改现有 draw_order/occlusions，再检查移动后的连接，不能靠把裤料塞进软腰布遮住裂口。
+
+动态探针必须标明坐标系和统计域：固定画面ROI、随躯干移动的旧缺口区域、随每个实际部件/软链运动的材质点是不同检查。软网格用其实际三角形/骨链映射；原始半透明边缘与原不透明材质分账。材质点未丢失仍不等于相邻层之间没有空隙，要同时核对已登记的隐藏区域与正常画面的重要结构。不能把不同域的“0”与非零计数混写成同一成功结论。
+
+遮挡掩码是最终验收依赖，即使在rig目录外也必须留在同一任务根内并纳入artifact绑定。修改、替换或搬动sourceHiddenTarget/remainingHidden等引用后，重新审计与视觉绑定；不要只更新报告里的SHA或信任旧health的pass。导出入口会重新核对路径、尺寸、字节与合同区域，越界路径/符号链接不能作证据。
+
+同一边界也适用于原图、分析和验收报告。跨任务复用输入走prepare的正常复制/摘要核对，不能把外部同字节路径塞进旧health沿用批准；实际文件位置与字节都绑定到本次复核。旧诊断引用外部原件时保留诊断状态，不私改paths伪造迁移完成。
+
+不要用rig内部的文件/目录符号链接复用贴图。正式绑定会在扫描文件前拒绝这些链接，并核对骨架实际images/attachment路径；正常构建应输出真实、任务内的贴图文件。
+
+当用户指出胯部截断、腿根缺失或衣物摆开露灰，先保留失败视频和对应输入摘要，沿原图 → 可见掩码 → hidden 目标 → 实际贴图 → 动态帧核对。
+
+1. 在同坐标原图与归属叠印上检查完整物件。硬甲或裤腿出现矩形截边、跨模块碎片时，先修规划；填色不能替代正确分件。人工纠正属于该图片的显式输入，保留前后掩码及理由，不写角色 ID 分支或声称全自动成功。
+2. `occlusionDeclarations` 提示未声明同级边界时，回到原图规划，不通过新增假父子连接消除提示。分开记录连接与遮挡：只有父子连接不能表达腰布覆盖同级腿部。`occlusions.polygons` 表达后层确实应存在的隐藏范围；`completion_polygons` 仅限制本次生成的子范围。不得为通过检查缩小预期隐藏范围。
+3. 使用现有 local 补全后检查真实贴图 alpha、轮廓与纹理，不只检查 hidden mask 数量。补全范围不足或语义不可推断时待审，不复制前景衣物去充当腿、不扩到空中产生悬空色块。
+4. 保留动作节奏及幅值，在完整周期定位各遮挡自己的最大暴露时刻。输出正常全图视频及等比例局部原图／静止／动态对照；局部图不得拉成正方形，也不能遮住缺陷位置。
+5. 机器检查和目视分别记录。接触点零漏像素、静止重组零差、首尾相同，只证明各自范围；不得推成整条腿补全。`not_applicable` 不写成“通过”。用户指出可见缺陷后撤回相关视觉通过，保留机器原始结果。
+
+回归至少覆盖：未补全区域在前层移开后外露、仅补子范围仍遗漏后层、hidden mask 有值而贴图无实质填充、软衣物移动露出刚体肢段，以及互不连接的空中交叉不得自动补边。修复后还需同版视频视觉验收；这些用例不构成所有立绘均会自动正确的保证。

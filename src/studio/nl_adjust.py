@@ -195,6 +195,35 @@ def classify_and_polish_adjustment(
     if requested_gain is None and explicit_gain is not None:
         new_gain = explicit_gain
 
+    module_contract = (rig_spec or {}).get("moduleContract") or {}
+    if module_contract.get("sourceVersion") == 2:
+        from src.pipeline.module_rig import MAX_MODULE_GAIN
+        # The old polisher edited arbitrary bone weights, enlarged hidden fills or froze
+        # targets. Complete modules may only be changed through their declared contract.
+        if raw and (_contains_any(low, FREEZE_KEYWORDS) or _contains_any(low, LAYER_B_KEYWORDS)
+                    or _contains_any(low, LAYER_C_KEYWORDS)):
+            raise ValueError("完整模块的归属、接触、遮挡或静止声明需要在 Cindy 对话更新 V2 模块规划；不会自动归零、混权或扩大补全。")
+        targets = _detect_target_groups(low)
+        if raw and targets and set(targets) != {"global"} and explicit_gain is None:
+            raise ValueError("局部模块微调需要在 Cindy 对话明确模块及保持的接触关系，再提交更新后的模块规划。")
+        if raw and not targets and explicit_gain is None:
+            raise ValueError("这条指令尚不能确定地映射为完整模块修改，请在 Cindy 对话说明要改哪个模块。")
+        if requested_gain is None and explicit_gain is None:
+            if _contains_any(low, STRONGER_KEYWORDS):
+                new_gain = _clamp_gain(float(current_gain) * 1.35)
+            elif _contains_any(low, SOFTER_KEYWORDS):
+                new_gain = _clamp_gain(float(current_gain) * .7)
+        if new_gain > MAX_MODULE_GAIN:
+            raise ValueError(f"完整模块 gain 不能超过当前通用规则上限 {MAX_MODULE_GAIN:g}；请重新确定可达的动作幅度。")
+        return {
+            "raw_instruction": raw,
+            "polished_instruction": f"按完整模块规则重算动作，预设 {new_preset}，全局 gain={new_gain:.2f}；保留模块归属与声明接触，再重新检查。",
+            "rerun_layer": "motion", "skipped_stages": ["preprocess", "mivo", "vision", "split_parts"],
+            "executed_stages": ["build_rig", "audit"],
+            "spec_patch": {"preset": new_preset, "gain": new_gain,
+                           "rig_motion_overrides": {}, "rig_ik_updates": [], "parts_updates": []},
+        }
+
     # Determine minimal rerun layer (C > B > A)
     if raw and _contains_any(low, LAYER_C_KEYWORDS):
         rerun_layer = "split"

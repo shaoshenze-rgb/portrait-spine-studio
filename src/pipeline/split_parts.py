@@ -79,6 +79,14 @@ def _poly_mask(
     return np.asarray(im, dtype=np.uint8) > 0
 
 
+def erode_bool(mask: np.ndarray, r: int) -> np.ndarray:
+    """Binary erosion via dilation of the complement. r<=0 is a copy."""
+    m = np.asarray(mask, dtype=bool)
+    if r <= 0:
+        return m.copy()
+    return ~_dilate(~m, r)
+
+
 def _dilate(mask: np.ndarray, r: int) -> np.ndarray:
     if r <= 0:
         return mask.copy()
@@ -168,7 +176,9 @@ def _components(mask: np.ndarray) -> np.ndarray:
     return inv.reshape(h, w)
 
 
-def _clean_islands(lab: np.ndarray, num_parts: int, min_px: int = 12) -> np.ndarray:
+def _clean_islands(lab: np.ndarray, num_parts: int, min_px: int = 12,
+                   locked: Optional[np.ndarray] = None,
+                   allowed_masks: Optional[List[np.ndarray]] = None) -> np.ndarray:
     out = lab.copy()
     for i in range(num_parts):
         m = out == i
@@ -178,10 +188,16 @@ def _clean_islands(lab: np.ndarray, num_parts: int, min_px: int = 12) -> np.ndar
         sizes = np.bincount(comp.ravel())
         for c in np.nonzero((sizes < min_px) & (np.arange(len(sizes)) > 0))[0]:
             cm = comp == c
+            if locked is not None and (locked[cm] >= 0).any():
+                continue
             ring = _dilate(cm, 1) & ~cm & (out >= 0)
             if ring.any():
                 vals = out[ring]
-                out[cm] = int(np.bincount(vals).argmax())
+                counts = np.bincount(vals, minlength=num_parts)
+                candidates = [idx for idx in np.argsort(-counts) if counts[idx] > 0
+                              and (allowed_masks is None or allowed_masks[idx][cm].all())]
+                if candidates:
+                    out[cm] = int(candidates[0])
     return out
 
 
@@ -534,6 +550,45 @@ def _normalize_guide(g: Any) -> Tuple[Any, Any, Optional[str], str]:
     raise ValueError(f"Invalid guide spec: {g!r}")
 
 
+def _load_part_mask(mask_spec: Any, width: int, height: int) -> Optional[np.ndarray]:
+    if mask_spec is None:
+        return None
+    if isinstance(mask_spec, np.ndarray):
+        arr = mask_spec
+        if arr.ndim == 3:
+            arr = arr[..., -1]
+        if arr.shape != (height, width):
+            im = Image.fromarray((arr > 0).astype(np.uint8) * 255).resize((width, height), Image.Resampling.NEAREST)
+            return np.asarray(im, dtype=np.uint8) > 127
+        return arr > 0
+    if isinstance(mask_spec, (str, Path)):
+        p = Path(mask_spec)
+        if not p.is_file():
+            return None
+        im = Image.open(p).convert("L")
+        if im.size != (width, height):
+            im = im.resize((width, height), Image.Resampling.NEAREST)
+        return np.asarray(im, dtype=np.uint8) > 127
+    return None
+
+
+def _load_exact_ownership_mask(spec: Any, width: int, height: int) -> np.ndarray:
+    """Contract masks must not silently disappear or change size."""
+    if isinstance(spec, np.ndarray):
+        arr = spec
+        if arr.ndim == 3:
+            arr = arr[..., -1]
+        if arr.shape != (height, width):
+            raise ValueError("Locked ownership mask size mismatch")
+        return arr > 0
+    if not isinstance(spec, (str, Path)) or not Path(spec).is_file():
+        raise ValueError("Locked ownership mask is missing")
+    with Image.open(spec) as image:
+        if image.size != (width, height):
+            raise ValueError("Locked ownership mask size mismatch")
+        return np.asarray(image.convert("L"), dtype=np.uint8) > 127
+
+
 def _compute_ownership(
     src: np.ndarray,
     parts: List[Dict[str, Any]],
@@ -544,20 +599,67 @@ def _compute_ownership(
     h, w = src.shape[:2]
     alpha = src[..., 3]
     lab = np.full((h, w), -1, dtype=np.int16)
+    constrained = any(p.get("ownership_locked") or p.get("allowed_mask") is not None for p in parts)
+    allowed_masks = []
+    locked = np.full((h,w), -1, dtype=np.int16)
     for i, p in enumerate(parts):
-        m = _poly_mask(w, h, p.get("own"), p.get("line"))
+        allowed = (_load_exact_ownership_mask(p["allowed_mask"], w, h)
+                   if p.get("allowed_mask") is not None else np.ones((h,w), dtype=bool))
+        allowed_masks.append(allowed)
+        m = (_load_exact_ownership_mask(p.get("mask"), w, h) if p.get("ownership_locked")
+             else _load_part_mask(p.get("mask"), w, h))
+        if m is None:
+            m = _poly_mask(w, h, p.get("own"), p.get("line"))
+        if p.get("ownership_locked") and (m & ~allowed & (alpha > 0)).any():
+            raise ValueError("Locked ownership mask exceeds its allowed domain")
+        m = m & allowed & (alpha > 0)
+        if p.get("ownership_locked"):
+            if ((locked >= 0) & m).any():
+                raise ValueError("Overlapping locked ownership requires review")
+            locked[m] = i
         lab[m] = i
+    lab[locked >= 0] = locked[locked >= 0]
     lab[alpha == 0] = -1
 
-    # Fill any stray alpha>0 pixels from nearest labeled neighbor
-    for _ in range(60):
+    # Fill any stray alpha>0 pixels from nearest labeled neighbor until convergence
+    max_iters = max(60, (h + w) // 4)
+    for _ in range(max_iters):
         miss = (lab < 0) & (alpha > 0)
         if not miss.any():
             break
+        changed = False
         for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
             nb = _shift(lab, dy, dx, -1)
             take = miss & (nb >= 0) & (lab < 0)
-            lab[take] = nb[take]
+            if constrained:
+                for idx in np.unique(nb[take]):
+                    take[(nb == idx) & ~allowed_masks[int(idx)]] = False
+            if take.any():
+                lab[take] = nb[take]
+                changed = True
+        if not changed:
+            # Disconnected island with no labeled neighbor: assign to closest labeled part by bbox center
+            miss_y, miss_x = np.nonzero((lab < 0) & (alpha > 0))
+            if miss_y.size > 0:
+                labeled_parts = []
+                for idx in range(len(parts)):
+                    py, px = np.nonzero(lab == idx)
+                    if py.size > 0:
+                        labeled_parts.append((idx, float(py.mean()), float(px.mean())))
+                if labeled_parts:
+                    if constrained:
+                        best = np.full(miss_y.shape, -1, dtype=np.int16)
+                        distances = np.full(miss_y.shape, np.inf)
+                        for idx, cy, cx in labeled_parts:
+                            distance = (miss_y-cy)**2 + (miss_x-cx)**2
+                            use = allowed_masks[idx][miss_y,miss_x] & (distance < distances)
+                            best[use], distances[use] = idx, distance[use]
+                        lab[miss_y, miss_x] = best
+                    else:
+                        cy_m, cx_m = float(miss_y.mean()), float(miss_x.mean())
+                        best_idx = min(labeled_parts, key=lambda t: (t[1] - cy_m) ** 2 + (t[2] - cx_m) ** 2)[0]
+                        lab[miss_y, miss_x] = best_idx
+            break
 
     zones = {}
     for pair, zone in seams.items():
@@ -592,7 +694,7 @@ def _compute_ownership(
             if i < 62 and j < 62:
                 allow[band] |= (1 << i) | (1 << j)
 
-    unknown &= alpha > 0
+    unknown &= (alpha > 0) & (locked < 0)
     if unknown.any():
         grad = _gradient(src[..., :3])
         lab2 = lab.copy()
@@ -605,7 +707,7 @@ def _compute_ownership(
                 yy, xx = y + dy, x + dx
                 if 0 <= yy < h and 0 <= xx < w and lab2[yy, xx] >= 0:
                     lbl = int(lab2[yy, xx])
-                    if lbl >= 62 or ((allow[y, x] >> lbl) & 1):
+                    if (lbl >= 62 or ((allow[y, x] >> lbl) & 1)) and allowed_masks[lbl][y,x]:
                         heap.append((float(grad[y, x]), cnt, y, x, lbl))
                         cnt += 1
         heapq.heapify(heap)
@@ -617,14 +719,23 @@ def _compute_ownership(
             for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                 yy, xx = y + dy, x + dx
                 if 0 <= yy < h and 0 <= xx < w and unknown[yy, xx] and lab2[yy, xx] < 0:
-                    if l >= 62 or ((allow[yy, xx] >> l) & 1):
+                    if (l >= 62 or ((allow[yy, xx] >> l) & 1)) and allowed_masks[l][yy,xx]:
                         cnt += 1
                         heapq.heappush(heap, (float(grad[yy, xx]), cnt, yy, xx, l))
         lab2[(lab2 < 0) & unknown] = lab[(lab2 < 0) & unknown]
         lab = lab2
 
     if min_island_px > 1:
-        lab = _clean_islands(lab, len(parts), min_island_px)
+        lab = _clean_islands(lab, len(parts), min_island_px,
+                             locked=locked if constrained else None,
+                             allowed_masks=allowed_masks if constrained else None)
+    if constrained:
+        if ((alpha > 0) & (lab < 0)).any():
+            raise ValueError("Unassigned foreground requires visual ownership review")
+        if not np.array_equal(lab[locked >= 0], locked[locked >= 0]):
+            raise ValueError("Locked ownership changed during splitting")
+        if any(((lab == i) & ~allowed_masks[i]).any() for i in range(len(parts))):
+            raise ValueError("Part escaped its visual ownership domain")
     return lab
 
 
@@ -661,6 +772,7 @@ def split_parts(
     excl_px: int = EXCL_DEFAULT,
     feather_px: int = FEATHER_DEFAULT,
     min_island_px: int = 12,
+    module_contract: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Split an RGBA portrait into layered parts with deterministic amodal hidden fills.
 
@@ -687,10 +799,17 @@ def split_parts(
     opaque = alpha >= opaque_threshold
 
     parts = [dict(p) for p in part_specs]
+    if module_contract:
+        if module_contract.get("sourceSHA256") != _sha256_file(src_path) or module_contract.get("canvas") != [w,h]:
+            raise ValueError("Module contract is not bound to this source")
+        if any(not p.get("ownership_locked") or not p.get("module_id") for p in parts):
+            raise ValueError("Complete modules require explicit locked visible ownership")
     seams_map = {frozenset(k): v for k, v in (seams or {}).items()}
     bands_map = {frozenset(k): int(v) for k, v in (pair_bands or {}).items()}
 
     lab = _compute_ownership(src, parts, seams_map, bands_map, min_island_px=min_island_px)
+    ownership_domains = [(_load_exact_ownership_mask(p["allowed_mask"], w, h)
+                          if p.get("allowed_mask") is not None else None) for p in parts]
     np.save(work_dir / "labels.npy", lab)
     _render_part_map(lab, len(parts), review_dir / "part_map.png")
 
@@ -706,6 +825,13 @@ def split_parts(
         for j in range(i):
             pair = frozenset((parts[i]["name"], parts[j]["name"]))
             if pair not in seams_map or seams_map[pair] == "none":
+                continue
+            # Entity ownership constrains visible pixels, not hidden amodal fill.
+            # Do not feather by copying a different entity's visible RGB into this part.
+            if parts[i].get("ownership_locked") or parts[j].get("ownership_locked"):
+                continue
+            if (ownership_domains[i] is not None and ownership_domains[j] is not None
+                    and not np.array_equal(ownership_domains[i], ownership_domains[j])):
                 continue
             zone = np.ones((h, w), dtype=bool) if seams_map[pair] is None else _poly_mask(w, h, seams_map[pair])
             y0, y1, x0, x1 = _bbox(V[i], pad=feather_px + 6)
@@ -727,11 +853,29 @@ def split_parts(
         known = (Vi & opaque) | extra[i]
         target = np.zeros((h, w), dtype=bool)
         fdist = np.zeros((h, w), dtype=np.float32)
+        hidden_domain = (_load_exact_ownership_mask(p["hidden_fill_mask"], w, h)
+                         if p.get("hidden_fill_mask") is not None else None)
+        provided=None;provided_mask=np.zeros((h,w),dtype=bool)
+        if p.get('provided_image'):
+            from src.gates.review_binding import read_evidence_rgba
+            _,_,provided=read_evidence_rgba(p['provided_image'],p.get('provided_image_sha256'),(w,h),root=out.resolve().parent)
+            provided_mask=provided[...,3]>0
+            if hidden_domain is None or (provided_mask&~hidden_domain).any():
+                raise ValueError('Canvas material escapes the declared hidden domain')
+        if p.get("module_rule_version") and depth > 0 and hidden_domain is None:
+            raise ValueError("Module hidden fill requires an explicit occlusion region")
+        if hidden_domain is not None and ((hidden_domain & (alpha != 255)).any() or (hidden_domain & Vi).any()):
+            raise ValueError("Module hidden fill requires opaque occlusion and must not modify visible pixels")
 
         if (Vi | extra[i]).any() and depth > 0:
             y0, y1, x0, x1 = _bbox(Vi | extra[i], pad=depth + 6)
             sl = (slice(y0, y1), slice(x0, x1))
             allowed = (lab[sl] > i) & opaque[sl]
+            if hidden_domain is not None:
+                allowed &= hidden_domain[sl]
+            # A lower layer may complete its own texture underneath higher layers.
+            # This never changes lab/visible ownership; depth and the connected
+            # contact frontier still limit the fill as in the original pipeline.
             if p.get("clip") or p.get("clip_line"):
                 allowed &= _poly_mask(w, h, p.get("clip"), p.get("clip_line"))[sl]
             if p.get("clip_minus"):
@@ -739,13 +883,16 @@ def split_parts(
             allowed &= ~known[sl]
             seed = known[sl] | Vi[sl]
             dist = _chamfer(seed, allowed, maxd=depth + 2)
-            target[sl] = allowed & (dist <= depth)
+            target[sl] = allowed & (dist <= depth) & ~provided_mask[sl]
             fdist[sl] = np.where(target[sl], np.minimum(dist, float(depth)), 0.0)
+        if hidden_domain is not None and p.get("strict_hidden_fill") and (hidden_domain & ~target & ~provided_mask).any():
+            raise ValueError("Declared hidden region exceeds bounded local completion; review rather than extrapolate")
 
         L = np.zeros((h, w, 4), dtype=np.uint8)
         L[Vi] = src[Vi]
         L[extra[i]] = src[extra[i]]
-        L[..., 3] = np.where((Vi | extra[i]) & opaque, 255, L[..., 3])
+        if not p.get("module_rule_version"):
+            L[..., 3] = np.where((Vi | extra[i]) & opaque, 255, L[..., 3])
 
         if target.any():
             region = known | target
@@ -755,6 +902,9 @@ def split_parts(
 
             key = hashlib.sha256()
             key.update(ALGO_VERSION.encode("utf-8"))
+            key.update(str(p.get("module_rule_version", "legacy")).encode("utf-8"))
+            if p.get("module_rule_version"):
+                key.update(b"clean-inner-v2-own-gamut")
             key.update(src[sub][..., :3].tobytes())
             key.update(json.dumps({"name": name, "depth": depth, "guides": guides}, sort_keys=True).encode("utf-8"))
             key.update(np.packbits(known[sub]).tobytes())
@@ -772,39 +922,64 @@ def split_parts(
                 k_sub = known[sub]
                 t_sub = target[sub]
                 own_sub = Vi[sub]
-                deep = _dist_small(~own_sub, excl_px + 1) >= excl_px
-                kc = k_sub.copy()
-                todo = t_sub.copy()
+                if p.get("module_rule_version"):
+                    # Clean inner source: erode visible by 2px so antialiased bright
+                    # rims never seed the hidden fill. Never sample a neighbour.
+                    cur[~k_sub] = 0.0
+                    clean_known = erode_bool(own_sub, 2)
+                    if int(clean_known.sum()) < 16:
+                        clean_known = erode_bool(own_sub, 1)
+                    if int(clean_known.sum()) < 16:
+                        clean_known = own_sub.copy()
+                    fill_region = (own_sub & ~clean_known) | t_sub
+                    smooth = smooth_membrane(cur, clean_known, fill_region)
+                    patched = patch_complete(
+                        cur.copy(), clean_known, fill_region, _part_seed(name), depth,
+                        source_ok=clean_known,
+                    )
+                    cur = 0.75 * smooth + 0.25 * patched
+                    if clean_known.any():
+                        seed_rgb = cur[clean_known]
+                        lo = seed_rgb.min(axis=0)
+                        hi = seed_rgb.max(axis=0)
+                        invent = fill_region & ~clean_known
+                        if invent.any():
+                            cur[invent] = np.minimum(np.maximum(cur[invent], lo), hi)
+                    filled_rgb = np.clip(np.rint(cur), 0, 255).astype(np.uint8)
+                else:
+                    deep = _dist_small(~own_sub, excl_px + 1) >= excl_px
+                    kc = k_sub.copy()
+                    todo = t_sub.copy()
 
-                for gi, (tz, sz, pred, method) in enumerate(guides + [(None, None, None, "patch")]):
-                    tk = todo & (_poly_mask(w, h, tz)[sub] if tz else True)
-                    if not tk.any():
-                        continue
-                    so = k_sub & (_poly_mask(w, h, sz)[sub] if sz else True) & _colour_pred(src[sub], pred)
-                    if method == "smooth":
-                        kb = so | (kc & ~k_sub)
-                        if not kb.any():
+                    for gi, (tz, sz, pred, method) in enumerate(guides + [(None, None, None, "patch")]):
+                        tk = todo & (_poly_mask(w, h, tz)[sub] if tz else True)
+                        if not tk.any():
                             continue
-                        _, unreached = _diffuse_init(cur, kb, tk)
-                        tk_eff = tk & ~unreached
-                        if not tk_eff.any():
-                            continue
-                        cur = smooth_membrane(cur, kb, tk_eff)
-                        kc |= tk_eff
-                        todo &= ~tk_eff
-                    elif method == "patch":
-                        so_d = so & deep
-                        if int(so_d.sum()) < 200:
-                            so_d = so & (_dist_small(~own_sub, 3) >= 2)
-                        if int(so_d.sum()) < 50:
-                            so_d = so
-                        cur = patch_complete(cur, kc, tk, _part_seed(name) + gi, depth, source_ok=so_d)
-                        kc |= tk
-                        todo &= ~tk
-                    else:
-                        raise ValueError(f"Unsupported fill guide method: {method!r}")
+                        so = k_sub & (_poly_mask(w, h, sz)[sub] if sz else True) & _colour_pred(src[sub], pred)
+                        if method == "smooth":
+                            kb = so | (kc & ~k_sub)
+                            if not kb.any():
+                                continue
+                            _, unreached = _diffuse_init(cur, kb, tk)
+                            tk_eff = tk & ~unreached
+                            if not tk_eff.any():
+                                continue
+                            cur = smooth_membrane(cur, kb, tk_eff)
+                            kc |= tk_eff
+                            todo &= ~tk_eff
+                        elif method == "patch":
+                            so_d = so & deep
+                            if int(so_d.sum()) < 200:
+                                so_d = so & (_dist_small(~own_sub, 3) >= 2)
+                            if int(so_d.sum()) < 50:
+                                so_d = so
+                            cur = patch_complete(cur, kc, tk, _part_seed(name) + gi, depth, source_ok=so_d)
+                            kc |= tk
+                            todo &= ~tk
+                        else:
+                            raise ValueError(f"Unsupported fill guide method: {method!r}")
 
-                filled_rgb = np.clip(np.rint(cur), 0, 255).astype(np.uint8)
+                    filled_rgb = np.clip(np.rint(cur), 0, 255).astype(np.uint8)
                 for old in work_dir.glob(f"fill_{name}_*.npy"):
                     old.unlink()
                 np.save(cf, filled_rgb)
@@ -815,14 +990,32 @@ def split_parts(
             fd_sub = fdist[sub]
             alpha_fill = np.clip((float(depth) - fd_sub) / max(1.0, fade), 0.0, 1.0)
             alpha_fill = np.where(fd_sub <= fade_start, 1.0, alpha_fill)
+            if p.get("module_rule_version") and p.get("strict_hidden_fill"):
+                # Keep the vis-target seam fully opaque (no 2px groove) and fade
+                # only the deepest 4px of the hidden band.
+                fade = 4.0
+                opaque_until = max(1.0, float(depth) - fade)
+                alpha_fill = np.clip((float(depth) - fd_sub) / max(1.0, fade), 0.0, 1.0)
+                alpha_fill = np.where(fd_sub <= opaque_until, 1.0, alpha_fill)
             L_sub = L[sub]
             L_sub[t_sub, :3] = filled_rgb[t_sub]
             L_sub[t_sub, 3] = np.clip(np.rint(alpha_fill[t_sub] * 255.0), 0, 255).astype(np.uint8)
             L[sub] = L_sub
 
+        # The external material has already been registered to the source canvas
+        # and clipped to an opaque occlusion. Do not replace it with local colour
+        # diffusion or a depth-limited approximation; visible pixels remain frozen.
+        if provided is not None:
+            L[provided_mask]=provided[provided_mask]
+            target|=provided_mask
+
         # Apply seam ramp feathering on visible pixels where applicable
         if (ramps[i] < 1.0).any():
             L[..., 3] = np.clip(np.rint(L[..., 3].astype(np.float32) * ramps[i]), 0, 255).astype(np.uint8)
+
+        # Visible source pixels are bitwise frozen after any hidden fill.
+        if p.get("module_rule_version"):
+            L[Vi] = src[Vi]
 
         # Zero RGB on completely transparent pixels
         L[L[..., 3] == 0] = 0
@@ -858,6 +1051,14 @@ def split_parts(
             "joints": p.get("joints") or {},
             "notes": p.get("notes", ""),
         }
+        if p.get("module_id"):
+            entry.update(moduleId=p["module_id"], pieceId=p["piece_id"],
+                         moduleRuleVersion=p.get("module_rule_version"),
+                         visibleMask=p.get("mask"), completionMode=p.get("completion_mode","none"),
+                         hiddenMask=p.get("hidden_fill_mask"), hiddenPixels=int(target.sum()),
+                         completionVisualReview="pending" if target.any() else "not_applicable")
+            if p.get('provided_image'):
+                entry.update(providedImage=p['provided_image'],providedImageSHA256=p['provided_image_sha256'])
         if p.get("centerline"):
             entry["centerline"] = [[float(q[0]), float(q[1])] for q in p["centerline"]]
         parts_meta.append(entry)
@@ -867,7 +1068,9 @@ def split_parts(
 
     # Evaluate rest_diff against source (normalizing interior >= opaque_threshold alpha to 255)
     src_norm = src.copy()
-    src_norm[..., 3] = np.where(src_norm[..., 3] >= opaque_threshold, 255, src_norm[..., 3])
+    complete_modules = bool(module_contract) or any(p.get("module_rule_version") for p in parts)
+    if not complete_modules:
+        src_norm[..., 3] = np.where(src_norm[..., 3] >= opaque_threshold, 255, src_norm[..., 3])
     src_norm[src_norm[..., 3] == 0] = 0
     rest_norm = rest_comp.copy()
     rest_norm[rest_norm[..., 3] == 0] = 0
@@ -891,10 +1094,13 @@ def split_parts(
         "source": str(src_path),
         "sourceSHA256": rest_diff["sourceSHA256"],
         "canvas": [w, h],
-        "opaqueThreshold": opaque_threshold,
+        "opaqueThreshold": 256 if complete_modules else opaque_threshold,
+        "preserveSourceRGBA": complete_modules,
         "cacheHits": cache_hits,
         "parts": parts_meta,
     }
+    if module_contract:
+        parts_json["moduleContract"] = module_contract
     (out / "parts.json").write_text(json.dumps(parts_json, indent=2) + "\n", encoding="utf-8")
     return {
         "parts_json": parts_json,

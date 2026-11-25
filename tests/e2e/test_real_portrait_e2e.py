@@ -152,7 +152,7 @@ def _build_erika_specs(width: int = 525, height: int = 1192) -> Tuple[List[Dict[
             },
             "legs": {
                 "type": "region",
-                "bone": "root",
+                "bone": "foot_L",
             },
             "torso": {
                 "type": "mesh",

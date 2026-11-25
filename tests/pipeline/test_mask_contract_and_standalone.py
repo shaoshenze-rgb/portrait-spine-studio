@@ -1,0 +1,507 @@
+"""Wave 1 mask contract, preprocess RGB freeze, locked_root, standalone HTML."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from src.export.exporter import export_standalone_html
+from src.gates.module_quality import ModuleQualityAuditor
+from src.pipeline.module_rig import LOCKED_ROOT_DEG, resolve_module_motion, soft_bend_deg_for_link
+from src.pipeline.preprocess import preprocess_portrait
+from src.studio.module_contract import materialize_module_contract, validate_module_contract
+from src.studio.vision_schema import VisionValidationError, VisionReviewRequired
+from tests.pipeline.test_complete_modules import fixture
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _png_mask(mask: np.ndarray) -> tuple[str, str]:
+    im = Image.fromarray(np.where(mask, 255, 0).astype(np.uint8))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    raw = buf.getvalue()
+    return base64.b64encode(raw).decode("ascii"), hashlib.sha256(raw).hexdigest()
+
+
+class TestMaskContractAndStandalone(unittest.TestCase):
+    def setUp(self):
+        work = ROOT / ".studio-work"
+        work.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=work, prefix="mask-contract-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.d = Path(self.tmp.name)
+        self.image = self.d / "src.png"
+        self.contract = fixture(self.image)
+
+    def test_mask_png_parses_and_sha_or_size_mismatch_is_rejected(self):
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA"))
+        h, w = rgba.shape[:2]
+        body = (rgba[..., 1] > 140) & (rgba[..., 3] > 0)
+        b64, digest = _png_mask(body)
+        c = json.loads(json.dumps(self.contract))
+        piece = c["modules"][0]["pieces"][0]
+        piece["mask_png_base64"] = b64
+        piece["mask_sha256"] = digest
+        validate_module_contract(c, input_sha256=c["input_sha256"], image_size=(w, h))
+        bad = json.loads(json.dumps(c))
+        bad["modules"][0]["pieces"][0]["mask_sha256"] = "0" * 64
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(bad, input_sha256=c["input_sha256"], image_size=(w, h))
+        tiny = np.zeros((4, 4), dtype=bool)
+        tiny[1:3, 1:3] = True
+        tb64, tdig = _png_mask(tiny)
+        bad = json.loads(json.dumps(c))
+        bad["modules"][0]["pieces"][0]["mask_png_base64"] = tb64
+        bad["modules"][0]["pieces"][0]["mask_sha256"] = tdig
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(bad, input_sha256=c["input_sha256"], image_size=(w, h))
+
+    def test_mask_derive_band_rest_diff_is_zero(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+
+        self.contract = fixture(self.image, local_fill=True)
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA")).copy()
+        h, w = rgba.shape[:2]
+        # Exclusive masks from the painted rectangles: later draw_order owns overlaps.
+        c = json.loads(json.dumps(self.contract))
+        claimed = np.zeros((h, w), dtype=np.int32)
+        entries = []
+        for mi, module in enumerate(c["modules"]):
+            for piece in module["pieces"]:
+                entries.append((piece["draw_order"], mi, piece))
+        entries.sort()
+        for order, mi, piece in entries:
+            poly = piece["polygons"][0]
+            from src.studio.vision_schema import rasterize_polygons
+            mask = rasterize_polygons([poly], w, h) & (rgba[..., 3] > 0)
+            claimed[mask] = order + 1
+        for order, mi, piece in entries:
+            mask = claimed == (order + 1)
+            b64, digest = _png_mask(mask)
+            piece["mask_png_base64"] = b64
+            piece["mask_sha256"] = digest
+        c["occlusions"][0]["derive_band"] = True
+        hints = materialize_module_contract(c, image_path=self.image, mask_dir=self.d / "masks")
+        self.assertIn("bandDerivation", hints["module_projection"]["occlusions"][0])
+        ps, rs = build_default_specs(self.image, character="maskband", semantic_hints=hints)
+        split = split_parts(self.image, ps["parts"], self.d / "parts", min_island_px=0, feather_px=0,
+                            module_contract=ps["module_contract"])
+        self.assertEqual(split["rest_diff"]["maxRGBA"], 0)
+        build_rig(self.d / "parts", rs, self.d / "rig")
+
+    def test_preprocess_zeros_transparent_rgb_and_keeps_visible_bytes(self):
+        src = self.d / "dirty.png"
+        arr = np.zeros((32, 24, 4), dtype=np.uint8)
+        arr[4:12, 6:18] = [17, 34, 51, 200]
+        arr[0, 0] = [9, 8, 7, 0]
+        arr[31, 23] = [255, 1, 2, 0]
+        Image.fromarray(arr).save(src)
+        out = self.d / "clean.png"
+        preprocess_portrait(src, out)
+        got = np.asarray(Image.open(out).convert("RGBA"))
+        np.testing.assert_array_equal(got[4:12, 6:18], arr[4:12, 6:18])
+        np.testing.assert_array_equal(got[0, 0], [0, 0, 0, 0])
+        np.testing.assert_array_equal(got[31, 23], [0, 0, 0, 0])
+
+    def test_locked_root_first_link_is_quarter_degree_and_tail_bends(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+        from src.render.renderer import SpineRenderer
+
+        w, h = 128, 160
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA")).copy()
+        rgba[74:98, 80:96] = [255, 90, 40, 180]
+        Image.fromarray(rgba).save(self.image)
+        c = json.loads(json.dumps(self.contract))
+        c["input_sha256"] = hashlib.sha256(self.image.read_bytes()).hexdigest()
+        flame = {
+            "id": "flame",
+            "role": "effect_group",
+            "motion_type": "soft",
+            "parent": "hand",
+            "pivot": [88 / w, 74 / h],
+            "motion": "soft_bend",
+            "locked_root": True,
+            "centerline": [[88 / w, 74 / h], [88 / w, 86 / h], [88 / w, 97 / h]],
+            "confidence": 0.95,
+            "pieces": [{"id": "flame_p0", "polygons": [[[80 / w, 74 / h], [96 / w, 74 / h],
+                                                       [96 / w, 98 / h], [80 / w, 98 / h]]],
+                        "draw_order": 60}],
+        }
+        c["modules"].append(flame)
+        c["connections"].append({"id": "palm_flame", "type": "attachment", "a": "hand", "b": "flame",
+                                 "point": [88 / w, 74 / h]})
+        hints = vision_result_to_semantic_hints(c, image_path=self.image, mask_dir=self.d / "flame-masks")
+        ps, rs = build_default_specs(self.image, character="flame", semantic_hints=hints)
+        self.assertTrue(any(m.get("lockedRoot") for m in rs["moduleContract"]["modules"]))
+        motion = resolve_module_motion(rs, "agile_full")
+        flame_mod = next(m for m in rs["moduleContract"]["modules"] if m["id"] == "flame")
+        driver = motion[flame_mod["bone"]]["rotate"][0][0]
+        first = motion[flame_mod["softBones"][0]]["rotate"][0][0]
+        tail = [motion[b]["rotate"][0][0] for b in flame_mod["softBones"][1:]]
+        self.assertLessEqual(abs(driver), 0.3)
+        self.assertLessEqual(abs(first), 0.3)
+        self.assertGreater(abs(first), 0.0)
+        self.assertTrue(tail)
+        self.assertEqual(soft_bend_deg_for_link(0, locked_root=True), LOCKED_ROOT_DEG)
+        self.assertGreater(soft_bend_deg_for_link(1, locked_root=True, scale=1.0), LOCKED_ROOT_DEG)
+        self.assertGreater(soft_bend_deg_for_link(2, locked_root=True, scale=1.0),
+                           soft_bend_deg_for_link(1, locked_root=True, scale=1.0))
+        split_parts(self.image, ps["parts"], self.d / "flame-parts", min_island_px=0, feather_px=0,
+                    module_contract=ps["module_contract"])
+        made = build_rig(self.d / "flame-parts", rs, self.d / "flame-rig")
+        renderer = SpineRenderer(self.d / "flame-rig")
+        qc = ModuleQualityAuditor(renderer, self.d / "flame-parts", made["report"], renderer.frame(None))
+        for t in (0, 2, 4, 6, 8):
+            qc.observe(t, 1.0, renderer.frame(t))
+        quality = qc.finish()
+        self.assertNotEqual(quality["bindingMotion"]["status"], "fail")
+        self.assertNotEqual(quality["machineQC"]["status"], "fail")
+        self.assertEqual(quality["bindingMotion"]["checks"]["lockedRoot"]["status"], "pass")
+        self.assertLessEqual(quality["bindingMotion"]["checks"]["lockedRoot"]["metrics"]["flame"]["normalPtpDegrees"], 0.6)
+
+    def test_standalone_html_inlines_scripts_and_pngs(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+
+        hints = vision_result_to_semantic_hints(self.contract, image_path=self.image, mask_dir=self.d / "html-masks")
+        ps, rs = build_default_specs(self.image, character="htmlcase", semantic_hints=hints)
+        split_parts(self.image, ps["parts"], self.d / "html-parts", min_island_px=0, feather_px=0,
+                    module_contract=ps["module_contract"])
+        build_rig(self.d / "html-parts", rs, self.d / "html-rig")
+        out = self.d / "preview.html"
+        export_standalone_html(self.d / "html-rig", out, require_approved=False)
+        html = out.read_text(encoding="utf-8")
+        self.assertIn("<script type=\"module\">", html)
+        self.assertIn("class Spine42Skeleton", html)
+        self.assertIn("class PortraitSpinePlayer", html)
+        self.assertIn("data:image/png;base64,", html)
+        self.assertNotRegex(html, r'src=["\'](?:\./)?images/')
+        self.assertGreater(html.count("data:image/png;base64,"), 3)
+
+
+    def test_mask_rejects_non_png_rgb_and_non_binary_gray(self):
+        with Image.open(self.image) as im:
+            w, h = im.size
+        c = json.loads(json.dumps(self.contract))
+        piece = c["modules"][0]["pieces"][0]
+        huge = json.loads(json.dumps(c))
+        huge["modules"][0]["pieces"][0]["mask_png_base64"] = "A" * (16 * 1024 * 1024 + 8)
+        huge["modules"][0]["pieces"][0]["mask_sha256"] = "0" * 64
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(huge, input_sha256=c["input_sha256"], image_size=(w, h))
+        jpeg = io.BytesIO()
+        Image.fromarray(np.zeros((h, w), np.uint8)).save(jpeg, format="JPEG")
+        raw = jpeg.getvalue()
+        piece["mask_png_base64"] = base64.b64encode(raw).decode("ascii")
+        piece["mask_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(c, input_sha256=c["input_sha256"], image_size=(w, h))
+        rgb = np.zeros((h, w, 3), np.uint8)
+        buf = io.BytesIO(); Image.fromarray(rgb).save(buf, format="PNG"); raw = buf.getvalue()
+        piece["mask_png_base64"] = base64.b64encode(raw).decode("ascii")
+        piece["mask_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(c, input_sha256=c["input_sha256"], image_size=(w, h))
+        gray = np.zeros((h, w), np.uint8); gray[50:80, 50:70] = 128
+        buf = io.BytesIO(); Image.fromarray(gray).save(buf, format="PNG"); raw = buf.getvalue()
+        piece["mask_png_base64"] = base64.b64encode(raw).decode("ascii")
+        piece["mask_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(c, input_sha256=c["input_sha256"], image_size=(w, h))
+
+    def test_mask_outside_foreground_is_review_required(self):
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA"))
+        h, w = rgba.shape[:2]
+        mask = np.zeros((h, w), dtype=bool)
+        mask[0, 0] = True
+        self.assertEqual(int(rgba[0, 0, 3]), 0)
+        b64, digest = _png_mask(mask)
+        c = json.loads(json.dumps(self.contract))
+        c["modules"][0]["pieces"][0]["mask_png_base64"] = b64
+        c["modules"][0]["pieces"][0]["mask_sha256"] = digest
+        validate_module_contract(c, input_sha256=c["input_sha256"], image_size=(w, h))
+        with self.assertRaises(VisionReviewRequired):
+            materialize_module_contract(c, image_path=self.image, mask_dir=self.d / "bad-fg")
+
+    def test_segment_refuses_copied_masks_for_multi_piece_modules(self):
+        from scripts.segment_modules_sam import expand_segment_targets, _encode_mask
+        modules = [{"id": "staff", "draw_order": 3, "box": [1, 2, 3, 4], "pieces": [
+            {"id": "staff_a", "draw_order": 3}, {"id": "staff_b", "draw_order": 4}]}]
+        with self.assertRaises(ValueError):
+            expand_segment_targets(modules)
+        ok = [{"id": "staff", "draw_order": 3, "pieces": [
+            {"id": "staff_a", "draw_order": 3, "box": [10, 10, 40, 40], "pos": [[20, 20]]},
+            {"id": "staff_b", "draw_order": 4, "box": [40, 40, 80, 80], "pos": [[50, 50]]}]}]
+        targets = expand_segment_targets(ok)
+        self.assertEqual([t["id"] for t in targets], ["staff_a", "staff_b"])
+        self.assertNotEqual(targets[0]["box"], targets[1]["box"])
+        encoded = _encode_mask(np.array([[True, False], [False, True]]))
+        raw = base64.b64decode(encoded["mask_png_base64"])
+        with Image.open(io.BytesIO(raw)) as im:
+            self.assertEqual(im.mode, "L")
+            arr = np.asarray(im)
+            self.assertTrue(set(np.unique(arr).tolist()).issubset({0, 255}))
+
+    def test_locked_root_and_armor_motion_are_closed(self):
+        c = json.loads(json.dumps(self.contract))
+        cape = next(m for m in c["modules"] if m["id"] == "cape")
+        cape["locked_root"] = True
+        with self.assertRaises(VisionValidationError):
+            validate_module_contract(c, input_sha256=c['input_sha256'], image_size=(128,160))
+        c = json.loads(json.dumps(self.contract))
+        spark = next(m for m in c["modules"] if m["id"] == "spark")
+        spark.update({"motion_type": "soft", "motion": "soft_bend", "locked_root": True,
+                      "parent": None, "centerline": [[7 / 128, 7 / 160], [10 / 128, 12 / 160]]})
+        with self.assertRaises(VisionReviewRequired):
+            validate_module_contract(c, input_sha256=c['input_sha256'], image_size=(128,160))
+        c = json.loads(json.dumps(self.contract))
+        w, h = 128, 160
+        flame = {"id": "flame", "role": "effect_group", "motion_type": "soft", "parent": "spark",
+                 "pivot": [7 / w, 7 / h], "motion": "soft_bend", "locked_root": True,
+                 "centerline": [[7 / w, 7 / h], [8 / w, 10 / h]], "confidence": 0.95,
+                 "pieces": [{"id": "flame_p0", "polygons": [[[5 / w, 5 / h], [8 / w, 5 / h], [8 / w, 8 / h], [5 / w, 8 / h]]],
+                             "draw_order": 61}]}
+        c["modules"].append(flame)
+        c["connections"].append({"id": "spark_flame", "type": "attachment", "a": "spark", "b": "flame",
+                                 "point": [7 / w, 7 / h]})
+        with self.assertRaises(VisionReviewRequired):
+            validate_module_contract(c, input_sha256=c['input_sha256'], image_size=(128,160))
+        c = json.loads(json.dumps(self.contract))
+        blade = next(m for m in c["modules"] if m["id"] == "blade")
+        blade["role"] = "armor"; blade["motion"] = "breath"
+        with self.assertRaises(VisionReviewRequired):
+            validate_module_contract(c, input_sha256=c['input_sha256'], image_size=(128,160))
+        c = json.loads(json.dumps(self.contract))
+        blade = next(m for m in c["modules"] if m["id"] == "blade")
+        blade["role"] = "armor"; blade["motion"] = "sway"
+        c["connections"][2]["type"] = "attachment"
+        validate_module_contract(c, input_sha256=c['input_sha256'], image_size=(128,160))
+
+    def test_root_breath_translate_is_linear_height_scale_not_squared(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+
+        hints = vision_result_to_semantic_hints(self.contract, image_path=self.image, mask_dir=self.d / "breath-masks")
+        ps, rs = build_default_specs(self.image, character="breathcase", semantic_hints=hints)
+        split_parts(self.image, ps["parts"], self.d / "breath-parts", min_island_px=0, feather_px=0,
+                    module_contract=ps["module_contract"])
+        made = build_rig(self.d / "breath-parts", rs, self.d / "breath-rig")
+        spine = json.loads((self.d / "breath-rig" / "breathcase.spine.json").read_text())
+        body = spine["animations"]["idle"]["bones"]["module_body"]["translate"]
+        xs = [float(k.get("x", 0.0)) for k in body]
+        ys = [float(k.get("y", 0.0)) for k in body]
+        body_h = float(rs["body_height_px"])
+        height_scale = max(0.35, min(1.35, body_h / 1080.0))
+        peak = max(max(abs(v) for v in xs), max(abs(v) for v in ys))
+        self.assertGreater(peak, 8.5 * height_scale * 0.45)
+        self.assertLess(peak, (8.5 + 1.8) * height_scale * 1.2 + 0.05)
+        squared = 1.8 * (body_h / 1080.0) * height_scale
+        self.assertGreater(peak, squared * 3)
+
+
+    def test_locked_root_motion_and_softbones_cannot_be_forged(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+        from src.pipeline.module_rig import validate_module_rig_spec, resolve_module_motion
+        from src.render.renderer import SpineRenderer
+        import copy
+
+        w, h = 128, 160
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA")).copy()
+        rgba[74:98, 80:96] = [255, 90, 40, 180]
+        Image.fromarray(rgba).save(self.image)
+        c = json.loads(json.dumps(self.contract))
+        c["input_sha256"] = hashlib.sha256(self.image.read_bytes()).hexdigest()
+        flame = {
+            "id": "flame", "role": "effect_group", "motion_type": "soft", "parent": "hand",
+            "pivot": [88 / w, 74 / h], "motion": "soft_bend", "locked_root": True,
+            "centerline": [[88 / w, 74 / h], [88 / w, 86 / h], [88 / w, 97 / h]],
+            "confidence": 0.95,
+            "pieces": [{"id": "flame_p0", "polygons": [[[80 / w, 74 / h], [96 / w, 74 / h],
+                                                       [96 / w, 98 / h], [80 / w, 98 / h]]],
+                        "draw_order": 60}],
+        }
+        c["modules"].append(flame)
+        c["connections"].append({"id": "palm_flame", "type": "attachment", "a": "hand", "b": "flame",
+                                 "point": [88 / w, 74 / h]})
+        hints = vision_result_to_semantic_hints(c, image_path=self.image, mask_dir=self.d / "forge-masks")
+        ps, rs = build_default_specs(self.image, character="forge", semantic_hints=hints)
+        split_parts(self.image, ps["parts"], self.d / "forge-parts", min_island_px=0, feather_px=0,
+                    module_contract=ps["module_contract"])
+        made = build_rig(self.d / "forge-parts", rs, self.d / "forge-rig")
+        flame_mod = next(m for m in rs["moduleContract"]["modules"] if m["id"] == "flame")
+        self.assertEqual(flame_mod["motion"], "required")
+        self.assertTrue(flame_mod["softBones"])
+        for forged in ("static", "optional"):
+            bad = copy.deepcopy(rs)
+            next(m for m in bad["moduleContract"]["modules"] if m["id"] == "flame")["motion"] = forged
+            with self.assertRaises(VisionReviewRequired):
+                validate_module_rig_spec(bad)
+            with self.assertRaises(VisionReviewRequired):
+                resolve_module_motion(bad, "agile_full")
+        empty = copy.deepcopy(rs)
+        next(m for m in empty["moduleContract"]["modules"] if m["id"] == "flame")["softBones"] = []
+        with self.assertRaises(VisionReviewRequired):
+            validate_module_rig_spec(empty)
+        with self.assertRaises(VisionReviewRequired):
+            resolve_module_motion(empty, "agile_full")
+        renderer = SpineRenderer(self.d / "forge-rig")
+        report = copy.deepcopy(made["report"])
+        next(m for m in report["moduleContract"]["modules"] if m["id"] == "flame")["motion"] = "optional"
+        qc = ModuleQualityAuditor(renderer, self.d / "forge-parts", report, renderer.frame(None))
+        for t in (0, 2, 4, 8):
+            qc.observe(t, 1.0, renderer.frame(t))
+        quality = qc.finish()
+        self.assertEqual(quality["bindingMotion"]["checks"]["lockedRoot"]["status"], "fail")
+        report2 = copy.deepcopy(made["report"])
+        next(m for m in report2["moduleContract"]["modules"] if m["id"] == "flame")["softBones"] = []
+        qc2 = ModuleQualityAuditor(renderer, self.d / "forge-parts", report2, renderer.frame(None))
+        for t in (0, 2, 8):
+            qc2.observe(t, 1.0, renderer.frame(t))
+        self.assertEqual(qc2.finish()["bindingMotion"]["checks"]["lockedRoot"]["status"], "fail")
+
+    def test_segment_ids_reject_path_escape(self):
+        from scripts.segment_modules_sam import expand_segment_targets
+        with self.assertRaises(ValueError):
+            expand_segment_targets([{"id": "../../escape", "box": [1, 2, 3, 4]}])
+        with self.assertRaises(ValueError):
+            expand_segment_targets([{"id": "ok", "pieces": [
+                {"id": "a/b", "draw_order": 1, "box": [1, 2, 3, 4]},
+                {"id": "ok_b", "draw_order": 2, "box": [2, 3, 4, 5]}]}])
+        with self.assertRaises(ValueError):
+            expand_segment_targets([{"id": "ok", "pieces": [
+                {"id": "dup", "draw_order": 1, "box": [1, 2, 3, 4]},
+                {"id": "dup", "draw_order": 2, "box": [2, 3, 4, 5]}]}])
+
+
+
+
+    def _flame_contract(self):
+        w, h = 128, 160
+        with Image.open(self.image) as im:
+            rgba = np.asarray(im.convert("RGBA")).copy()
+        rgba[74:98, 80:96] = [255, 90, 40, 180]
+        Image.fromarray(rgba).save(self.image)
+        c = json.loads(json.dumps(self.contract))
+        c["input_sha256"] = hashlib.sha256(self.image.read_bytes()).hexdigest()
+        flame = {
+            "id": "flame", "role": "effect_group", "motion_type": "soft", "parent": "hand",
+            "pivot": [88 / w, 74 / h], "motion": "soft_bend", "locked_root": True,
+            "centerline": [[88 / w, 74 / h], [88 / w, 86 / h], [88 / w, 97 / h]],
+            "confidence": 0.95,
+            "pieces": [{"id": "flame_p0", "polygons": [[[80 / w, 74 / h], [96 / w, 74 / h],
+                                                       [96 / w, 98 / h], [80 / w, 98 / h]]],
+                        "draw_order": 60}],
+        }
+        c["modules"].append(flame)
+        c["connections"].append({"id": "palm_flame", "type": "attachment", "a": "hand", "b": "flame",
+                                 "point": [88 / w, 74 / h]})
+        return c
+
+    def test_soft_chain_graph_requires_real_bones(self):
+        from src.studio.vision_schema import vision_result_to_semantic_hints
+        from src.studio.auto_spec import build_default_specs
+        from src.pipeline.split_parts import split_parts
+        from src.pipeline.build_rig import build_rig
+        from src.pipeline.module_rig import (
+            validate_module_rig_spec, resolve_module_motion, validate_expanded_soft_chains,
+        )
+        from src.render.renderer import SpineRenderer
+        import copy
+
+        c = self._flame_contract()
+        hints = vision_result_to_semantic_hints(c, image_path=self.image, mask_dir=self.d / "chain-masks")
+        ps, rs = build_default_specs(self.image, character="chaincase", semantic_hints=hints)
+        split_parts(self.image, ps["parts"], self.d / "chain-parts", min_island_px=0, feather_px=0,
+                    module_contract=ps["module_contract"])
+        validate_module_rig_spec(rs)
+        resolve_module_motion(rs, "agile_full")
+        made = build_rig(self.d / "chain-parts", rs, self.d / "chain-rig")
+        flame = next(m for m in rs["moduleContract"]["modules"] if m["id"] == "flame")
+        self.assertEqual(len(flame["softBones"]), 2)
+        renderer = SpineRenderer(self.d / "chain-rig")
+        by_name = renderer.sk.by_name
+        first, last = flame["softBones"]
+        self.assertEqual(by_name[first].parent.name, flame["bone"])
+        self.assertEqual(by_name[last].parent.name, first)
+        live = {b.name: (None if b.parent is None else b.parent.name) for b in renderer.sk.bones}
+        validate_expanded_soft_chains(rs["moduleContract"], live)
+        qc = ModuleQualityAuditor(renderer, self.d / "chain-parts", made["report"], renderer.frame(None))
+        for t in (0, 2, 4, 8):
+            qc.observe(t, 1.0, renderer.frame(t))
+        self.assertEqual(qc.finish()["bindingMotion"]["checks"]["lockedRoot"]["status"], "pass")
+
+        spine = json.loads((self.d / "chain-rig" / "chaincase.spine.json").read_text())
+        expanded = copy.deepcopy(rs)
+        have = {b["name"] for b in expanded["bones"]}
+        for bone in spine["bones"]:
+            if bone["name"] not in have:
+                expanded["bones"].append({"name": bone["name"], "parent": bone.get("parent"), "pos": [0.0, 0.0]})
+        validate_module_rig_spec(expanded)
+        resolve_module_motion(expanded, "agile_full")
+
+        def drop(name):
+            bad = copy.deepcopy(expanded)
+            bad["bones"] = [b for b in bad["bones"] if b["name"] != name]
+            return bad
+
+        for missing in (first, last):
+            with self.assertRaises(VisionReviewRequired):
+                validate_module_rig_spec(drop(missing))
+            with self.assertRaises(VisionReviewRequired):
+                resolve_module_motion(drop(missing), "agile_full")
+
+        reparent = copy.deepcopy(expanded)
+        for bone in reparent["bones"]:
+            if bone["name"] == last:
+                bone["parent"] = flame["bone"]
+        with self.assertRaises(VisionReviewRequired):
+            validate_module_rig_spec(reparent)
+        with self.assertRaises(VisionReviewRequired):
+            resolve_module_motion(reparent, "agile_full")
+
+        setup = renderer.frame(None)
+        report = made["report"]
+        for missing in (first, last):
+            live_ren = SpineRenderer(self.d / "chain-rig")
+            live_ren.sk.bones = [b for b in live_ren.sk.bones if b.name != missing]
+            live_ren.sk.by_name.pop(missing, None)
+            broken = ModuleQualityAuditor(live_ren, self.d / "chain-parts", report, setup)
+            for t in (0, 4, 8):
+                broken.observe(t, 1.0, setup)
+            self.assertEqual(broken.finish()["bindingMotion"]["checks"]["lockedRoot"]["status"], "fail")
+        wrong = SpineRenderer(self.d / "chain-rig")
+        wrong.sk.by_name[last].parent = wrong.sk.by_name[flame["bone"]]
+        qc_wrong = ModuleQualityAuditor(wrong, self.d / "chain-parts", report, setup)
+        for t in (0, 8):
+            qc_wrong.observe(t, 1.0, setup)
+        self.assertEqual(qc_wrong.finish()["bindingMotion"]["checks"]["lockedRoot"]["status"], "fail")
+
+
+if __name__ == "__main__":
+    unittest.main()

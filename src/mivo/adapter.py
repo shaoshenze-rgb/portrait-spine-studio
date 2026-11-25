@@ -1,6 +1,7 @@
 """Mivo Canvas adapter protocol, file-backed & deterministic mock adapters, and fail-stop stage runner."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from abc import ABC, abstractmethod
@@ -58,6 +59,35 @@ class MivoCanvasAdapter(ABC):
         """Inpaint occluded regions indicated by non-zero pixels in `mask_path`."""
 
 
+def validate_matted_portrait(path: Union[str, Path], *, expected_size: Optional[Tuple[int, int]] = None) -> Tuple[int, int]:
+    """Reject opaque, empty or resized handoffs before they enter the rig pipeline."""
+    with Image.open(path) as im:
+        size = im.size
+        alpha = np.asarray(im.convert("RGBA"), dtype=np.uint8)[..., 3]
+    if expected_size is not None and size != expected_size:
+        raise MivoCanvasError("抠图交接结果尺寸与输入不一致，无法保持关键点坐标。", code="MIVO_HANDOFF_SIZE_MISMATCH")
+    if float((alpha < 20).mean()) < 0.03:
+        raise MivoCanvasError("检测到不透明背景，尚未取得真实去底结果；已保留输入，请先完成 Mivo Canvas 去底。", code="MIVO_MATTING_REQUIRED")
+    if not (alpha >= 128).any():
+        raise MivoCanvasError("抠图结果没有可绑定的角色前景。", code="MIVO_EMPTY_FOREGROUND")
+    return size
+
+
+class TransparentInputAdapter(MivoCanvasAdapter):
+    """Pass through already-transparent input; never pretend to remove a background."""
+
+    def auto_matting(self, image_path: Union[str, Path], out_path: Union[str, Path]) -> MivoResult:
+        src, dst = Path(image_path).resolve(), Path(out_path).resolve()
+        w, h = validate_matted_portrait(src)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im.convert("RGBA").save(dst, format="PNG")
+        return MivoResult("auto_matting", str(dst), w, h, {"source": "transparent_input", "performed_matting": False})
+
+    def inpaint_occluded(self, image_path, mask_path, prompt, out_path) -> MivoResult:
+        raise MivoCanvasError("尚未接入真实遮挡补全服务。", code="MIVO_INPAINT_REQUIRED")
+
+
 class FileBackedMivoAdapter(MivoCanvasAdapter):
     """Reads pre-produced Mivo Canvas outputs from a handoff directory (or calls optional hooks)."""
 
@@ -87,7 +117,9 @@ class FileBackedMivoAdapter(MivoCanvasAdapter):
                     retryable=True,
                 ) from exc
         else:
-            cand = self.handoff_dir / dst.name
+            # Bind each result to the exact preprocessed input, never a shared filename.
+            input_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+            cand = self.handoff_dir / input_sha / "matted.png"
             if not cand.is_file():
                 raise MivoCanvasError(
                     f"Expected Mivo matting output missing at {cand}",
@@ -97,9 +129,14 @@ class FileBackedMivoAdapter(MivoCanvasAdapter):
                     details={"expected_path": str(cand)},
                 )
             shutil.copy2(cand, dst)
-        with Image.open(dst) as im:
-            w, h = im.size
-        return MivoResult(operation="auto_matting", output_path=str(dst), width=w, height=h)
+        with Image.open(src) as im:
+            source_size = im.size
+        w, h = validate_matted_portrait(dst, expected_size=source_size)
+        return MivoResult(operation="auto_matting", output_path=str(dst), width=w, height=h, metadata={
+            "source": "hook" if self._matting_hook is not None else "file_handoff",
+            "input_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
+            "output_sha256": hashlib.sha256(dst.read_bytes()).hexdigest(),
+        })
 
     def inpaint_occluded(
         self,

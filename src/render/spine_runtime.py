@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+MAX_UNIFORM_IK_STRETCH = 1.06
 
 def _bezier_value(t: float, t0: float, v0: float, t1: float, v1: float, c: Sequence[float]) -> float:
     """Solve Spine 4 cubic Bezier curve [cx1, cy1, cx2, cy2] in absolute (time, value) units."""
@@ -225,7 +226,9 @@ class Skeleton:
         tgt = self.by_name[c["target"]]
         T = np.array([tgt.worldX, tgt.worldY], dtype=np.float64)
         ang = lambda v: math.degrees(math.atan2(v[1], v[0]))
-        if c.get("mix", 1.0) != 1.0 or c.get("softness", 0) or c.get("stretch") or c.get("compress"):
+        stretch = bool(c.get("stretch"))
+        if (c.get("mix", 1.0) != 1.0 or c.get("softness", 0) or c.get("compress")
+                or (stretch and (len(names) != 2 or c.get("uniform") is not True))):
             raise ValueError(f"Unsupported IK options in {c['name']}")
         if len(names) not in (1, 2):
             raise ValueError(f"IK requires one or two bones in {c['name']}")
@@ -266,7 +269,21 @@ class Skeleton:
         if l1 < 1e-12 or l2 < 1e-12:
             raise ValueError(f"IK chain lengths must be positive in {c['name']}")
         d = float(np.linalg.norm(delta))
+        if stretch:
+            if d < abs(l1-l2)-1e-7:
+                raise ValueError(f"IK target inside minimum reach in {c['name']}")
+            ratio = max(1.0, d/(l1+l2))
+            if ratio > MAX_UNIFORM_IK_STRETCH + 1e-9:
+                raise ValueError(f"IK stretch {ratio:.6f} exceeds {MAX_UNIFORM_IK_STRETCH:.2f} limit in {c['name']}; preserve joints and review motion")
+            if ratio > 1.0:
+                # Scale the parent once: it already scales the child offset and length.
+                p.scaleX *= ratio
+                p.scaleY *= ratio
+                l1 *= ratio
+                l2 *= ratio
         cosa = (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * max(d, 1e-9))
+        if stretch and abs(d - (l1+l2)) <= 1e-9:
+            cosa = 1.0  # Exact fully-extended case; avoid platform acos roundoff jitter.
         alpha = math.degrees(math.acos(min(1.0, max(-1.0, cosa))))
         bend = 1.0 if c.get("bendPositive", True) else -1.0
         offset = ang([ch.x, ch.y])

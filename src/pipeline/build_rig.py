@@ -205,7 +205,11 @@ def _compute_mesh_weights(
     names: List[str]
     slot_bone: str
 
-    if rtype == "chain":
+    if rtype == "rigid":
+        names = [recipe["bone"]]
+        cols = [np.ones(len(P), dtype=np.float64)]
+        slot_bone = recipe["bone"]
+    elif rtype == "chain":
         cname = recipe["chain"]
         cinfo = chains_info[cname]
         w, _ = chain_weights(P, cinfo["joints"])
@@ -244,6 +248,48 @@ def _compute_mesh_weights(
             cols = [1.0 - u, u]
             names = [start_bone, mid_bone]
         slot_bone = recipe.get("slot_bone", mid_bone)
+    elif rtype == "dual_limb":
+        # Two-branch limb weighting (e.g. left & right legs sharing one `legs` slot)
+        root_bone = recipe["root_bone"]
+        branches = recipe["branches"]  # list of {mid_bone, end_bone}
+        names = [root_bone]
+        cols = [np.zeros(len(P), dtype=np.float64)]
+        dists = []
+        per_branch_t = []
+        for br in branches:
+            mb = br["mid_bone"]
+            eb = br.get("end_bone")
+            p0 = bone_pos_canvas[mb]
+            p1 = bone_pos_canvas[eb] if eb else (p0 + np.array([0.0, 100.0]))
+            axis = p1 - p0
+            denom = max(float(np.sum(axis ** 2)), 1e-9)
+            t = np.clip(((P - p0) @ axis) / denom, 0.0, 1.0)
+            proj = p0 + t[:, None] * axis
+            dists.append(np.linalg.norm(P - proj, axis=1))
+            per_branch_t.append((mb, eb, t))
+        # Soft nearest-branch assignment (sharp enough to prevent cross-leg bleed, smooth at crotch)
+        d_stack = np.stack(dists, axis=1)
+        scale_d = max(12.0, float(np.percentile(d_stack, 25)) * 0.35)
+        inv_w = np.exp(-d_stack / scale_d)
+        inv_w /= np.maximum(inv_w.sum(axis=1, keepdims=True), 1e-9)
+        u0, u1 = recipe.get("root_blend", [0.0, 0.25])
+        v0, v1 = recipe.get("tip_blend", [0.45, 0.85])
+        root_acc = np.zeros(len(P), dtype=np.float64)
+        for bi, (mb, eb, t) in enumerate(per_branch_t):
+            bw_b = inv_w[:, bi]
+            u = smoothstep(float(u0), float(u1), t)
+            root_acc += bw_b * (1.0 - u)
+            if eb:
+                v = smoothstep(float(v0), float(v1), t)
+                cols.append(bw_b * u * (1.0 - v))
+                names.append(mb)
+                cols.append(bw_b * u * v)
+                names.append(eb)
+            else:
+                cols.append(bw_b * u)
+                names.append(mb)
+        cols[0] = root_acc
+        slot_bone = recipe.get("slot_bone", root_bone)
     elif rtype == "radial":
         base_bone = recipe["base_bone"]
         centers = recipe["centers"]  # list of {bone, pos?, r_in, r_out}
@@ -384,8 +430,16 @@ def build_rig(
     *,
     preset: str = "agile_full",
     gain: float = 1.0,
+    include_animation: bool = True,
 ) -> Dict[str, Any]:
     """Build a Spine 4.2.43 rig from `parts_dir` and `rig_spec` into `out_dir`."""
+    module_contract = rig_spec.get("moduleContract")
+    if module_contract:
+        from .module_rig import validate_module_rig_spec, MAX_MODULE_GAIN
+        from src.studio.vision_schema import VisionReviewRequired
+        validate_module_rig_spec(rig_spec)
+        if not math.isfinite(gain) or not 0 < gain <= MAX_MODULE_GAIN:
+            raise VisionReviewRequired("模块动作gain必须非零且在统一上限内，不以冻结或过幅换取通过。")
     pdir = Path(parts_dir).resolve()
     out = Path(out_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -406,6 +460,7 @@ def build_rig(
     fps = int(rig_spec.get("fps", preset_obj["fps"]))
     key_step = float(rig_spec.get("key_step", preset_obj["key_step"]))
     character = str(rig_spec.get("character", "character"))
+    bone_roles = {b["name"]: b["role"] for b in rig_spec["bones"] if b.get("role")}
 
     def to_spine(pt: Sequence[float]) -> np.ndarray:
         return np.array([float(pt[0]) - OX, OY - float(pt[1])], dtype=np.float64)
@@ -493,6 +548,10 @@ def build_rig(
             "target": c["target"],
             "mix": 1.0,
         }
+        if c.get("stretch"):
+            if len(cbones) != 2 or c.get("uniform") is not True:
+                raise ValueError("Only explicit two-bone uniform IK stretch is supported")
+            entry.update(stretch=True, uniform=True)
         if len(cbones) == 2:
             if "bendPositive" in c and c["bendPositive"] is not None:
                 entry["bendPositive"] = bool(c["bendPositive"])
@@ -528,6 +587,10 @@ def build_rig(
     sk = Skeleton(skel)
     sk.setup_pose()
     sk.update_world()
+    if module_contract:
+        from .module_rig import validate_expanded_soft_chains
+        parent_of = {b.name: (None if b.parent is None else b.parent.name) for b in sk.bones}
+        validate_expanded_soft_chains(module_contract, parent_of)
     mats = {b.name: b.matrix() for b in sk.bones}
     bidx = sk.bone_index
 
@@ -602,69 +665,108 @@ def build_rig(
 
         skel["slots"].append({"name": name, "bone": slot_bone, "attachment": name})
         skel["skins"][0]["attachments"][name] = {name: att}
-        att_report.append({"part": name, "attachment": att_type, "recipe": recipe_label, "bone": slot_bone})
+        att_report.append({
+            "part": name, "attachment": att_type, "recipe": recipe_label, "bone": slot_bone,
+            "semanticRole": sspec.get("semantic_role") or sspec.get("role") or bone_roles.get(sspec.get("bone")),
+            **({"moduleId":sspec.get("module_id"), "pieceId":sspec.get("piece_id")} if module_contract else {}),
+        })
 
-    # 5. Build zero-at-start cubic-bezier idle animation
-    parent_world_rot = {
-        b.name: (math.degrees(math.atan2(b.parent.c, b.parent.a)) if b.parent is not None else 0.0)
-        for b in sk.bones
-    }
-    motion = resolve_preset_motion(
-        preset,
-        bone_names=[b.name for b in sk.bones],
-        chains=chains_bones_map,
-        overrides=rig_spec.get("motion"),
-        duration=duration,
-    )
+    # 5. Build zero-at-start cubic-bezier idle animation (skipped when generating binding-only preview)
+    # Estimate body height for proportional translation normalization (1080px reference height)
+    if rig_spec.get("body_height_px"):
+        body_h_px = float(rig_spec["body_height_px"])
+    else:
+        ys_min = min((float(p["bbox"][1]) for p in parts), default=0.0)
+        ys_max = max((float(p["bbox"][1] + p["bbox"][3]) for p in parts), default=float(H))
+        body_h_px = max(64.0, ys_max - ys_min)
+    height_scale = max(0.35, min(1.35, body_h_px / 1080.0))
 
-    anim_bones: Dict[str, Dict[str, Any]] = {}
-    for bname, ch in motion.items():
-        tl: Dict[str, Any] = {}
-        extra: List[float] = []
-        if "twitch" in ch and ch["twitch"] is not None:
-            s0 = float(ch["twitch"][0])
-            extra = [round(s0 + d, 4) for d in (0.0, 0.25, 0.50, 0.75, 1.05)]
-        if "rotate" in ch or "twitch" in ch:
-            times, v, d = _keyframes(
-                _fn_from(ch.get("rotate"), duration, gain, 0.0, ch.get("twitch")),
-                duration,
-                key_step,
-                extra,
+    bone_roles = {b["name"]: str(b.get("role")) for b in rig_spec.get("bones", []) if b.get("role")}
+    ik_driven = {bn for c in ik_json for bn in c.get("bones", [])}
+    ik_targets = {c.get("target") for c in ik_json if c.get("target")}
+
+    if include_animation:
+        parent_world_rot = {
+            b.name: (math.degrees(math.atan2(b.parent.c, b.parent.a)) if b.parent is not None else 0.0)
+            for b in sk.bones
+        }
+        if module_contract:
+            from .module_rig import resolve_module_motion
+            motion = resolve_module_motion(rig_spec, preset, duration=duration)
+        else:
+            motion = resolve_preset_motion(
+                preset, bone_names=[b.name for b in sk.bones], chains=chains_bones_map,
+                overrides=rig_spec.get("motion"), duration=duration, bone_roles=bone_roles,
+                ik_driven_bones=ik_driven | ik_targets,
             )
-            tl["rotate"] = bezier_keys([(v, d)], ["value"], times)
-        if "tx" in ch or "ty" in ch:
-            times, vx, dx = _keyframes(_fn_from(ch.get("tx"), duration, gain), duration, key_step)
-            _, vy, dy = _keyframes(_fn_from(ch.get("ty"), duration, gain), duration, key_step)
-            pa = math.radians(parent_world_rot[bname])
-            c_, s_ = math.cos(-pa), math.sin(-pa)
-            lx = [c_ * a - s_ * b for a, b in zip(vx, vy)]
-            ly = [s_ * a + c_ * b for a, b in zip(vx, vy)]
-            ldx = [c_ * a - s_ * b for a, b in zip(dx, dy)]
-            ldy = [s_ * a + c_ * b for a, b in zip(dx, dy)]
-            tl["translate"] = bezier_keys([(lx, ldx), (ly, ldy)], ["x", "y"], times)
-        if "sx" in ch or "sy" in ch:
-            times, vx, dx = _keyframes(_fn_from(ch.get("sx"), duration, gain, 1.0), duration, key_step)
-            _, vy, dy = _keyframes(_fn_from(ch.get("sy"), duration, gain, 1.0), duration, key_step)
-            tl["scale"] = bezier_keys([(vx, dx), (vy, dy)], ["x", "y"], times)
-        if tl:
-            anim_bones[bname] = tl
 
-    idle_anim = {"bones": anim_bones}
-    check_zero_at_start(idle_anim)
-    skel["animations"]["idle"] = idle_anim
+        anim_bones: Dict[str, Dict[str, Any]] = {}
+        for bname, ch in motion.items():
+            tl: Dict[str, Any] = {}
+            extra: List[float] = []
+            if "twitch" in ch and ch["twitch"] is not None:
+                s0 = float(ch["twitch"][0])
+                extra = [round(s0 + d, 4) for d in (0.0, 0.25, 0.50, 0.75, 1.05)]
+            if "rotate" in ch or "twitch" in ch:
+                times, v, d = _keyframes(
+                    _fn_from(ch.get("rotate"), duration, gain, 0.0, ch.get("twitch")),
+                    duration,
+                    key_step,
+                    extra,
+                )
+                tl["rotate"] = bezier_keys([(v, d)], ["value"], times)
+            if "tx" in ch or "ty" in ch:
+                tx_gain = gain * height_scale
+                times, vx, dx = _keyframes(_fn_from(ch.get("tx"), duration, tx_gain), duration, key_step)
+                _, vy, dy = _keyframes(_fn_from(ch.get("ty"), duration, tx_gain), duration, key_step)
+                pa = math.radians(parent_world_rot[bname])
+                c_, s_ = math.cos(-pa), math.sin(-pa)
+                lx = [c_ * a - s_ * b for a, b in zip(vx, vy)]
+                ly = [s_ * a + c_ * b for a, b in zip(vx, vy)]
+                ldx = [c_ * a - s_ * b for a, b in zip(dx, dy)]
+                ldy = [s_ * a + c_ * b for a, b in zip(dx, dy)]
+                tl["translate"] = bezier_keys([(lx, ldx), (ly, ldy)], ["x", "y"], times)
+            if "sx" in ch or "sy" in ch:
+                times, vx, dx = _keyframes(_fn_from(ch.get("sx"), duration, gain, 1.0), duration, key_step)
+                _, vy, dy = _keyframes(_fn_from(ch.get("sy"), duration, gain, 1.0), duration, key_step)
+                tl["scale"] = bezier_keys([(vx, dx), (vy, dy)], ["x", "y"], times)
+            if tl:
+                anim_bones[bname] = tl
 
+        idle_anim = {"bones": anim_bones}
+        check_zero_at_start(idle_anim)
+        skel["animations"]["idle"] = idle_anim
+
+    module_preflight = None
+    if module_contract and include_animation:
+        from .module_rig import preflight_module_motion
+        module_preflight = preflight_module_motion(skel, rig_spec, duration=duration)
     skel["skeleton"]["hash"] = hashlib.sha1(json.dumps(skel, sort_keys=True).encode("utf-8")).hexdigest()[:22]
     spine_filename = f"{character}.spine.json"
     spine_path = out / spine_filename
     spine_path.write_text(json.dumps(skel, separators=(",", ":")) + "\n", encoding="utf-8")
 
+    # Scale soft displacement reference ranges proportionally to actual body height
+    ref_scale = max(0.5, body_h_px / 1080.0)
+    scaled_soft_ranges = {
+        k: [round(float(lo) * ref_scale, 2), round(float(hi) * ref_scale, 2)]
+        for k, (lo, hi) in preset_obj["soft_displacement_ranges"].items()
+    }
+
     report = {
         "revision": REVISION,
+        "generationMode": ("canvas_layers_binding_candidate"
+                           if module_contract and module_contract.get('materialMode') == 'canvas_layers'
+                           else "complete_modules_v2" if module_contract else "legacy_diagnostic"),
         "spineVersion": SPINE_VERSION,
         "character": character,
         "spineFile": spine_filename,
         "preset": preset,
         "gain": float(gain),
+        "includeAnimation": bool(include_animation),
+        "bodyHeightPx": round(body_h_px, 1),
+        "heightScale": round(height_scale, 4),
+        "poseType": rig_spec.get("pose_type", "grounded"),
         "duration": duration,
         "fps": fps,
         "canvas": [W, H],
@@ -673,13 +775,31 @@ def build_rig(
         "partsDir": str(pdir),
         "partsJsonSHA256": _sha256_file(pj_path),
         "boneCount": len(bones_json),
+        "boneRoles": bone_roles,
         "slotCount": len(skel["slots"]),
         "ikCount": len(ik_json),
         "ik": ik_json,
         "attachments": att_report,
         "frame0": "setup; all channel offsets zero at 0 and duration",
-        "softReferenceRanges": preset_obj["soft_displacement_ranges"],
+        "softReferenceRanges": scaled_soft_ranges,
     }
+    if module_contract:
+        report["moduleContract"] = module_contract
+        report["moduleMotionPreflight"] = module_preflight
+        source = pj.get("source")
+        if isinstance(source, str) and source.strip():
+            src = Path(source)
+            if src.is_absolute():
+                candidates = [src]
+            else:
+                candidates = [(pdir / src).resolve(), src.resolve()]
+            src_path = next((c for c in candidates if c.is_file()), None)
+            if src_path is None:
+                raise FileNotFoundError("V2 叠加图原图缺失: %s" % source)
+            from .module_rig import render_rig_mask_overlay
+            overlay_rel = "review/rig_mask_overlay.png"
+            render_rig_mask_overlay(src_path, rig_spec, out / overlay_rel)
+            report["rigMaskOverlay"] = overlay_rel
     report_path = out / "rig-build-report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return {

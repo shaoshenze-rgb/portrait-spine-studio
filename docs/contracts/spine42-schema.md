@@ -132,7 +132,9 @@ Coordinate Convention:
 1. `skeleton.spine` is always `"4.2.43"`.
 2. `skeleton.images` is `"./images/"`, and every slot attachment image is a 4px-transparent-padded RGBA PNG at `images/<attachment>.png`.
 3. `bones` are topologically ordered (parent always precedes child) with `inherit: "normal"` (default).
-4. `ik` constraints are sorted by `order` ascending, support 1-bone (`len(bones) == 1`) and 2-bone (`len(bones) == 2`) chains, `mix == 1.0`, no softness/stretch/compress.
+4. `ik` constraints are sorted by `order` ascending and support 1-bone (`len(bones) == 1`) and 2-bone (`len(bones) == 2`) chains with `mix == 1.0`. Softness and compression remain unsupported. Explicit `stretch: true, uniform: true` is supported for two-bone chains by both bundled runtimes: scale the parent once when the target exceeds total reach, preserving the original setup joints. The bundled runtime rejects stretch above `1.06` or a target inside the minimum reachable radius; it does not clamp the target or relocate setup knees. External Spine-runtime equivalence is not established by the bundled-runtime tests alone.
+
+   当前完整模块 V2 生成合同禁止硬模块伸缩、缩放和剪切；上述 stretch 仅是保留的运行时/历史诊断能力，不会用于 V2 足锚。V2 还在 rig-build-report.json 中保留 moduleContract 投影，按最终模块变换而非 region/mesh 标签判断保形。
 5. `slots` are ordered back-to-front (`drawOrder` ascending).
 6. Weighted mesh `vertices` use Spine 4.2 packed format: for each vertex `k in 0..N-1`, `[boneCount, boneIndex, localX, localY, weight, ...]` with weights summing to `1.0`.
 7. `animations.idle` is a seamless periodic loop (default `8.0s`) where every bone timeline equals setup identity at `t = 0.0` and `t = duration` (`rotate.value == 0`, `translate.x == 0, y == 0`, `scale.x == 1, y == 1`).

@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[Portrait Spine Studio] 本地离线服务已启动：{url}", flush=True)
     print(f"[Portrait Spine Studio] 工作目录：{Path(args.work_dir).resolve()}", flush=True)
+    print("[Portrait Spine Studio] 默认等待当前 Cindy 对话读图分析；应用不直接调用模型，无需安装插件。", flush=True)
     print("[Portrait Spine Studio] 按 Ctrl+C 停止服务。", flush=True)
 
     if not args.no_open:

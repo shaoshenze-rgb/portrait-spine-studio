@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 3,
+  "minCindyVersion": "0.1.143",
+  "id": "portrait-vision-bridge",
+  "name": "立绘视觉连接",
+  "description": "通过 Cindy 可见 Agent 任务分析立绘，为 Portrait Spine Studio 返回关节和独立部件区域。",
+  "whenToUse": "启动或检查 Portrait Spine Studio 的本机视觉分析连接、查询立绘识别任务时使用。",
+  "version": "0.1.0",
+  "kind": "chip",
+  "entry": "main.js",
+  "command": "portrait-vision",
+  "launch": "resident",
+  "agent": { "tasks": true },
+  "tools": [
+    {
+      "name": "start_bridge",
+      "description": "为已授权的本机 Portrait Spine Studio 项目启动视觉连接，并创建独立可见的 Cindy 分析任务。继承本次会话模型，不修改模型设置。返回连接文件位置及任务配置，不返回本机认证令牌。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectRoot": {
+            "type": "string",
+            "description": "已授权的本机 Portrait Spine Studio 仓库绝对路径，须已存在。"
+          }
+        },
+        "required": [
+          "projectRoot"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bridge_status",
+      "description": "只读查询本机视觉连接状态及 Cindy tasks 能力，不创建任务、不返回令牌或图片字节。",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    }
+  ],
+  "node": {
+    "entry": "node/worker.cjs",
+    "protocol": "json-rpc-stdio",
+    "lifecycle": "resident"
+  }
+}

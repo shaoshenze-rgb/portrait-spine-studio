@@ -303,6 +303,98 @@
     padding: 20px;
   }
   .pause-card.visible { display: block; }
+  .progress-wrap { max-width: 1180px; }
+  .rig-editor-layout {
+    display: grid;
+    grid-template-columns: minmax(420px, 1.25fr) minmax(320px, 0.85fr);
+    gap: 16px;
+    margin: 12px 0;
+  }
+  @media (max-width: 960px) { .rig-editor-layout { grid-template-columns: 1fr; } }
+  .rig-canvas-wrap {
+    background: #0a0e14;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .rig-canvas-wrap canvas {
+    width: 100%;
+    height: 520px;
+    display: block;
+    border-radius: 6px;
+    cursor: crosshair;
+    background: #0d121a;
+  }
+  .rig-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-2);
+  }
+  .rig-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .rig-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .rig-side {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 600px;
+    overflow-y: auto;
+  }
+  .rig-box {
+    background: var(--bg-2, #171c26);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+  }
+  .rig-box-title {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .bone-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 185px;
+    overflow-y: auto;
+  }
+  .bone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: rgba(255,255,255,0.02);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .bone-row:hover { background: rgba(255,255,255,0.05); }
+  .bone-row.selected { border-color: var(--accent); background: rgba(56,189,248,0.12); }
+  .rig-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .part-bind-row {
+    display: grid;
+    grid-template-columns: 88px 1fr auto;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .part-bind-row:last-child { border-bottom: none; }
   .part-map-preview {
     max-height: 360px;
     max-width: 100%;
@@ -483,9 +575,9 @@
     <nav class="stepper" aria-label="流程步骤">
       <div id="stepPill1" class="step-pill active"><span class="num">1</span><span>上传与配置</span></div>
       <div class="step-sep"></div>
-      <div id="stepPill2" class="step-pill"><span class="num">2</span><span>生成与分件</span></div>
+      <div id="stepPill2" class="step-pill"><span class="num">2</span><span>分件与骨骼绑定</span></div>
       <div class="step-sep"></div>
-      <div id="stepPill3" class="step-pill"><span class="num">3</span><span>预览、微调与导出</span></div>
+      <div id="stepPill3" class="step-pill"><span class="num">3</span><span>动画预览与导出</span></div>
     </nav>
     <div class="topbar-actions">
       <span id="serverStatusPill" class="status-pill">空闲就绪</span>
@@ -498,16 +590,16 @@
     <div class="upload-wrap">
       <div class="panel">
         <div class="panel-title">
-          <span>1. 上传角色立绘（PNG / WebP）</span>
+          <span>1. 上传角色立绘（PNG / WebP / JPG）</span>
           <span id="fileInfoBadge" class="muted mono">未选择文件</span>
         </div>
         <div id="step1Error" class="banner banner-danger"></div>
         <div id="step1ResizeHint" class="banner banner-warn"></div>
-        <input id="fileInput" type="file" accept="image/png,image/webp,.png,.webp" hidden />
+        <input id="fileInput" type="file" accept="image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg" hidden />
         <div id="dropzone" class="dropzone">
           <div id="dropPlaceholder">
             <div style="font-size:15px;font-weight:600;margin-bottom:6px;">拖拽立绘到此处，或点击选择文件</div>
-            <div class="muted">支持带透明通道的 PNG / WebP；长边超过 2400px 将自动等比缩放并提示</div>
+            <div class="muted">支持 PNG / WebP / JPG；带背景图片需先取得真实去底结果。长边超过 2400px 将自动等比缩放并提示</div>
           </div>
           <img id="uploadThumb" class="thumb" alt="立绘预览" style="display:none;" />
         </div>
@@ -541,11 +633,11 @@
 
         <div class="option-row">
           <div>
-            <div style="font-weight:600;">分件后暂停确认</div>
-            <div class="muted">分件完成后展示 part_map.png，确认无误再构建骨骼与动画</div>
+            <div style="font-weight:600;">生成动画前展示骨骼绑定效果</div>
+            <div class="muted">默认开启：先预览语义分件与五部位骨骼绑定，支持增减骨骼、拖动关节点与重新绑定，满意后再生成动画</div>
           </div>
           <label class="toggle-switch">
-            <input id="chkPauseAfterSplit" type="checkbox" />
+            <input id="chkPauseAfterSplit" type="checkbox" checked />
             <span>开启</span>
           </label>
         </div>
@@ -556,7 +648,7 @@
               <span style="font-weight:600;">初始幅度增益（gain）</span>
               <span id="initGainVal" class="mono">1.00x</span>
             </div>
-            <input id="initGainSlider" type="range" min="0.4" max="1.8" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
+            <input id="initGainSlider" type="range" min="0.4" max="1.5" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
           </div>
         </div>
 
@@ -579,22 +671,160 @@
 
       <div id="pauseCard" class="pause-card">
         <div class="panel-title">
-          <span>分件已完成 — 请确认分件图（part_map.png）</span>
-          <span class="badge badge-warn">已暂停</span>
+          <span>骨骼绑定效果展示与编辑（生成动画前确认）</span>
+          <span id="rigPoseBadge" class="badge badge-warn">待确认绑定</span>
         </div>
-        <div class="muted">确认角色分层区域合理后点击「确认继续生成」，将基于已保留的中间产物继续构建 Spine 4.2 工程与验收。</div>
-        <img id="partMapImg" class="part-map-preview" alt="分件图预览" />
-        <div id="pauseIntermediates" class="muted mono" style="margin-bottom:12px;word-break:break-all;"></div>
-        <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <div id="rigEditingNotice" class="muted">拖动画布上的关节点可调整位置；修改后重新绑定，确认无误再生成动画。</div>
+        <div id="moduleContractPanel" style="display:none;margin:16px 0;">
+          <div class="panel-title"><span>完整模块与连接关系</span><span class="badge badge-warn">绑定确认不是成品通过</span></div>
+          <div id="moduleList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;"></div>
+          <details style="margin-top:10px;"><summary>握持、关节与遮挡</summary><div id="moduleRelations" class="muted" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;"></div></details>
+          <label for="moduleReviewNotes" style="display:block;margin-top:12px;">模块图审记录（与下方绑定确认一次提交）</label>
+          <p class="muted">对照原图和各模块，检查完整硬面、所有边缘、遮挡分离块及接触归属。每行填写“模块ID: 实际观察依据”。当前 Cindy 对话也可完成并提交这些记录；有错切时先回对话修正规划。</p>
+          <textarea id="moduleReviewNotes" class="text-input" rows="5" style="width:100%;" placeholder="head: 头脸与双耳完整，未带入颈部或邻件材质"></textarea>
+          <div id="moduleReviewNotice" class="muted" role="status"></div>
+        </div>
+
+        <div class="rig-editor-layout">
+          <div class="rig-canvas-wrap">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <div style="display:flex;gap:8px;align-items:center;">
+                <label class="toggle-switch" style="font-size:12px;">
+                  <input id="chkShowPartOverlay" type="checkbox" checked />
+                  <span>显示语义分件色块</span>
+                </label>
+                <label class="toggle-switch" style="font-size:12px;">
+                  <input id="chkShowBoneLabels" type="checkbox" checked />
+                  <span>显示骨骼名</span>
+                </label>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;font-size:12px;">
+                <span class="muted">姿态：</span>
+                <select id="rigPoseSelect" class="select-input" style="padding:3px 8px;font-size:12px;">
+                  <option value="airborne">跃起/浮空（双腿微摆）</option>
+                  <option value="grounded">站立（脚底锚定）</option>
+                </select>
+              </div>
+            </div>
+            <canvas id="rigBindCanvas" width="900" height="900"></canvas>
+            <div class="rig-legend">
+              <span><i class="rig-dot" style="background:#38bdf8;"></i>头</span>
+              <span><i class="rig-dot" style="background:#22c55e;"></i>身体</span>
+              <span><i class="rig-dot" style="background:#f59e0b;"></i>手臂/手</span>
+              <span><i class="rig-dot" style="background:#ef4444;"></i>武器(刚性)</span>
+              <span><i class="rig-dot" style="background:#a855f7;"></i>下半身</span>
+              <span><i class="rig-dot" style="background:#14b8a6;"></i>软配件/飘带</span>
+              <span id="rigCanvasHint" class="mono" style="margin-left:auto;">拖拽圆点移动关节</span>
+            </div>
+          </div>
+
+          <div class="rig-side">
+            <div class="rig-box">
+              <div class="rig-box-title">
+                <span>骨骼树（<span id="rigBoneCount">0</span> 根）</span>
+                <button id="btnDeleteBone" type="button" class="btn btn-danger btn-sm" disabled>删除选中骨骼</button>
+              </div>
+              <div id="rigBoneList" class="bone-list"></div>
+            </div>
+
+            <div class="rig-box">
+              <div class="rig-box-title"><span>新增骨骼</span></div>
+              <div class="rig-form-grid">
+                <input id="newBoneName" type="text" class="text-input" placeholder="骨骼名（如 weapon_R）" style="font-size:12px;padding:5px 8px;" />
+                <select id="newBoneParent" class="select-input" style="font-size:12px;padding:5px 8px;"></select>
+                <select id="newBoneRole" class="select-input" style="font-size:12px;padding:5px 8px;">
+                  <option value="head">头（head）</option>
+                  <option value="body">身体（body）</option>
+                  <option value="arm">手臂（arm）</option>
+                  <option value="hand">手（hand）</option>
+                  <option value="weapon">武器刚性（weapon）</option>
+                  <option value="leg">下半身（leg）</option>
+                  <option value="soft">软配件/飘带（soft）</option>
+                </select>
+                <button id="btnAddBone" type="button" class="btn btn-primary btn-sm">+ 添加骨骼</button>
+              </div>
+            </div>
+
+            <div class="rig-box">
+              <div class="rig-box-title"><span>分件绑定关系</span><span class="muted" style="font-weight:400;">武器建议勾选刚性</span></div>
+              <div id="rigPartBindings"></div>
+            </div>
+
+            <div id="rigRebindStatus" class="banner banner-warn" style="margin:0;"></div>
+          </div>
+        </div>
+
+        <img id="partMapImg" class="part-map-preview" alt="分件图预览" style="display:none;" />
+        <div id="pauseIntermediates" class="muted mono" style="margin-bottom:10px;word-break:break-all;font-size:11px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
           <button id="btnPauseDiscard" type="button" class="btn btn-danger">放弃任务</button>
-          <button id="btnContinueGenerate" type="button" class="btn btn-ok">确认继续生成</button>
+          <button id="btnRebindRig" type="button" class="btn btn-primary">重新绑定预览</button>
+          <button id="btnContinueGenerate" type="button" class="btn btn-ok">确认绑定并生成动画</button>
         </div>
       </div>
 
+      <div id="analysisCard" class="pause-card">
+        <div class="panel-title">
+          <span>等待当前 Cindy 对话识别立绘</span>
+          <span class="badge badge-warn">尚未识别</span>
+        </div>
+        <p class="muted">图片已准备好。把下面这句话发到当前 Cindy 对话，规划完整的保形模块、软模块以及接触和遮挡关系，再回到这里检查绑定。页面本身不会调用模型。</p>
+        <textarea id="analysisContinueText" class="text-input" readonly rows="3" aria-label="在 Cindy 继续识别的消息" style="width:100%;resize:vertical;"></textarea>
+        <div style="display:flex;gap:10px;margin:10px 0;flex-wrap:wrap;">
+          <button id="btnCopyAnalysisMessage" type="button" class="btn btn-primary btn-sm">复制继续语句</button>
+          <button id="btnRefreshAnalysis" type="button" class="btn btn-sm">刷新识别结果</button>
+          <a id="analysisImageLink" class="btn btn-sm" target="_blank" rel="noopener">查看待识别图片</a>
+        </div>
+        <div id="analysisRequestInfo" class="muted mono" style="font-size:11px;word-break:break-all;"></div>
+        <div id="analysisCopyNotice" class="muted" role="status"></div>
+      </div>
+
+      <div id="refineMaskPanel" class="pause-card">
+        <div class="panel-title">
+          <span>分件点选修正（兜底）</span>
+          <span class="badge badge-warn">refine-mask</span>
+        </div>
+        <p class="muted">左键加点（绿），右键加负点（红）。坐标映射回原图像素后调用 refine-mask；确认分件并绑定会走正规 apply-analysis（from_refined）。</p>
+        <label for="refineTargetSelect">目标部件 target_id</label>
+        <select id="refineTargetSelect" class="select-input" style="margin:6px 0 10px;max-width:320px;"></select>
+        <canvas id="refineMaskCanvas" width="640" height="480" style="width:100%;max-width:640px;background:#1a1f2b;border:1px solid var(--border);border-radius:8px;cursor:crosshair;"></canvas>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
+          <button id="btnRefineUndo" type="button" class="btn btn-sm">撤销上一点</button>
+          <button id="btnRefineClear" type="button" class="btn btn-sm">清空当前点</button>
+          <button id="btnRefineRun" type="button" class="btn btn-primary btn-sm">重算该部件</button>
+          <button id="btnRefineApply" type="button" class="btn btn-ok btn-sm">确认分件并绑定</button>
+        </div>
+        <div id="refineMaskStatus" class="muted" role="status"></div>
+        <img id="rigMaskOverlayImg" alt="三合一叠加验收图" style="display:none;max-width:100%;margin-top:10px;border-radius:8px;" />
+      </div>
+
       <div id="failCard" class="banner banner-danger" style="padding:16px;">
-        <div style="font-weight:700;font-size:14px;margin-bottom:6px;">阶段执行失败（已启用 Fail-Stop，未静默放行）</div>
+        <div id="qualityStateTitle" style="font-weight:700;font-size:14px;margin-bottom:6px;">当前结果未通过验收</div>
         <div id="failMessage" style="margin-bottom:8px;"></div>
-        <div id="failIntermediates" class="muted mono" style="margin-bottom:12px;word-break:break-all;"></div>
+        <div id="moduleQualityList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin-bottom:12px;"></div>
+        <details style="margin-bottom:12px;"><summary>诊断文件</summary><div id="failIntermediates" class="muted mono" style="word-break:break-all;"></div></details>
+        <div id="diagnosticPreviewBlock" style="display:none;margin-bottom:12px;">
+          <div style="font-weight:600;margin-bottom:8px;">已生成动画 · 未通过验收</div>
+          <div id="diagnosticCanvasWrap" style="height:440px;width:100%;position:relative;"><canvas id="diagnosticCanvas" style="width:100%;height:100%;display:block;"></canvas></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;">
+            <button id="btnDiagnosticPlay" type="button" class="btn btn-sm">暂停诊断预览</button>
+            <span id="diagnosticTime" class="mono">0.00 / 8.00s</span>
+            <a id="diagnosticAnimationLink" class="btn btn-sm" target="_blank" rel="noopener">单独打开诊断预览</a>
+          </div>
+          <div id="diagnosticPreviewNotice" class="muted" style="margin-top:6px;">仅用于检查动画问题；任务仍为失败，导出保持禁用。</div>
+          <div id="visualReviewForm" style="display:none;margin-top:16px;">
+            <label style="display:block;margin-bottom:8px;"><input id="chkOriginalModules" type="checkbox" /> 我已实际对照原图与分件图，核对完整语义与边缘归属</label>
+            <label><input id="chkVisualLoop" type="checkbox" /> 我已检查原速完整循环、模块归属与接触</label>
+            <div id="visualObservationFields" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px;"></div>
+            <label for="visualReviewNotes" style="display:block;margin-top:8px;">实际观察结果</label>
+            <textarea id="visualReviewNotes" class="text-input" rows="3" style="width:100%;" placeholder="记录仍有的问题，或通过的具体观察依据"></textarea>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+              <button id="btnVisualPass" type="button" class="btn btn-ok" disabled>记录视觉通过</button>
+              <button id="btnVisualFail" type="button" class="btn btn-danger">记录需要修改</button>
+            </div>
+            <div id="visualReviewNotice" class="muted" role="status" style="margin-top:8px;">机器检查有失败或待审时，不能通过此处放行。</div>
+          </div>
+        </div>
         <div style="display:flex;gap:10px;">
           <button id="btnRetryStage" type="button" class="btn btn-primary btn-sm">重试当前阶段</button>
           <button id="btnDiscardJob" type="button" class="btn btn-danger btn-sm">放弃任务</button>
@@ -619,6 +849,7 @@
             <button id="btnFrame0" type="button" class="btn btn-sm btn-toggle">第 0 帧对照</button>
             <button id="btnParts" type="button" class="btn btn-sm btn-toggle">分件叠加</button>
             <button id="btnBones" type="button" class="btn btn-sm btn-toggle">骨骼 / IK 线框</button>
+            <button id="btnBackToRigEditor" type="button" class="btn btn-sm">调整骨骼绑定</button>
           </div>
         </div>
 
@@ -646,7 +877,7 @@
       <aside class="inspector">
         <div class="insp-card">
           <div class="insp-head">
-            <span>4 项硬门禁验收（Hard Gates）</span>
+            <span id="healthChecksTitle">完整模块质量</span>
             <span id="overallGateBadge" class="badge badge-na">N/A</span>
           </div>
           <div id="hardGatesList"></div>
@@ -654,7 +885,7 @@
 
         <div class="insp-card">
           <div class="insp-head">
-            <span>软位移动态提示（Soft Hints）</span>
+            <span id="motionHintsTitle">实际模块运动</span>
             <span class="muted">仅供参考</span>
           </div>
           <div id="softHintsList"></div>
@@ -673,24 +904,24 @@
                 <span>全局增益 gain</span>
                 <span id="wbGainVal" class="mono">1.00x</span>
               </div>
-              <input id="wbGainSlider" type="range" min="0.2" max="2.2" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
+              <input id="wbGainSlider" type="range" min="0.2" max="1.5" step="0.05" value="1.0" style="width:100%;accent-color:var(--accent);" />
             </div>
             <button id="btnApplyMotionParams" type="button" class="btn btn-sm">应用预设 / 幅度（仅重跑动画层）</button>
           </div>
         </div>
 
         <div class="insp-card">
-          <div class="insp-head"><span>自然语言微调（最小层级重跑）</span></div>
+          <div class="insp-head"><span>全局动作调整</span></div>
           <div style="display:flex;gap:6px;">
-            <input id="nlInput" type="text" class="text-input" placeholder="例如：右边长发摆动加大 / 整体呼吸更柔和 / 左手固定别动" />
+            <input id="nlInput" type="text" class="text-input" placeholder="例如：整体更柔和 / gain=0.8" />
             <button id="btnRunNlAdjust" type="button" class="btn btn-primary btn-sm">微调</button>
           </div>
           <div class="chip-row">
-            <button type="button" class="chip" data-nl="右边长发摆动加大">右边长发摆动加大</button>
-            <button type="button" class="chip" data-nl="整体呼吸更柔和">整体呼吸更柔和</button>
-            <button type="button" class="chip" data-nl="左手固定别动">左手固定别动</button>
-            <button type="button" class="chip" data-nl="重新拆分披风并扩大遮挡补全">重新拆分披风</button>
+            <button type="button" class="chip" data-nl="整体更明显">整体更明显</button>
+            <button type="button" class="chip" data-nl="整体更柔和">整体更柔和</button>
+            <button type="button" class="chip" data-nl="gain=1.0">恢复基准幅度</button>
           </div>
+          <p class="muted">局部模块、握持、遮挡或静止关系的修改，请在当前 Cindy 对话更新完整规划；不会自动冻结模块或扩大填色。</p>
           <div id="adjustError" class="banner banner-danger" style="margin:6px 0 0;"></div>
           <div id="adjustLogList" class="log-list"></div>
         </div>
@@ -701,6 +932,7 @@
             <button id="btnExportSpine" type="button" class="btn btn-ok btn-sm">导出 Spine 4.2 工程包（默认 .zip）</button>
             <button id="btnExportPreview" type="button" class="btn btn-sm">导出深 / 浅底预览视频（.mp4）</button>
             <button id="btnExportWeb" type="button" class="btn btn-sm">按需导出透明 Web 视频包</button>
+            <button id="btnExportHtml" type="button" class="btn btn-sm">导出单文件 HTML 预览</button>
           </div>
           <div id="exportNotice" class="banner banner-warn" style="margin:8px 0 0;"></div>
           <div id="exportError" class="banner banner-danger" style="margin:8px 0 0;"></div>
@@ -721,9 +953,24 @@
     fileName: '',
     imageBase64: '',
     currentJob: null,
+    requestedJobId: null,
     busy: false,
     pollTimer: null,
   };
+  let diagnosticPlayer = null;
+  let diagnosticRigKey = null;
+  function getDiagnosticPlayer() {
+    if (!diagnosticPlayer) {
+      diagnosticPlayer = new PortraitSpinePlayer({
+        canvas: $('diagnosticCanvas'),
+        defaultDuration: 8,
+        onStateChange(st) { $('btnDiagnosticPlay').textContent = st.playing ? '暂停诊断预览' : '播放诊断预览'; },
+        onTimeUpdate(t, duration) { $('diagnosticTime').textContent = `${t.toFixed(2)} / ${duration.toFixed(2)}s`; },
+      });
+      new ResizeObserver(() => diagnosticPlayer.resize()).observe($('diagnosticCanvasWrap'));
+    }
+    return diagnosticPlayer;
+  }
 
   const player = new PortraitSpinePlayer({
     canvas: $('stageCanvas'),
@@ -786,9 +1033,123 @@
     $('btnRetryStage').disabled = state.busy;
     $('btnApplyMotionParams').disabled = state.busy;
     $('btnRunNlAdjust').disabled = state.busy;
-    $('btnExportSpine').disabled = state.busy;
-    $('btnExportPreview').disabled = state.busy;
-    $('btnExportWeb').disabled = state.busy;
+    const exportAllowed = state.currentJob?.status === 'ready' && state.currentJob?.quality?.overall?.exportAllowed === true;
+    $('btnExportSpine').disabled = state.busy || !exportAllowed;
+    $('btnExportPreview').disabled = state.busy || !exportAllowed;
+    $('btnExportWeb').disabled = state.busy || !exportAllowed;
+    $('btnExportHtml').disabled = state.busy || !exportAllowed;
+    $('btnVisualPass').disabled = state.busy || !moduleMachineClear(state.currentJob)
+      || !$('chkVisualLoop').checked || !$('chkOriginalModules').checked || !$('visualReviewNotes').value.trim()
+      || Object.values(collectVisualObservations()).some((item) => !['pass', 'not_applicable'].includes(item.status) || !item.notes);
+    $('btnVisualFail').disabled = state.busy || !$('visualReviewNotes').value.trim();
+  }
+
+  function moduleMachineClear(job) {
+    return job?.module_contract_version === 2 && job?.quality?.contractApplicable === true && ['inputOwnership', 'bindingMotion', 'machineQC']
+      .every((key) => ['pass', 'not_applicable'].includes(job?.quality?.[key]?.status));
+  }
+
+  const visualDimensions = { semanticCompleteness: '完整语义与边缘', rigidShape: '身体和硬物保形', softDeformation: '软模块有限轻弯', contactsOcclusion: '接触、遮挡与补全', loopAppearance: '原速完整循环观感' };
+  function collectVisualObservations() {
+    return Object.fromEntries(Object.keys(visualDimensions).map((key) => [key, {
+      status: $('visual_' + key + '_status')?.value || 'pending',
+      notes: $('visual_' + key + '_notes')?.value.trim() || '',
+    }]));
+  }
+
+  function renderModuleContract(job) {
+    const isV2 = job.module_contract_version === 2;
+    $('moduleContractPanel').style.display = isV2 ? 'block' : 'none';
+    const reviewKey = JSON.stringify(job.module_review_binding);
+    if ($('moduleReviewNotes').dataset.binding !== reviewKey) {
+      $('moduleReviewNotes').value = ''; $('moduleReviewNotes').dataset.binding = reviewKey;
+    }
+    $('moduleReviewNotice').textContent = job.module_review_binding
+      ? '待实际图审；声明覆盖和掩码一致不能证明完整语义。'
+      : '当前模块对照尚未就绪或已过期，不能确认生成。';
+    const list = $('moduleList'); list.replaceChildren();
+    const shapeNames = { rigid: '保形轻摆', soft: '完整软模块 · 有限轻弯', static: '明确静止' };
+    for (const module of job.modules || []) {
+      const item = document.createElement('div'); item.className = 'rig-box';
+      item.style.overflowWrap = 'anywhere';
+      const title = document.createElement('strong'); title.textContent = module.id + ' · ' + (module.role || '未分类');
+      const detail = document.createElement('div'); detail.className = 'muted';
+      detail.textContent = (shapeNames[module.motion_type] || '类型未明确') + ' · ' + module.piece_count + ' 个可见块 · 父级：' + (module.parent || '场景');
+      item.append(title, detail);
+      if (module.comparison_url) {
+        const link = document.createElement('a'); link.className = 'btn btn-sm';
+        link.href = module.comparison_url; link.target = '_blank'; link.rel = 'noopener';
+        link.textContent = '查看原图与完整模块对照'; item.appendChild(link);
+      }
+      list.appendChild(item);
+    }
+    const rows = (job.connections || []).map((c) => c.id + '：' + c.type + ' · ' + c.a + (c.b ? ' ↔ ' + c.b : ' ↔ 固定锚点'));
+    for (const o of job.occlusions || []) rows.push(o.front + ' 遮挡 ' + o.back + ' · 补全：' + o.completion);
+    $('moduleRelations').textContent = rows.join(String.fromCharCode(10)) || '未声明接触或遮挡关系。';
+  }
+
+  function renderModuleQuality(job) {
+    const list = $('moduleQualityList'); list.replaceChildren();
+    const labels = { inputOwnership: '输入与声明归属一致性', bindingMotion: '绑定与运动', machineQC: '机器质量检查', visual: '正常画面复核', overall: '整体结论' };
+    const statusLabels = { pass: '通过', fail: '失败', pending: '待审／未完成', not_run: '未执行', not_applicable: '不适用' };
+    const checkLabels = { sourceIdentity: '原图版本', bodyScaleIdentity: '真实主体尺度', declaredCoverage: '声明覆盖', maskIdentity: '掩码版本', actualOwnership: '实际像素归属', visibleTexture: '原可见纹理', contract: '模块合同', motionDeclarations: '运动声明', rigidity: '最终保形', softDeformation: '软形变与翻折', moduleInfluences: '模块影响范围', softDriverRigidity: '软模块驱动保形', visibleMotion: '真实可见运动', relativeMotion: '相对节律', contacts: '握持与锚点', gripRelativePose: '握持相对姿态', hiddenFill: '遮挡补全', remainingHiddenCoverage: '未补隐藏区域的运动遮挡', negativeSpace: '原孔与新裂', contactSweepCoverage: '接触处露底', materialStability: '纹理稳定', baseGates: '基础重组与循环' };
+    for (const [key, label] of Object.entries(labels)) {
+      const part = job.quality?.[key];
+      const row = document.createElement('div'); row.className = 'rig-box';
+      const strong = document.createElement('strong'); strong.textContent = label + '：' + (statusLabels[part?.status] || '未执行');
+      const reason = document.createElement('div'); reason.className = 'muted';
+      reason.textContent = Array.isArray(part?.reasons) ? part.reasons.join('；') : '';
+      row.append(strong, reason);
+      if (part?.checks && !Array.isArray(part.checks)) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = '检查项与证据'; details.appendChild(summary);
+        for (const [checkKey, check] of Object.entries(part.checks)) {
+          const line = document.createElement('div'); line.style.marginTop = '6px';
+          line.textContent = (checkLabels[checkKey] || checkKey) + '：' + (statusLabels[check?.status] || '未执行');
+          const specifics = check?.failedContacts || check?.invalidModules || check?.missingRequiredModules || [];
+          if (specifics.length) line.textContent += ' · ' + specifics.join('、');
+          details.appendChild(line);
+          if (checkKey === 'remainingHiddenCoverage') {
+            for (const occlusion of check.occlusions || []) {
+              const item = document.createElement('div'); item.style.marginTop = '4px';
+              item.style.overflowWrap = 'anywhere';
+              const number = (value) => Number.isFinite(value) ? value : '未确认';
+              item.textContent = `${occlusion.front || '前层'} → ${occlusion.back || '后层'}：${statusLabels[occlusion.status] || '未执行'}`
+                + `；未补区域 ${number(occlusion.remainingPixels)} 像素，抽样最大露出 ${number(occlusion.exposedUnfilledPixelsMax)} 像素`
+                + `，半透明遮挡 ${number(occlusion.translucentUnfilledPixelsMax)} 像素。`;
+              if (occlusion.reason) item.textContent += ' ' + occlusion.reason;
+              details.appendChild(item);
+            }
+          }
+        }
+        row.appendChild(details);
+      }
+      list.appendChild(row);
+    }
+    if (job.analysis_issues?.length) {
+      const issues = document.createElement('div'); issues.className = 'rig-box';
+      const title = document.createElement('strong'); title.textContent = '当前未决项'; issues.appendChild(title);
+      for (const text of job.analysis_issues) { const line = document.createElement('p'); line.textContent = text; issues.appendChild(line); }
+      list.appendChild(issues);
+    }
+    const inputIssues = job.stage_error?.details?.input_issues;
+    if (Array.isArray(inputIssues) && inputIssues.length) {
+      const issues = document.createElement('div'); issues.className = 'rig-box';
+      issues.style.overflowWrap = 'anywhere'; issues.style.gridColumn = '1 / -1';
+      const title = document.createElement('strong'); title.textContent = '已定位的输入问题'; issues.appendChild(title);
+      const kinds = { background_residue: '背景残留', fringe: '轮廓毛边', source_damage: '原图损坏', precomposited_overlap: '材质已预合成，缺少独立源层' };
+      for (const issue of inputIssues) {
+        const line = document.createElement('p');
+        line.textContent = (kinds[issue.kind] || '输入待审') + '：' + (issue.notes || issue.id || '请复核原图');
+        issues.appendChild(line);
+      }
+      if (job.matted_url?.startsWith(`/jobs/${job.job_id}/`)) {
+        const link = document.createElement('a'); link.className = 'btn btn-sm';
+        link.href = job.matted_url; link.target = '_blank'; link.rel = 'noopener';
+        link.textContent = '查看本次输入原图'; issues.appendChild(link);
+      }
+      list.appendChild(issues);
+    }
   }
 
   async function apiJson(url, options = {}) {
@@ -807,30 +1168,70 @@
   }
 
   async function refreshHealth() {
+    if (state.pollingHealth) return;
+    state.pollingHealth = true;
     try {
       const h = await apiJson('/api/health');
       setBusy(h.busy);
+      const viewedId = state.currentJob?.job_id || state.requestedJobId;
+      if (h.busy && h.active_job_id === viewedId) {
+        const live = await apiJson(`/api/jobs/${viewedId}`);
+        if (live.job_id === viewedId && (state.currentJob?.job_id || state.requestedJobId) === viewedId) await applyJobState(live);
+      } else if (viewedId && (['awaiting_analysis', 'running', 'awaiting_visual_review', 'needs_review'].includes(state.currentJob?.status) || !state.currentJob)) {
+        const latest = await apiJson(`/api/jobs/${viewedId}`);
+        if ((state.currentJob?.job_id || state.requestedJobId) !== viewedId) return;
+        if (latest.status !== state.currentJob?.status || latest.updated_at !== state.currentJob?.updated_at) {
+          await applyJobState(latest);
+        }
+      }
     } catch (_err) {
       // ignore transient poll errors
+    } finally {
+      state.pollingHealth = false;
     }
   }
 
   function renderStages(stages) {
     const list = $('stageList');
     list.innerHTML = '';
-    const mapText = { pending: '等待中', running: '执行中', done: '已完成', failed: '失败' };
+    const mapText = { pending: '等待中', awaiting: '等待对话分析', running: '执行中', done: '已完成', failed: '失败' };
     for (const st of stages || []) {
       const row = document.createElement('div');
       row.className = 'stage-item';
       row.innerHTML = `
         <span>${st.label}</span>
-        <span class="badge badge-${st.status}">${mapText[st.status] || st.status}</span>
+        <span class="badge badge-${st.status === 'awaiting' ? 'pending' : st.status}">${mapText[st.status] || st.status}</span>
       `;
       list.appendChild(row);
     }
   }
 
   function renderHealthReport(rawReport) {
+    const quality = rawReport?.quality;
+    if (quality?.contractApplicable) {
+      const labels = { inputOwnership: '输入与声明归属一致性', bindingMotion: '绑定与运动', machineQC: '机器QC', visual: '视觉复核', overall: '整体结论' };
+      const states = { pass: '通过', fail: '失败', pending: '待审', not_applicable: '不适用' };
+      $('healthChecksTitle').textContent = '完整模块质量';
+      $('motionHintsTitle').textContent = '实际模块运动';
+      $('overallGateBadge').textContent = states[quality.overall?.status] || '未执行';
+      $('overallGateBadge').className = 'badge badge-' + (quality.overall?.status || 'na');
+      $('hardGatesList').replaceChildren();
+      for (const [key, label] of Object.entries(labels)) {
+        const row = document.createElement('div'); row.className = 'gate-row';
+        row.textContent = label + '：' + (states[quality[key]?.status] || '未执行');
+        $('hardGatesList').appendChild(row);
+      }
+      $('softHintsList').replaceChildren();
+      for (const [id, module] of Object.entries(quality.bindingMotion?.modules || {})) {
+        const row = document.createElement('div'); row.className = 'gate-row'; row.style.overflowWrap = 'anywhere';
+        const amount = Number.isFinite(module.actualVisibleDisplacementPx) ? module.actualVisibleDisplacementPx.toFixed(3) + ' px' : '未测量';
+        row.textContent = id + ' · ' + (module.motion === 'static' ? '声明静止' : '声明运动') + ' · 可见位移 ' + amount;
+        $('softHintsList').appendChild(row);
+      }
+      return;
+    }
+    $('healthChecksTitle').textContent = '历史诊断门禁（不代表完整模块通过）';
+    $('motionHintsTitle').textContent = '历史骨点位移提示';
     const norm = normalizeHealthReport(rawReport);
     const overall = $('overallGateBadge');
     overall.className = `badge badge-${norm.overallStatus}`;
@@ -877,7 +1278,7 @@
     const el = $('adjustLogList');
     el.innerHTML = '';
     if (!logs || logs.length === 0) {
-      el.innerHTML = '<div class="muted">暂无微调记录。输入自然语言后将自动润色并仅重跑最小受影响层级。</div>';
+      el.innerHTML = '<div class="muted">暂无微调记录。输入自然语言后按本地规则归类，仅重跑最小受影响层级。</div>';
       return;
     }
     for (const item of [...logs].reverse()) {
@@ -913,33 +1314,126 @@
   }
 
   async function applyJobState(job) {
+    const previousReviewKey = JSON.stringify(state.currentJob?.review_binding || null);
     state.currentJob = job;
+    state.requestedJobId = job.job_id;
+    if (previousReviewKey !== JSON.stringify(job.review_binding || null)) {
+      $('chkVisualLoop').checked = false;
+      $('chkOriginalModules').checked = false;
+      $('visualReviewNotes').value = '';
+      for (const key of Object.keys(visualDimensions)) {
+        if ($('visual_' + key + '_status')) $('visual_' + key + '_status').value = 'pending';
+        if ($('visual_' + key + '_notes')) $('visual_' + key + '_notes').value = '';
+      }
+    }
+    renderModuleContract(job);
+    renderModuleQuality(job);
+    setBusy(state.busy);
     $('jobIdLabel').textContent = `Job ${job.job_id} · ${job.character}`;
     renderStages(job.stages);
-    showBanner($('step2ResizeBanner'), job.resize_notice || '');
-    showBanner($('step3ResizeBanner'), job.resize_notice || '');
+    $('analysisCard').classList.remove('visible');
+    $('refineMaskPanel').classList.remove('visible');
+    $('diagnosticPreviewBlock').style.display = 'none';
+    $('visualReviewForm').style.display = 'none';
+    diagnosticPlayer?.pause();
+    const semanticText = ({
+      conversation_handoff: job.status === 'awaiting_analysis'
+        ? '等待当前 Cindy 对话看图识别；页面未调用模型'
+        : '分件依据：当前 Cindy 对话提交的视觉分析；页面未调用模型',
+      actual_cindy_agent: '分件依据：Cindy 自动视觉识别（已校验当前图片）',
+      provided_hints: '分件依据：外部提供的关键点或配置（未自动识别）',
+      geometry: '分件依据：显式几何诊断模式（未自动识别）',
+      pending: '等待视觉分析准备',
+    })[job.semantic_source] || '视觉识别来源尚未确认';
+    const mattingText = ({ transparent_input: '输入已有透明底，未执行去底', file_handoff: '使用按输入校验的抠图交接结果', hook: '使用抠图适配结果', unavailable: '尚未取得可用抠图结果', pending: '等待透明输入校验' })[job.matting_source] || '抠图来源未确认';
+    const notice = [job.resize_notice, semanticText, mattingText, ...(job.warnings || [])].filter(Boolean).join(' · ');
+    showBanner($('step2ResizeBanner'), notice);
+    showBanner($('step3ResizeBanner'), notice);
 
-    if (job.status === 'awaiting_split_confirm') {
+    if (job.status === 'running') {
+      setStep(2);
+      $('pauseCard').classList.remove('visible');
+      $('failCard').classList.remove('visible');
+      return;
+    }
+
+    if (job.status === 'awaiting_analysis') {
+      setStep(2);
+      $('pauseCard').classList.remove('visible');
+      $('failCard').classList.remove('visible');
+      $('analysisCard').classList.add('visible');
+      const request = job.analysis_request || {};
+      $('analysisContinueText').value = '请继续 Portrait Spine Studio 任务 ' + job.job_id + '：实际查看本次立绘，提交完整模块 V2 规划。头身、自然肢段、手和武器保形，软配件有限轻弯；明确全部可见块、接触与遮挡，保留未决项，停在绑定预览。';
+      $('analysisImageLink').href = request.image_url || job.matted_url || '#';
+      const size = (request.image_size || []).join(' × ');
+      $('analysisRequestInfo').textContent = `任务 ${job.job_id} · ${size} · 图片校验 ${request.input_sha256 || '等待生成'}。分析只用于这一张输入。`;
+      syncRefinePanel(job);
+      return;
+    }
+
+    if (job.status === 'awaiting_split_confirm' || job.status === 'awaiting_rig_confirm') {
       setStep(2);
       $('pauseCard').classList.add('visible');
       $('failCard').classList.remove('visible');
       $('partMapImg').src = `${job.part_map_url}?v=${Date.now()}`;
       $('pauseIntermediates').textContent = `已保留中间产物：${Object.values(job.preserved_intermediates || {}).join(' | ')}`;
+      await loadRigEditor(job.job_id);
+      syncRefinePanel(job);
       return;
     }
 
-    if (job.status === 'failed') {
+    if (['failed', 'needs_review', 'awaiting_visual_review'].includes(job.status)) {
       setStep(2);
       $('pauseCard').classList.remove('visible');
       $('failCard').classList.add('visible');
       const se = job.stage_error || {};
-      $('failMessage').textContent = `阶段 ${se.failedStage || 'unknown'} [${se.errorCode || 'ERROR'}]：${se.message || '未知错误'}`;
+      $('qualityStateTitle').textContent = job.status === 'awaiting_visual_review'
+        ? '机器检查通过 · 等待完整循环视觉复核' : '当前结果未通过验收';
+      const visionRetryNote = se.failedStage === 'vision'
+        ? (job.semantic_source === 'conversation_handoff'
+          ? ' 请在当前 Cindy 对话复核这张图的分析与未决项，再为同一任务提交修正结果。'
+          : ' 该运行的识别结果未确认，请在 Cindy 查看原任务，不要重复派发。') : '';
+      const visionTask = se.details?.task_id ? ` Cindy 识别任务：${se.details.task_id}。` : '';
+      $('failMessage').textContent = `阶段 ${se.failedStage || 'unknown'} [${se.errorCode || 'ERROR'}]：${se.message || '未知错误'}${visionTask}${visionRetryNote}`;
+      $('btnRetryStage').textContent = se.failedStage === 'vision' ? '重新检查分析状态' : '重试当前阶段';
+      $('btnRetryStage').style.display = job.status === 'failed' && se.failedStage ? '' : 'none';
+      if (job.status !== 'failed') $('failMessage').textContent = job.status === 'awaiting_visual_review'
+        ? '请检查模块完整性、刚性、柔性形变和连接关系。绑定确认与机器数值通过都不是成品视觉通过。'
+        : '检查仍有待审或未覆盖项目；请在 Cindy 对话中复核，不能以勾选视觉通过跳过。';
+      if (!se.failedStage && job.visual_review) $('failMessage').textContent = '视觉复核：' + job.visual_review.evidence.notes;
       $('failIntermediates').textContent = `已保留中间产物：${Object.values(job.preserved_intermediates || {}).join(' | ')}`;
+      if (job.rig_build_count > 0 && job.rig_url?.startsWith(`/jobs/${job.job_id}/rig/`)) {
+        const params = new URLSearchParams({ rig: job.rig_url });
+        if (job.health_report_url) params.set('health', job.health_report_url);
+        $('diagnosticAnimationLink').href = `/player/standalone-viewer.html?${params.toString()}`;
+        $('diagnosticPreviewBlock').style.display = 'block';
+        const diagnostic = getDiagnosticPlayer();
+        diagnostic.resize();
+        const key = `${job.job_id}:${job.rig_version}`;
+        try {
+          if (key !== diagnosticRigKey) {
+            await diagnostic.loadFromUrl(job.rig_url, {
+              healthReportUrl: job.health_report_url || job.rig_url.replace(/[^/]+$/, 'health-report.json'),
+              autoPlay: true,
+            });
+            diagnosticRigKey = key;
+          } else { diagnostic.play(); }
+          diagnostic.setBackground('light');
+          $('diagnosticPreviewNotice').textContent = '此预览用于检查当前动画；整体未通过时禁止导出。';
+          $('visualReviewForm').style.display = job.module_contract_version === 2 && job.review_binding ? 'block' : 'none';
+          $('visualReviewNotice').textContent = moduleMachineClear(job)
+            ? '机器项目已通过。请实际观察原速完整循环并记录依据；不会自动判为视觉通过。'
+            : '机器检查仍有失败或待审项，不能以视觉确认跳过。';
+        } catch (err) {
+          $('diagnosticPreviewNotice').textContent = `诊断预览未能加载：${err.message}。任务仍未通过验收。`;
+        }
+      }
       return;
     }
 
     if (job.status === 'discarded') {
       state.currentJob = null;
+      state.requestedJobId = null;
       $('pauseCard').classList.remove('visible');
       $('failCard').classList.remove('visible');
       setStep(1);
@@ -970,6 +1464,10 @@
   function handleSelectedFile(file) {
     if (!file) return;
     showBanner($('step1Error'), '');
+    if (!/\.(png|webp|jpe?g)$/i.test(file.name)) {
+      showBanner($('step1Error'), '请选择 PNG、WebP、JPG 或 JPEG 图片。');
+      return;
+    }
     showBanner($('step1ResizeHint'), '');
     const reader = new FileReader();
     reader.onload = () => {
@@ -1030,6 +1528,8 @@
   // Start generation
   $('btnStartGenerate').addEventListener('click', async () => {
     if (!state.imageBase64) return;
+    state.currentJob = null;
+    state.requestedJobId = null;
     showBanner($('step1Error'), '');
     setBusy(true);
     setStep(2);
@@ -1037,10 +1537,12 @@
     $('failCard').classList.remove('visible');
     renderStages([
       { id: 'preprocess', label: '输入预处理（<=2400px 缩放）', status: 'running' },
-      { id: 'mivo', label: 'Mivo Canvas 智能抠图', status: 'pending' },
-      { id: 'split_parts', label: '分层分件与遮挡补全', status: 'pending' },
-      { id: 'build_rig', label: '骨骼 / 权重 / Spine 4.2 动画构建', status: 'pending' },
-      { id: 'audit', label: '4 项硬门禁与软提示验收', status: 'pending' },
+      { id: 'mivo', label: '透明输入 / 抠图结果校验', status: 'pending' },
+      { id: 'vision', label: '当前 Cindy 对话视觉识别', status: 'pending' },
+      { id: 'split_parts', label: '完整模块分件与遮挡校验', status: 'pending' },
+      { id: 'bind_rig', label: '骨骼绑定效果预览与编辑', status: 'pending' },
+      { id: 'build_rig', label: '保形轻摆与软模块轻弯', status: 'pending' },
+      { id: 'audit', label: '模块、接触与运动质量检查', status: 'pending' },
     ]);
 
     try {
@@ -1052,6 +1554,7 @@
           preset: state.selectedPreset,
           gain: parseFloat($('initGainSlider').value),
           pause_after_split: $('chkPauseAfterSplit').checked,
+          pause_before_animation: $('chkPauseAfterSplit').checked,
         }),
       });
       await applyJobState(job);
@@ -1063,15 +1566,431 @@
     }
   });
 
-  // Continue from split pause
+  // ---- Interactive Rig Binding Preview & Editor (before animation) ----
+  const rigEditor = {
+    jobId: null,
+    canvasSize: [1000, 1000],
+    bones: [],
+    skin: {},
+    parts: [],
+    poseType: 'airborne',
+    moduleVersion: null,
+    modules: [],
+    roleColors: {
+      root: '#94a3b8', body: '#22c55e', head: '#38bdf8',
+      arm: '#f59e0b', hand: '#fb923c', weapon: '#ef4444',
+      leg: '#a855f7', soft: '#14b8a6',
+    },
+    selectedBone: null,
+    draggingBone: null,
+    mattedImg: null,
+    partMapImg: null,
+    viewTransform: { scale: 1, ox: 0, oy: 0 },
+  };
+
+  function loadImgAsync(url) {
+    return new Promise((resolve) => {
+      if (!url) { resolve(null); return; }
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = `${url}?v=${Date.now()}`;
+    });
+  }
+
+  async function loadRigEditor(jobId) {
+    showBanner($('rigRebindStatus'), '');
+    const data = await apiJson(`/api/jobs/${jobId}/rig-spec`);
+    rigEditor.jobId = jobId;
+    rigEditor.moduleVersion = data.module_contract_version || null;
+    rigEditor.modules = data.modules || [];
+    rigEditor.canvasSize = data.canvas || [1000, 1000];
+    rigEditor.bones = (data.bones || []).map((b) => ({
+      ...b,
+      pos: [Number(b.pos[0]), Number(b.pos[1])],
+      aim: b.aim ? [Number(b.aim[0]), Number(b.aim[1])] : null,
+    }));
+    rigEditor.skin = JSON.parse(JSON.stringify(data.skin || {}));
+    rigEditor.parts = data.parts || [];
+    rigEditor.poseType = data.pose_type || 'grounded';
+    if (data.role_colors) rigEditor.roleColors = data.role_colors;
+    if (!rigEditor.selectedBone || !rigEditor.bones.some((b) => b.name === rigEditor.selectedBone)) {
+      rigEditor.selectedBone = rigEditor.bones[1]?.name || rigEditor.bones[0]?.name || null;
+    }
+    $('rigPoseSelect').value = rigEditor.poseType;
+    $('rigPoseBadge').textContent = rigEditor.poseType === 'airborne' ? '跃起/浮空姿态 · 待确认' : '站立姿态 · 待确认';
+
+    const [mImg, pImg] = await Promise.all([
+      loadImgAsync(data.matted_url),
+      loadImgAsync(data.part_map_url),
+    ]);
+    rigEditor.mattedImg = mImg;
+    rigEditor.partMapImg = pImg;
+    renderRigEditorUI();
+    drawRigEditorCanvas();
+  }
+
+  function renderRigEditorUI() {
+    $('rigBoneCount').textContent = String(rigEditor.bones.length);
+    const list = $('rigBoneList');
+    list.innerHTML = '';
+    for (const b of rigEditor.bones) {
+      const row = document.createElement('div');
+      row.className = `bone-row${b.name === rigEditor.selectedBone ? ' selected' : ''}`;
+      const col = rigEditor.roleColors[b.role || 'body'] || '#cbd5e1';
+      row.innerHTML = `
+        <span style="display:flex;align-items:center;gap:6px;">
+          <i class="rig-dot" style="background:${col};"></i>
+          <strong>${b.name}</strong>
+          <span class="muted">(${b.label || b.role || 'body'})</span>
+        </span>
+        <span class="muted mono">${b.parent || 'ROOT'}</span>
+      `;
+      row.addEventListener('click', () => {
+        rigEditor.selectedBone = b.name;
+        renderRigEditorUI();
+        drawRigEditorCanvas();
+      });
+      list.appendChild(row);
+    }
+
+    const delBtn = $('btnDeleteBone');
+    delBtn.disabled = !rigEditor.selectedBone || rigEditor.selectedBone === 'root';
+
+    const parentSel = $('newBoneParent');
+    const prevParent = parentSel.value;
+    parentSel.innerHTML = '';
+    for (const b of rigEditor.bones) {
+      const opt = document.createElement('option');
+      opt.value = b.name;
+      opt.textContent = `父骨骼: ${b.name}`;
+      parentSel.appendChild(opt);
+    }
+    if (prevParent && rigEditor.bones.some((b) => b.name === prevParent)) {
+      parentSel.value = prevParent;
+    } else if (rigEditor.selectedBone) {
+      parentSel.value = rigEditor.selectedBone;
+    }
+
+    const bindWrap = $('rigPartBindings');
+    bindWrap.innerHTML = '';
+    for (const p of rigEditor.parts) {
+      const s = rigEditor.skin[p.name] || { type: 'region', bone: 'root' };
+      const module = rigEditor.modules.find((item) => item.id === s.module_id);
+      const moduleBone = rigEditor.moduleVersion === 2 ? rigEditor.bones.find((b) => b.label === module?.id)?.name : null;
+      const curBone = moduleBone || s.bone || s.mid_bone || s.slot_bone || (s.bones && s.bones[0]) || 'root';
+      const isRigid = rigEditor.moduleVersion === 2 ? module?.motion_type !== 'soft' : s.type === 'region';
+      const row = document.createElement('div');
+      row.className = 'part-bind-row';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'mono';
+      lbl.textContent = p.name;
+
+      const sel = document.createElement('select');
+      sel.className = 'select-input';
+      sel.style.cssText = 'font-size:11px;padding:3px 6px;';
+      for (const b of rigEditor.bones) {
+        const opt = document.createElement('option');
+        opt.value = b.name;
+        opt.textContent = b.name;
+        if (b.name === curBone) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', () => {
+        const targetBone = sel.value;
+        if (rigEditor.skin[p.name]?.type === 'mesh' && !chk.checked) {
+          if (rigEditor.skin[p.name].recipe === 'limb') {
+            rigEditor.skin[p.name].mid_bone = targetBone;
+          } else {
+            rigEditor.skin[p.name] = { type: 'region', bone: targetBone };
+          }
+        } else {
+          rigEditor.skin[p.name] = { type: 'region', bone: targetBone };
+        }
+        drawRigEditorCanvas();
+      });
+
+      const rigidWrap = document.createElement('label');
+      rigidWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap;';
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.checked = isRigid;
+      sel.disabled = rigEditor.moduleVersion === 2;
+      chk.disabled = rigEditor.moduleVersion === 2;
+      chk.addEventListener('change', () => {
+        if (chk.checked) {
+          rigEditor.skin[p.name] = { type: 'region', bone: sel.value };
+        } else {
+          const par = rigEditor.bones.find((b) => b.name === sel.value)?.parent || 'hips';
+          rigEditor.skin[p.name] = {
+            type: 'mesh', recipe: 'limb', start_bone: par, mid_bone: sel.value, cell: 32,
+          };
+        }
+        drawRigEditorCanvas();
+      });
+      rigidWrap.appendChild(chk);
+      rigidWrap.appendChild(document.createTextNode('刚性'));
+
+      row.appendChild(lbl);
+      row.appendChild(sel);
+      row.appendChild(rigidWrap);
+      bindWrap.appendChild(row);
+    }
+    const moduleMode = rigEditor.moduleVersion === 2;
+    $('btnRebindRig').style.display = moduleMode ? 'none' : '';
+    $('btnAddBone').closest('.rig-box').style.display = moduleMode ? 'none' : '';
+    $('btnDeleteBone').style.display = moduleMode ? 'none' : '';
+    $('rigPoseSelect').disabled = moduleMode;
+    $('rigEditingNotice').textContent = moduleMode
+      ? '按完整模块检查轮廓、保形或柔性类型以及接触。需要修改时，在当前 Cindy 对话更新模块规划后重新应用；旧的骨级混权编辑不用于本合同。'
+      : '历史诊断编辑：可拖动关节并重新绑定；不代表完整模块成品验收。';
+    $('rigCanvasHint').textContent = moduleMode ? '完整模块预览 · 在 Cindy 对话中修改规划' : '拖拽圆点移动关节';
+  }
+
+  function drawRigEditorCanvas() {
+    const canvas = $('rigBindCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const cw = canvas.width;
+    const ch = canvas.height;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.fillStyle = '#0d121a';
+    ctx.fillRect(0, 0, cw, ch);
+
+    const [iw, ih] = rigEditor.canvasSize;
+    const pad = 24;
+    const scale = Math.min((cw - pad * 2) / Math.max(1, iw), (ch - pad * 2) / Math.max(1, ih));
+    const ox = (cw - iw * scale) * 0.5;
+    const oy = (ch - ih * scale) * 0.5;
+    rigEditor.viewTransform = { scale, ox, oy };
+    const toScreen = (pt) => [ox + pt[0] * scale, oy + pt[1] * scale];
+
+    if (rigEditor.mattedImg) {
+      ctx.drawImage(rigEditor.mattedImg, ox, oy, iw * scale, ih * scale);
+    }
+    if ($('chkShowPartOverlay').checked && rigEditor.partMapImg) {
+      ctx.save();
+      ctx.globalAlpha = 0.42;
+      ctx.drawImage(rigEditor.partMapImg, ox, oy, iw * scale, ih * scale);
+      ctx.restore();
+    }
+
+    const byName = new Map(rigEditor.bones.map((b) => [b.name, b]));
+    // Draw parent->child bone segments
+    for (const b of rigEditor.bones) {
+      const col = rigEditor.roleColors[b.role || 'body'] || '#cbd5e1';
+      const [x, y] = toScreen(b.pos);
+      const isSel = b.name === rigEditor.selectedBone;
+      if (b.parent && byName.has(b.parent)) {
+        const [px, py] = toScreen(byName.get(b.parent).pos);
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(x, y);
+        ctx.strokeStyle = isSel ? '#ffffff' : col;
+        ctx.lineWidth = isSel ? 4 : 2.5;
+        ctx.stroke();
+      }
+      if (b.aim) {
+        const [ax, ay] = toScreen(b.aim);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(ax, ay);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = isSel ? 4.5 : 3;
+        ctx.stroke();
+      }
+    }
+
+    // Draw joint handles & labels
+    const showLabels = $('chkShowBoneLabels').checked;
+    ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+    for (const b of rigEditor.bones) {
+      const col = rigEditor.roleColors[b.role || 'body'] || '#cbd5e1';
+      const [x, y] = toScreen(b.pos);
+      const isSel = b.name === rigEditor.selectedBone;
+      const r = isSel ? 8 : 5.5;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isSel ? '#ffffff' : col;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#090d14';
+      ctx.stroke();
+      if (showLabels || isSel) {
+        ctx.fillStyle = isSel ? '#ffffff' : 'rgba(241,245,249,0.88)';
+        ctx.fillText(b.name, x + r + 4, y + 4);
+      }
+    }
+  }
+
+  function canvasEventToImagePos(e) {
+    const canvas = $('rigBindCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const sx = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const sy = ((e.clientY - rect.top) / rect.height) * canvas.height;
+    const { scale, ox, oy } = rigEditor.viewTransform;
+    return [(sx - ox) / Math.max(1e-6, scale), (sy - oy) / Math.max(1e-6, scale), sx, sy];
+  }
+
+  $('rigBindCanvas').addEventListener('pointerdown', (e) => {
+    const [_ix, _iy, sx, sy] = canvasEventToImagePos(e);
+    const { scale, ox, oy } = rigEditor.viewTransform;
+    let best = null;
+    let bestD = 18;
+    for (const b of rigEditor.bones) {
+      const bx = ox + b.pos[0] * scale;
+      const by = oy + b.pos[1] * scale;
+      const d = Math.hypot(bx - sx, by - sy);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    if (best) {
+      rigEditor.selectedBone = best.name;
+      rigEditor.draggingBone = rigEditor.moduleVersion === 2 ? null : best.name;
+      if (rigEditor.moduleVersion !== 2) $('rigBindCanvas').setPointerCapture(e.pointerId);
+      renderRigEditorUI();
+      drawRigEditorCanvas();
+    }
+  });
+
+  $('rigBindCanvas').addEventListener('pointermove', (e) => {
+    if (!rigEditor.draggingBone) return;
+    const [ix, iy] = canvasEventToImagePos(e);
+    const [iw, ih] = rigEditor.canvasSize;
+    const cx = Math.max(0, Math.min(iw, Math.round(ix * 10) / 10));
+    const cy = Math.max(0, Math.min(ih, Math.round(iy * 10) / 10));
+    const b = rigEditor.bones.find((item) => item.name === rigEditor.draggingBone);
+    if (b) {
+      const dx = cx - b.pos[0];
+      const dy = cy - b.pos[1];
+      b.pos = [cx, cy];
+      if (b.aim) b.aim = [Math.round((b.aim[0] + dx) * 10) / 10, Math.round((b.aim[1] + dy) * 10) / 10];
+      $('rigCanvasHint').textContent = `${b.name}: (${cx.toFixed(0)}, ${cy.toFixed(0)})`;
+      drawRigEditorCanvas();
+    }
+  });
+
+  $('rigBindCanvas').addEventListener('pointerup', () => {
+    rigEditor.draggingBone = null;
+  });
+
+  $('chkShowPartOverlay').addEventListener('change', drawRigEditorCanvas);
+  $('chkShowBoneLabels').addEventListener('change', drawRigEditorCanvas);
+  $('rigPoseSelect').addEventListener('change', (e) => {
+    rigEditor.poseType = e.target.value;
+    $('rigPoseBadge').textContent = rigEditor.poseType === 'airborne' ? '跃起/浮空姿态 · 待重绑' : '站立姿态 · 待重绑';
+  });
+
+  $('btnAddBone').addEventListener('click', () => {
+    const rawName = $('newBoneName').value.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const role = $('newBoneRole').value;
+    const parentName = $('newBoneParent').value || 'hips';
+    const name = rawName || `${role}_${rigEditor.bones.length + 1}`;
+    if (rigEditor.bones.some((b) => b.name === name)) {
+      showBanner($('rigRebindStatus'), `骨骼名 ${name} 已存在，请换一个名称。`);
+      return;
+    }
+    const par = rigEditor.bones.find((b) => b.name === parentName) || rigEditor.bones[0];
+    const [iw, ih] = rigEditor.canvasSize;
+    const offset = Math.round(Math.min(iw, ih) * 0.05);
+    const pos = par ? [Math.min(iw - 10, par.pos[0] + offset), Math.max(10, par.pos[1] - offset)] : [iw * 0.5, ih * 0.5];
+    rigEditor.bones.push({
+      name,
+      parent: par ? par.name : 'root',
+      pos,
+      aim: [Math.min(iw - 10, pos[0] + offset), Math.max(10, pos[1] - offset)],
+      role,
+      label: name,
+    });
+    rigEditor.selectedBone = name;
+    $('newBoneName').value = '';
+    showBanner($('rigRebindStatus'), `已新增骨骼 ${name}（父骨：${parentName}），请拖动到目标位置后点击「重新绑定预览」。`);
+    renderRigEditorUI();
+    drawRigEditorCanvas();
+  });
+
+  $('btnDeleteBone').addEventListener('click', () => {
+    const target = rigEditor.selectedBone;
+    if (!target || target === 'root') return;
+    const victim = rigEditor.bones.find((b) => b.name === target);
+    const fallbackParent = victim?.parent || 'root';
+    rigEditor.bones = rigEditor.bones.filter((b) => b.name !== target);
+    for (const b of rigEditor.bones) {
+      if (b.parent === target) b.parent = fallbackParent;
+    }
+    rigEditor.selectedBone = fallbackParent;
+    showBanner($('rigRebindStatus'), `已删除骨骼 ${target}，子骨骼已重挂到 ${fallbackParent}。请点击「重新绑定预览」。`);
+    renderRigEditorUI();
+    drawRigEditorCanvas();
+  });
+
+  $('btnRebindRig').addEventListener('click', async () => {
+    if (!state.currentJob) return;
+    setBusy(true);
+    showBanner($('rigRebindStatus'), '');
+    try {
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/rebind`, {
+        method: 'POST',
+        body: JSON.stringify({
+          bones: rigEditor.bones,
+          skin: rigEditor.skin,
+          pose_type: rigEditor.poseType,
+        }),
+      });
+      await applyJobState(job);
+      showBanner($('rigRebindStatus'), `重新绑定完成（共 ${rigEditor.bones.length} 根骨骼），确认无误后可点击「确认绑定并生成动画」。`);
+    } catch (err) {
+      showBanner($('rigRebindStatus'), `重新绑定失败：${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $('btnBackToRigEditor').addEventListener('click', async () => {
+    if (!state.currentJob) return;
+    player.pause();
+    setStep(2);
+    $('pauseCard').classList.add('visible');
+    $('failCard').classList.remove('visible');
+    await loadRigEditor(state.currentJob.job_id);
+  });
+
+  // Confirm rig binding & generate animation
   $('btnContinueGenerate').addEventListener('click', async () => {
     if (!state.currentJob) return;
     setBusy(true);
     try {
-      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/continue`, { method: 'POST', body: '{}' });
+      // V2 bindings are rebuilt only from a validated complete-module plan.
+      if (rigEditor.moduleVersion !== 2) {
+      await apiJson(`/api/jobs/${state.currentJob.job_id}/rebind`, {
+        method: 'POST',
+        body: JSON.stringify({
+          bones: rigEditor.bones,
+          skin: rigEditor.skin,
+          pose_type: rigEditor.poseType,
+        }),
+      });
+      }
+      const confirmation = {};
+      if (rigEditor.moduleVersion === 2) {
+        const modules = {};
+        for (const line of $('moduleReviewNotes').value.split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*[:：]\s*(.+)$/);
+          if (!match || modules[match[1]]) throw new Error('请按“模块ID: 实际观察依据”逐行填写，避免重复ID。');
+          modules[match[1]] = { status: 'pass', notes: match[2].trim() };
+        }
+        confirmation.module_review = { source: 'user_ui', reviewer: '工具页使用者',
+          original_and_modules_viewed: true, binding: state.currentJob.module_review_binding, modules };
+      }
+      const job = await apiJson(`/api/jobs/${state.currentJob.job_id}/confirm-rig`, { method: 'POST', body: JSON.stringify(confirmation) });
       await applyJobState(job);
     } catch (err) {
-      showBanner($('failCard'), err.message);
+      if (rigEditor.moduleVersion === 2) $('moduleReviewNotice').textContent = err.message;
+      else showBanner($('failCard'), err.message);
     } finally {
       setBusy(false);
     }
@@ -1107,6 +2026,9 @@
   $('btnPauseDiscard').addEventListener('click', doDiscard);
   $('btnNewTask').addEventListener('click', () => {
     player.pause();
+    diagnosticPlayer?.pause();
+    state.currentJob = null;
+    state.requestedJobId = null;
     setStep(1);
   });
 
@@ -1190,8 +2112,259 @@
   $('btnExportSpine').addEventListener('click', () => runExport('spine_package'));
   $('btnExportPreview').addEventListener('click', () => runExport('preview_video'));
   $('btnExportWeb').addEventListener('click', () => runExport('transparent_web'));
+  $('btnExportHtml').addEventListener('click', () => runExport('standalone_html'));
+  $('btnDiagnosticPlay').addEventListener('click', () => diagnosticPlayer?.togglePlay());
 
+  $('chkVisualLoop').addEventListener('change', () => setBusy(state.busy));
+  $('chkOriginalModules').addEventListener('change', () => setBusy(state.busy));
+  $('visualReviewNotes').addEventListener('input', () => setBusy(state.busy));
+  for (const [key, title] of Object.entries(visualDimensions)) {
+    const item = document.createElement('div'); item.className = 'rig-box';
+    const label = document.createElement('label'); label.textContent = title; label.htmlFor = 'visual_' + key + '_status';
+    const select = document.createElement('select'); select.id = label.htmlFor; select.className = 'select-input';
+    for (const [value, text] of Object.entries({ pending: '待审', pass: '通过', fail: '需要修改', not_applicable: '不适用' })) {
+      const option = document.createElement('option'); option.value = value; option.textContent = text; select.appendChild(option);
+    }
+    const notes = document.createElement('textarea'); notes.id = 'visual_' + key + '_notes'; notes.className = 'text-input';
+    notes.rows = 2; notes.placeholder = '具体观察依据'; notes.style.width = '100%'; notes.setAttribute('aria-label', title + '的观察依据');
+    select.addEventListener('change', () => setBusy(state.busy)); notes.addEventListener('input', () => setBusy(state.busy));
+    item.append(label, select, notes); $('visualObservationFields').appendChild(item);
+  }
+  async function submitVisualReview(decision) {
+    const job = state.currentJob;
+    if (!job?.review_binding) return;
+    setBusy(true);
+    try {
+      const reviewed = await apiJson('/api/jobs/' + job.job_id + '/review', {
+        method: 'POST',
+        body: JSON.stringify({ decision, source: 'user_ui', reviewer: '工具页使用者',
+          notes: $('visualReviewNotes').value.trim(), full_loop_observed: $('chkVisualLoop').checked,
+          original_and_modules_viewed: $('chkOriginalModules').checked, observations: collectVisualObservations(),
+          review_binding: job.review_binding }),
+      });
+      await applyJobState(reviewed);
+    } catch (err) { $('visualReviewNotice').textContent = err.message; }
+    finally { setBusy(false); }
+  }
+  $('btnVisualPass').addEventListener('click', () => submitVisualReview('pass'));
+  $('btnVisualFail').addEventListener('click', () => submitVisualReview('fail'));
+
+
+  const refineState = { pos: [], neg: [], lastKind: [], overlayUrl: '', draw: null, img: null, natural: [0, 0], modules: [] };
+
+  function fillRefineTargets(job, extraModules) {
+    const sel = $('refineTargetSelect');
+    const current = sel.value;
+    const ids = [];
+    for (const m of extraModules || []) {
+      if (m && m.id && !ids.includes(m.id)) ids.push(m.id);
+    }
+    for (const m of job.modules || []) {
+      if (m && m.id && !ids.includes(m.id)) ids.push(m.id);
+    }
+    sel.innerHTML = '';
+    if (!ids.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '暂无部件，请先提交 spec';
+      sel.appendChild(opt);
+      return;
+    }
+    ids.forEach((id) => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = id;
+      sel.appendChild(opt);
+    });
+    if (ids.includes(current)) sel.value = current;
+  }
+
+  function syncRefinePanel(job) {
+    const show = job.status === 'awaiting_analysis' || job.status === 'awaiting_rig_confirm';
+    $('refineMaskPanel').classList.toggle('visible', show);
+    if (!show) return;
+    fillRefineTargets(job, refineState.modules);
+    const overlay = job.rig_mask_overlay_url;
+    const img = $('rigMaskOverlayImg');
+    if (overlay) {
+      img.src = overlay + '?v=' + Date.now();
+      img.style.display = 'block';
+    } else {
+      img.removeAttribute('src');
+      img.style.display = 'none';
+    }
+    const src = refineState.overlayUrl || job.part_map_url || job.matted_url || (job.analysis_request || {}).image_url;
+    if (src) loadRefineCanvas(src, job);
+    else drawRefineCanvas();
+  }
+
+  function loadRefineCanvas(src, job) {
+    const image = new Image();
+    image.onload = () => {
+      refineState.img = image;
+      const size = (job.analysis_request || {}).image_size;
+      refineState.natural = Array.isArray(size) && size.length >= 2 ? [size[0], size[1]] : [image.naturalWidth, image.naturalHeight];
+      drawRefineCanvas();
+    };
+    image.src = src + (src.includes('?') ? '&' : '?') + 'v=' + Date.now();
+  }
+
+  function drawRefineCanvas() {
+    const canvas = $('refineMaskCanvas');
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.fillStyle = '#12151d';
+    ctx.fillRect(0, 0, w, h);
+    refineState.draw = null;
+    if (refineState.img) {
+      const iw = refineState.img.naturalWidth;
+      const ih = refineState.img.naturalHeight;
+      const scale = Math.min(w / iw, h / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const ox = (w - dw) / 2;
+      const oy = (h - dh) / 2;
+      ctx.drawImage(refineState.img, ox, oy, dw, dh);
+      refineState.draw = { ox, oy, dw, dh, nw: refineState.natural[0], nh: refineState.natural[1] };
+    }
+    const map = (pt, color) => {
+      if (!refineState.draw) return;
+      const { ox, oy, dw, dh, nw, nh } = refineState.draw;
+      const x = ox + (pt[0] / nw) * dw;
+      const y = oy + (pt[1] / nh) * dh;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    refineState.pos.forEach((pt) => map(pt, '#22c55e'));
+    refineState.neg.forEach((pt) => map(pt, '#f43f5e'));
+  }
+
+  function canvasToImagePoint(ev) {
+    const canvas = $('refineMaskCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const d = refineState.draw;
+    if (!d) return null;
+    const nx = (x - d.ox) / d.dw;
+    const ny = (y - d.oy) / d.dh;
+    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return null;
+    return [nx * d.nw, ny * d.nh];
+  }
+
+
+  $('refineMaskCanvas').addEventListener('click', (e) => {
+    const pt = canvasToImagePoint(e);
+    if (!pt) return;
+    refineState.pos.push(pt);
+    refineState.lastKind.push('pos');
+    drawRefineCanvas();
+  });
+  $('refineMaskCanvas').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const pt = canvasToImagePoint(e);
+    if (!pt) return;
+    refineState.neg.push(pt);
+    refineState.lastKind.push('neg');
+    drawRefineCanvas();
+  });
+  $('btnRefineUndo').addEventListener('click', () => {
+    const kind = refineState.lastKind.pop();
+    if (kind === 'pos') refineState.pos.pop();
+    if (kind === 'neg') refineState.neg.pop();
+    drawRefineCanvas();
+  });
+  $('btnRefineClear').addEventListener('click', () => {
+    refineState.pos = [];
+    refineState.neg = [];
+    refineState.lastKind = [];
+    drawRefineCanvas();
+  });
+  $('btnRefineRun').addEventListener('click', async () => {
+    const job = state.currentJob;
+    if (!job) return;
+    const target = $('refineTargetSelect').value;
+    if (!target) {
+      $('refineMaskStatus').textContent = '请选择 target_id';
+      return;
+    }
+    setBusy(true);
+    $('refineMaskStatus').textContent = '正在调用 refine-mask…';
+    try {
+      const rec = await apiJson(`/api/jobs/${job.job_id}/refine-mask`, {
+        method: 'POST',
+        body: JSON.stringify({
+          target_id: target,
+          pos: refineState.pos,
+          neg: refineState.neg,
+        }),
+      });
+      refineState.modules = rec.modules || [];
+      if (rec.overlay_url) {
+        refineState.overlayUrl = rec.overlay_url;
+        loadRefineCanvas(rec.overlay_url, job);
+      }
+      fillRefineTargets(job, refineState.modules);
+      $('refineMaskStatus').textContent = rec.analysis_ready ? '已生成修正分析，可确认分件并绑定。' : (rec.message || '已返回');
+    } catch (err) {
+      const extra = (err.data && err.data.errors) ? JSON.stringify(err.data.errors) : '';
+      $('refineMaskStatus').textContent = (err.message || 'refine-mask 失败') + (extra ? ' ' + extra : '');
+    } finally {
+      setBusy(false);
+    }
+  });
+  $('btnRefineApply').addEventListener('click', async () => {
+    const job = state.currentJob;
+    if (!job) return;
+    setBusy(true);
+    $('refineMaskStatus').textContent = '正在 apply-analysis（from_refined）…';
+    try {
+      const rec = await apiJson(`/api/jobs/${job.job_id}/apply-analysis`, {
+        method: 'POST',
+        body: JSON.stringify({ from_refined: true }),
+      });
+      await applyJobState(rec);
+      $('refineMaskStatus').textContent = rec.rig_mask_overlay_url ? '已绑定，可核对立绘叠加图。' : '已提交绑定。';
+    } catch (err) {
+      $('refineMaskStatus').textContent = err.message || 'apply-analysis 失败';
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $('btnCopyAnalysisMessage').addEventListener('click', async () => {
+    const field = $('analysisContinueText');
+    try {
+      await navigator.clipboard.writeText(field.value);
+      $('analysisCopyNotice').textContent = '已复制，请粘贴到当前 Cindy 对话发送。';
+    } catch (_err) {
+      field.focus();
+      field.select();
+      $('analysisCopyNotice').textContent = '请复制已选中的文字，粘贴到当前 Cindy 对话发送。';
+    }
+  });
+  $('btnRefreshAnalysis').addEventListener('click', async () => {
+    if (!state.currentJob) return;
+    const requestedId = state.currentJob.job_id;
+    try {
+      const job = await apiJson(`/api/jobs/${requestedId}`);
+      if ((state.currentJob?.job_id || state.requestedJobId) === requestedId) await applyJobState(job);
+    } catch (err) {
+      $('analysisCopyNotice').textContent = err.message;
+    }
+  });
+  const initialJobId = new URLSearchParams(window.location.search).get('job');
+  if (initialJobId && /^[A-Za-z0-9_-]{1,64}$/.test(initialJobId)) {
+    state.requestedJobId = initialJobId;
+    apiJson(`/api/jobs/${encodeURIComponent(initialJobId)}`).then((job) => {
+      if (state.requestedJobId === initialJobId) return applyJobState(job);
+    }).catch((err) => showBanner($('step1Error'), err.message));
+  }
   refreshHealth();
+  state.pollTimer = window.setInterval(refreshHealth, 1000);
 </script>
 </body>
 </html>

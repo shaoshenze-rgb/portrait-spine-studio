@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 from PIL import Image
+import numpy as np
 
 MAX_LONG_EDGE = 2400
 
@@ -62,6 +63,9 @@ def preprocess_portrait(
             new_w, new_h = orig_w, orig_h
             notice = None
 
+        arr = np.array(rgba, dtype=np.uint8, copy=True)
+        arr[arr[..., 3] == 0, :3] = 0
+        rgba = Image.fromarray(arr)
         rgba.save(dst, format="PNG")
 
     return {

@@ -63,6 +63,8 @@ def _load_parts_spec(spec_or_path: Union[str, Path, Sequence[Dict[str, Any]], Di
         for k in ("opaque_threshold", "excl_px", "feather_px", "min_island_px"):
             if k in raw:
                 opts[k] = int(raw[k])
+        if raw.get("module_contract") is not None:
+            opts["module_contract"] = raw["module_contract"]
         return [dict(p) for p in parts], opts
     raise ValueError("parts_spec must be a JSON list or object with 'parts'")
 
@@ -175,7 +177,7 @@ def generate_preview_html(
 <body>
 <header>
   <div class="title">
-    <span>Portrait Spine Studio</span>
+    <span>Portrait Spine Studio · 开发诊断预览</span>
     <code>{html.escape(character)}</code>
     <span class="badge {overall_cls}">GATES: {overall}</span>
   </div>
@@ -195,6 +197,7 @@ def generate_preview_html(
       <span id="playerStatus">Loading Spine 4.2 runtime...</span>
     </div>
     <p class="note">
+      这是开发诊断，不是已验收工程。完整模块、机器检查与同版本视觉复核全部通过后，才可经生产导出入口交付。
       Serve this folder over HTTP (for example <code>python3 -m http.server</code>) for live WebGL2/Canvas2D playback.
     </p>
   </main>
@@ -363,14 +366,16 @@ def run_e2e_pipeline(
             return build_rig(parts_dir, rig_spec_dict, rig_dir, preset=preset, gain=gain)
 
         def _stage_audit() -> Dict[str, Any]:
-            return run_audit(
-                parts_dir,
-                rig_dir,
-                sample_count=sample_count,
-                stress_gain=stress_gain,
-                stress_samples=stress_samples,
-                raise_on_fail=True,
-            )
+            try:
+                return run_audit(
+                    parts_dir, rig_dir, sample_count=sample_count,
+                    stress_gain=stress_gain, stress_samples=stress_samples, raise_on_fail=True,
+                )
+            except GateFailureError:
+                # A failed or pending audit must still be inspectable, never silently export a ZIP.
+                preview = _stage_preview()
+                runner.record_intermediate("diagnostic.preview", preview["output_path"])
+                raise
 
         def _stage_export() -> Dict[str, Any]:
             ff = find_ffmpeg() if (render_previews or export_web) else None
@@ -401,8 +406,8 @@ def run_e2e_pipeline(
 
         stages.append(("build_rig", _stage_build_rig))
         stages.append(("audit", _stage_audit))
-        stages.append(("export", _stage_export))
         stages.append(("preview", _stage_preview))
+        stages.append(("export", _stage_export))
     else:
         skipped_stages.extend(["build_rig", "audit", "export", "preview"])
 

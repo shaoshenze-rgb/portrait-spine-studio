@@ -13,6 +13,7 @@
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
 const EPS = 1e-12;
+const MAX_UNIFORM_IK_STRETCH = 1.06;
 
 /**
  * Evaluate a Spine 4.2 cubic Bezier segment from (t0, v0) to (t1, v1) with absolute control points
@@ -546,7 +547,8 @@ export class Spine42Skeleton {
     const tx = tgt.worldX;
     const ty = tgt.worldY;
 
-    if ((c.mix ?? 1.0) !== 1.0 || c.softness || c.stretch || c.compress) {
+    const stretch = Boolean(c.stretch);
+    if ((c.mix ?? 1.0) !== 1.0 || c.softness || c.compress || (stretch && (names.length !== 2 || c.uniform !== true))) {
       throw new Error(`Unsupported IK options in "${c.name}"`);
     }
     if (names.length !== 1 && names.length !== 2) {
@@ -604,14 +606,26 @@ export class Spine42Skeleton {
     const [ptx, pty] = parentSpace(p, tx, ty);
     const dx = ptx - p.x;
     const dy = pty - p.y;
-    const l1 = Math.hypot(ch.x, ch.y) * p.scaleX;
-    const l2 = (ch.data.length ?? 0.0) * p.scaleX * ch.scaleX;
+    let l1 = Math.hypot(ch.x, ch.y) * p.scaleX;
+    let l2 = (ch.data.length ?? 0.0) * p.scaleX * ch.scaleX;
     if (l1 < EPS || l2 < EPS) {
       throw new Error(`IK chain lengths must be positive in "${c.name}"`);
     }
 
     const d = Math.hypot(dx, dy);
-    const cosa = (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * Math.max(d, 1e-9));
+    if (stretch) {
+      if (d < Math.abs(l1 - l2) - 1e-7) throw new Error('IK target inside minimum reach in ' + c.name);
+      const ratio = Math.max(1.0, d / (l1 + l2));
+      if (ratio > MAX_UNIFORM_IK_STRETCH + 1e-9) throw new Error('IK stretch ' + ratio.toFixed(6) + ' exceeds ' + MAX_UNIFORM_IK_STRETCH.toFixed(2) + ' limit in ' + c.name + '; preserve joints and review motion');
+      if (ratio > 1.0) {
+        p.scaleX *= ratio;
+        p.scaleY *= ratio;
+        l1 *= ratio;
+        l2 *= ratio;
+      }
+    }
+    const cosa = stretch && Math.abs(d - (l1 + l2)) <= 1e-9
+      ? 1.0 : (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * Math.max(d, 1e-9));
     const clampedCosa = Math.min(1.0, Math.max(-1.0, cosa));
     const alpha = Math.acos(clampedCosa) * RAD_TO_DEG;
     const bend = (c.bendPositive ?? true) ? 1.0 : -1.0;

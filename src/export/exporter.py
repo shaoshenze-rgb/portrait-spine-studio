@@ -1,6 +1,7 @@
 """Default Spine 4.2 package exporter and on-demand transparent web video exporter."""
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import zipfile
@@ -11,6 +12,9 @@ import numpy as np
 from PIL import Image
 
 from src.render.renderer import SpineRenderer, find_ffmpeg, straight_alpha, write_preview_mp4
+from src.gates.review_binding import ensure_export_approved
+
+_PLAYER_ROOT = Path(__file__).resolve().parents[1] / "player"
 
 
 def _render_loop_frames(
@@ -23,6 +27,161 @@ def _render_loop_frames(
     if max_frames is not None:
         total = min(total, max(1, int(max_frames)))
     return [renderer.frame(duration * i / float(total)) for i in range(total)]
+
+
+def _player_bundle_js() -> str:
+    chunks: List[str] = []
+    drop_prefixes = (
+        "import { Spine42Skeleton } from './spine42-runtime.js';",
+        "import { SpineCanvasRenderer } from './canvas-renderer.js';",
+    )
+    for name in ("spine42-runtime.js", "canvas-renderer.js", "player-widget.js"):
+        source = (_PLAYER_ROOT / name).read_text(encoding="utf-8")
+        if name == "player-widget.js":
+            kept = []
+            for line in source.splitlines(True):
+                if any(line.startswith(prefix) for prefix in drop_prefixes):
+                    continue
+                kept.append(line)
+            source = "".join(kept)
+        chunks.append("\n/* ===== " + name + " ===== */\n" + source)
+    return "\n".join(chunks)
+
+
+def _js_literal(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def export_standalone_html(
+    rig_dir: Union[str, Path],
+    out_path: Union[str, Path],
+    *,
+    health_report_path: Optional[Union[str, Path]] = None,
+    require_approved: bool = True,
+) -> Dict[str, Any]:
+    """Write a zero-request single-file HTML preview with inlined runtime, JSON and PNGs."""
+    rdir = Path(rig_dir).resolve()
+    dest = Path(out_path).resolve()
+    if require_approved:
+        ensure_export_approved(rdir, health_report_path=health_report_path)
+
+    rep_path = rdir / "rig-build-report.json"
+    if not rep_path.is_file():
+        raise FileNotFoundError("rig-build-report.json not found in " + str(rdir))
+    rep = json.loads(rep_path.read_text(encoding="utf-8"))
+    character = str(rep.get("character", "character"))
+    spine_file = str(rep["spineFile"])
+    spine_path = rdir / spine_file
+    if not spine_path.is_file():
+        raise FileNotFoundError("Spine JSON not found: " + str(spine_path))
+    spine_json = json.loads(spine_path.read_text(encoding="utf-8"))
+
+    images: Dict[str, str] = {}
+    img_dir = rdir / "images"
+    for img in sorted(img_dir.glob("*.png")):
+        uri = "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode("ascii")
+        images[img.name] = uri
+        images[img.stem] = uri
+    if not images:
+        raise FileNotFoundError("No PNG attachments in " + str(img_dir))
+
+    hr_path = Path(health_report_path).resolve() if health_report_path else (rdir / "health-report.json")
+    health = None
+    if hr_path.is_file():
+        try:
+            health = json.loads(hr_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            health = None
+
+    safe_title = character.replace("<", "").replace(">", "")
+    html = _standalone_html_document(
+        safe_title,
+        _js_literal(character),
+        _js_literal(spine_json),
+        _js_literal(images),
+        _js_literal(health),
+        _player_bundle_js(),
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(html, encoding="utf-8")
+    png_names = [k for k in images if k.endswith(".png")]
+    return {"character": character, "html_path": str(dest), "image_count": len(png_names)}
+
+
+def _standalone_html_document(title: str, character_js: str, spine_js: str,
+                              images_js: str, health_js: str, bundle_js: str) -> str:
+    parts = [
+        "<!DOCTYPE html>",
+        '<html lang="zh-CN">',
+        "<head>",
+        '<meta charset="UTF-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+        "<title>" + title + " — 单文件预览</title>",
+        "<style>",
+        ":root { --bg:#101218; --text:#e8edf7; --muted:#93a0b8; --line:#2c3446; --accent:#38bdf8; --btn:#243044; }",
+        "* { box-sizing: border-box; }",
+        "html,body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }",
+        ".wrap { max-width:960px; margin:0 auto; padding:12px; display:flex; flex-direction:column; gap:10px; min-height:100vh; }",
+        "header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:baseline; }",
+        "h1 { font-size:16px; margin:0; }",
+        ".muted { color:var(--muted); font-size:12px; }",
+        ".stage { background:#0b0d12; border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; align-items:center; justify-content:center; min-height:240px; flex:1; }",
+        "canvas { width:100%; height:auto; max-height:78vh; display:block; }",
+        ".bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }",
+        "button,label { background:var(--btn); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; }",
+        "button { cursor:pointer; }",
+        "button:hover { border-color:var(--accent); }",
+        "@media (max-width:430px) { .wrap{padding:8px;} h1{font-size:14px;} canvas{max-height:62vh;} button,label{flex:1 1 calc(50% - 8px); text-align:center;} }",
+        "</style>",
+        "</head>",
+        "<body>",
+        '<div class="wrap">',
+        "<header>",
+        '<h1 id="title">单文件预览</h1>',
+        '<div class="muted" id="meta"></div>',
+        "</header>",
+        '<div class="stage"><canvas id="stage" width="320" height="320"></canvas></div>',
+        '<div class="bar">',
+        '<button type="button" id="btnPlay">播放 / 暂停</button>',
+        '<button type="button" id="btnReset">重置 t=0</button>',
+        '<label><input type="checkbox" id="chkBones"> 骨骼线</label>',
+        '<label><input type="checkbox" id="chkLight"> 浅底</label>',
+        "</div></div>",
+        '<script type="module">',
+        bundle_js,
+        "const CHARACTER = " + character_js + ";",
+        "const SPINE_JSON = " + spine_js + ";",
+        "const EMBEDDED_IMAGES = " + images_js + ";",
+        "const HEALTH = " + health_js + ";",
+        "function loadImage(uri) {",
+        "  return new Promise((resolve, reject) => {",
+        "    const img = new Image();",
+        "    img.onload = () => resolve(img);",
+        "    img.onerror = () => reject(new Error('贴图解码失败'));",
+        "    img.src = uri;",
+        "  });",
+        "}",
+        "const canvas = document.getElementById('stage');",
+        "const player = new PortraitSpinePlayer({ canvas, preferWebGL2: true });",
+        "const uniqueUris = [...new Set(Object.values(EMBEDDED_IMAGES))];",
+        "const uriToImg = new Map();",
+        "Promise.all(uniqueUris.map(async (uri) => { uriToImg.set(uri, await loadImage(uri)); })).then(() => {",
+        "  const images = new Map();",
+        "  for (const [name, uri] of Object.entries(EMBEDDED_IMAGES)) images.set(name, uriToImg.get(uri));",
+        "  const info = player.loadRigData({ spineJson: SPINE_JSON, images, healthReport: HEALTH, name: CHARACTER, animationName: 'idle', autoPlay: true });",
+        "  document.getElementById('title').textContent = CHARACTER + ' — 单文件预览';",
+        "  document.getElementById('meta').textContent = (info.backend || '') + ' · ' + info.width + '×' + info.height;",
+        "}).catch((err) => { document.getElementById('meta').textContent = String(err && err.message || err); });",
+        "document.getElementById('btnPlay').addEventListener('click', () => player.togglePlay());",
+        "document.getElementById('btnReset').addEventListener('click', () => { player.pause(); player.setTime(0); });",
+        "document.getElementById('chkBones').addEventListener('change', (ev) => player.setShowBones(ev.target.checked));",
+        "document.getElementById('chkLight').addEventListener('change', (ev) => player.setBackground(ev.target.checked ? 'light' : 'dark'));",
+        "</script>",
+        "</body></html>",
+        "",
+    ]
+    return "\n".join(parts)
 
 
 def export_default_package(
@@ -45,6 +204,7 @@ def export_default_package(
     """
     rdir = Path(rig_dir).resolve()
     odir = Path(out_dir).resolve()
+    ensure_export_approved(rdir, health_report_path=health_report_path)
     odir.mkdir(parents=True, exist_ok=True)
 
     rep_path = rdir / "rig-build-report.json"
@@ -90,12 +250,21 @@ def export_default_package(
         else:
             preview_notice = "ffmpeg binary not found; skipped MP4 preview rendering."
 
+    html_path = odir / f"{character}-standalone-preview.html"
+    export_standalone_html(
+        rdir,
+        html_path,
+        health_report_path=hr_path if hr_path.is_file() else None,
+        require_approved=False,
+    )
+
     return {
         "character": character,
         "zip_path": str(zip_path),
         "zip_entries": zip_entries,
         "previews": previews,
         "preview_notice": preview_notice,
+        "standalone_html": str(html_path),
     }
 
 
@@ -132,6 +301,7 @@ def export_transparent_web(
     """
     rdir = Path(rig_dir).resolve()
     odir = Path(out_dir).resolve()
+    ensure_export_approved(rdir)
     odir.mkdir(parents=True, exist_ok=True)
 
     ff = ffmpeg_bin or find_ffmpeg()
