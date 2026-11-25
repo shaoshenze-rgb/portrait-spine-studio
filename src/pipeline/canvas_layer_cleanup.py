@@ -85,7 +85,98 @@ def cleanup_layers(layers, original_rgba):
     return result,{'layers':metrics,'warnings':warnings,'missing_original_regions':regions},composite
 
 
-def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None):
+def _body_envelope(mask):
+    """Conservative interior envelope; omit exclusions apply only outside it."""
+    points=[]
+    for y in np.flatnonzero(mask.any(axis=1)):
+        xs=np.flatnonzero(mask[y]);points.extend([(int(xs[0]),int(y)),(int(xs[-1]),int(y))])
+    points=sorted(set(points))
+    if len(points)<3:return mask.copy()
+    def cross(a,b,c):return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])
+    lower=[];upper=[]
+    for point in points:
+        while len(lower)>1 and cross(lower[-2],lower[-1],point)<=0:lower.pop()
+        lower.append(point)
+    for point in reversed(points):
+        while len(upper)>1 and cross(upper[-2],upper[-1],point)<=0:upper.pop()
+        upper.append(point)
+    canvas=Image.new('L',(mask.shape[1],mask.shape[0]));ImageDraw.Draw(canvas).polygon(lower[:-1]+upper[:-1],fill=255)
+    return np.asarray(canvas)>0
+
+
+def recover_missing_body_from_original(layers, original_rgba, *, ignore_mask=None, min_area=200):
+    """Copy missing ORIGINAL material into the best adjacent enabled body layer.
+
+    This restores coverage, not semantic or dynamic approval. Every recovered
+    component records its chosen parent layer for the subsequent visual review.
+    Omitted effect-only outskirts stay absent; ambiguous interior overlap is
+    kept eligible so an opaque effect cannot hide a missing elbow from recovery.
+    """
+    result=[{**layer,'rgba':np.asarray(layer['rgba']).copy()} for layer in layers]
+    shape=original_rgba.shape[:2]
+    def composite():
+        canvas=Image.new('RGBA',(shape[1],shape[0]))
+        for layer in sorted(result,key=lambda item:item['draw_order']):
+            if layer.get('enabled',True) and layer.get('effect_mode','keep')!='omit':
+                canvas.alpha_composite(Image.fromarray(layer['rgba']))
+        return np.asarray(canvas)
+    legal=[layer for layer in result if layer.get('enabled',True)
+           and layer.get('effect_mode','keep')!='omit'
+           and layer.get('role') not in ('effect_group','weapon','prop','pet','background')
+           and (layer['rgba'][...,3]>8).any()]
+    supports={layer['id']:layer['rgba'][...,3]>8 for layer in legal}
+    body=np.zeros(shape,bool)
+    for mask in supports.values():body |= mask
+    omitted=np.zeros(shape,bool)
+    for layer in result:
+        if layer.get('role')=='effect_group' and (layer.get('effect_mode')=='omit' or not layer.get('enabled',True)):
+            omitted |= layer['rgba'][...,3]>8
+    ignored=omitted & ~dilate(_body_envelope(body),2)
+    if ignore_mask is not None:
+        supplied=np.asarray(ignore_mask,dtype=bool)
+        if supplied.shape!=shape:raise ValueError('ignore_mask must match the original canvas')
+        ignored |= supplied
+    before=composite();raw_missing=(original_rgba[...,3]>=180)&(before[...,3]<40)
+    missing=raw_missing & ~ignored
+    labels=_components(np.pad(missing,1))[1:-1,1:-1];counts=np.bincount(labels.ravel())
+    recovered=[];unresolved=[]
+    centers={name:np.array(np.nonzero(mask)).mean(axis=1) for name,mask in supports.items()}
+    priority={'torso':0,'body':0,'upper_arm':1,'forearm':1,'arm':1,'leg':1,'upper_leg':1,'lower_leg':1,'hand':2,'cloth':3}
+    for label in np.flatnonzero(counts>=min_area):
+        if label==0:continue
+        region=labels==label;ys,xs=np.nonzero(region);center=np.array([ys.mean(),xs.mean()])
+        record={'area_px':int(counts[label]),'bbox':[int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)]}
+        if not legal:
+            unresolved.append({**record,'reason':'no_enabled_body_layer'});continue
+        boundary=dilate(region,1)&~region
+        contacts={layer['id']:int((boundary&supports[layer['id']]).sum()) for layer in legal}
+        layer=min(legal,key=lambda item:(-contacts[item['id']],
+                  float(np.linalg.norm(centers[item['id']]-center)),priority.get(item.get('role'),4)))
+        # Two-pixel feathered ORIGINAL underlap, never paint transparent source
+        # holes or intentionally ignored effects. Existing opaque material stays.
+        ring1=dilate(region,1)&~region;ring2=dilate(region,2)&~(region|ring1)
+        support=(region|ring1|ring2)&(original_rgba[...,3]>8)&~ignored
+        patch=np.zeros_like(original_rgba);patch[support]=original_rgba[support]
+        patch[...,3][ring1]=np.rint(patch[...,3][ring1]*(2.0/3.0)).astype('uint8')
+        patch[...,3][ring2]=np.rint(patch[...,3][ring2]/3).astype('uint8')
+        base=Image.fromarray(patch);base.alpha_composite(Image.fromarray(layer['rgba']))
+        layer['rgba']=np.asarray(base).copy();layer['rgba'][region]=original_rgba[region]
+        recovered.append({**record,'target_layer':layer['id'],'target_role':layer.get('role'),
+                          'boundary_contact_pixels':contacts[layer['id']],
+                          'selection':'longest_boundary' if contacts[layer['id']] else 'nearest_center',
+                          'overlap_feather_px':2,'material_source':'original_rgba'})
+    after=composite();body_reference=original_rgba.copy();body_reference[ignored]=0
+    report={'recovered_regions':recovered,'recovered_region_count':len(recovered),
+            'recovered_pixel_count':sum(r['area_px'] for r in recovered),
+            'ignored_omitted_effect_pixels':int((raw_missing&ignored).sum()),
+            'unresolved_recovery_regions':unresolved,
+            'missing_original_regions':check_missing_original_regions(body_reference,after),
+            'missing_original_regions_raw':check_missing_original_regions(original_rgba,after),
+            'recovery_review':'pending_semantics_and_full_loop', '_ignore_mask':ignored}
+    return result,report,after
+
+
+def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None, recover_missing=True):
     """Re-materialize source layers; always start from base inputs, never compound edits."""
     from .canvas_layer_parts import materialize_canvas_layer_parts
     parts=json.loads((Path(parts_dir)/'parts.json').read_text());plan=copy.deepcopy(plan)
@@ -109,6 +200,10 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
     else:
         for layer in layers:layer['enabled'] &= layer['effect_mode']!='omit'
         report={'layers':{},'warnings':[]}
+    recovery_ignore=np.zeros(original.shape[:2],bool)
+    if cleanup and recover_missing:
+        layers,recovery,composite=recover_missing_body_from_original(layers,original)
+        recovery_ignore=recovery.pop('_ignore_mask');report.update(recovery)
     out=Path(out_dir).resolve();out.relative_to(Path(evidence_root).resolve());out.mkdir(parents=True,exist_ok=False)
     assets=out/'layers';assets.mkdir();manifest={'version':1,'material_mode':'canvas_layers',
         'source_image':parts['originalSource'],'source_sha256':parts['originalSourceSHA256'],'image_size':parts['canvas'],'pieces':[]}
@@ -126,7 +221,8 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
             'provenance':{**part['canvasLayer']['provenance'],'cleanup_source_image':part['canvasLayer']['image']}})
     result=materialize_canvas_layer_parts(manifest,out/'parts',evidence_root=evidence_root)
     composite=np.asarray(Image.open(result['source']).convert('RGBA'))
-    report['missing_original_regions']=check_missing_original_regions(original,composite)
+    reference=original.copy();reference[recovery_ignore]=0
+    report['missing_original_regions']=check_missing_original_regions(reference,composite)
     marked=Image.fromarray(composite);background=Image.new('RGBA',marked.size,(125,125,125,255));background.alpha_composite(marked)
     draw=ImageDraw.Draw(background)
     for r in report['missing_original_regions']:draw.rectangle(r['bbox'],outline='red',width=4)

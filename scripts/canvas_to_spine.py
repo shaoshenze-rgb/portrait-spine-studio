@@ -45,7 +45,7 @@ class FrameSequence:
 
 def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
                 character='canvas_layers', preset='agile_full', fps=30, gain=1.0,
-                cleanup=False, tweaks=None):
+                cleanup=False, tweaks=None, recover_missing=True):
     parts_dir, plan_path = Path(parts_dir).resolve(), Path(plan_path).resolve()
     out = Path(out_dir).resolve()
     if not isinstance(fps, int) or fps <= 0: raise ValueError('fps must be a positive integer')
@@ -62,7 +62,7 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
     if cleanup or tweaks:
         from src.pipeline.canvas_layer_cleanup import prepare_canvas_parts
         parts_dir, plan, cleanup_report = prepare_canvas_parts(parts_dir, plan, out/'prepared',
-            evidence_root=root, cleanup=cleanup, tweaks=tweaks)
+            evidence_root=root, cleanup=cleanup, tweaks=tweaks, recover_missing=recover_missing)
     material = json.loads((parts_dir / 'parts.json').read_text(encoding='utf-8'))
     rig_spec = compile_canvas_layer_bindings(parts_dir, plan, out / 'rig-spec',
         evidence_root=root, character=character, strict_placement=False)
