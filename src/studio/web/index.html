@@ -562,6 +562,14 @@
     .upload-wrap, .workbench { grid-template-columns: 1fr; }
     .inspector { max-height: none; border-top: 1px solid var(--border); }
   }
+  #canvasIntake, #canvasWorkbench { width:calc(100% - 24px); min-width:0; }
+  #canvasDownloads { display:flex; flex-wrap:wrap; gap:10px; overflow-wrap:anywhere; }
+  @media (max-width:600px) {
+    .topbar { height:auto; min-height:54px; padding:10px 12px; flex-wrap:wrap; position:relative; }
+    .brand, .stepper, .topbar-actions { flex-wrap:wrap; max-width:100%; }
+    .step-pill { padding:4px; }
+    #canvasPreviewFrame { max-height:70vh; }
+  }
 </style>
 </head>
 <body>
@@ -941,8 +949,31 @@
       </aside>
     </div>
   </section>
-</div>
 
+<section class="card" id="canvasIntake" style="margin:16px auto;max-width:1120px;padding:16px">
+  <details><summary>接入已有 Canvas 图层 · 本地零生成</summary>
+    <p>先上传同一张原图，再填写已对齐图层与骨架规划的本机路径。保留原有动作，直接生成 8 秒预览。</p>
+    <label>parts 目录 <input id="canvasPartsPath" class="text-input" placeholder="包含 parts.json 的本机目录"></label>
+    <label>规划 JSON <input id="canvasPlanPath" class="text-input" placeholder="骨架规划 JSON 的本机路径"></label>
+    <button id="btnApplyCanvas" type="button" class="btn">净化图层并生成预览</button>
+  </details>
+  <p id="canvasMessage" role="status"></p>
+</section>
+<section class="card" id="canvasWorkbench" hidden style="margin:16px auto;max-width:1120px;padding:16px">
+  <h2>Canvas 动画预览</h2>
+  <iframe id="canvasPreviewFrame" title="独立图层动画预览" style="width:100%;height:620px;border:0"></iframe>
+  <p id="canvasHardChecks"></p>
+  <details><summary>图层顺序、显示与摆幅</summary>
+    <p>列表从后层到前层；单模块摆幅不会改变全局呼吸频率。改完后应用到预览。</p>
+    <div id="canvasLayerRows"></div>
+    <button id="btnCanvasTweaks" type="button" class="btn">应用调整并更新预览</button>
+  </details>
+  <details><summary>检查告警与动态接缝</summary><pre id="canvasWarnings" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
+  <p><label><input type="checkbox" id="canvasWatched">我已观看完整循环并确认画面</label></p>
+  <button id="btnCanvasSignoff" type="button" class="btn">人工验收通过并导出</button>
+  <div id="canvasDownloads"></div>
+</section>
+</div>
 <script type="module">
   import { PortraitSpinePlayer, normalizeHealthReport } from '/player/player-widget.js';
 
@@ -1313,9 +1344,57 @@
     }
   }
 
+  let canvasRows = [];
+  function drawCanvasRows() {
+    const box=$('canvasLayerRows'); box.replaceChildren();
+    canvasRows.forEach((row,index)=>{
+      const line=document.createElement('div');
+      line.style.cssText='display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 0;border-bottom:1px solid #54606a';
+      const label=document.createElement('span');label.textContent=row.name+' · '+row.module;line.append(label);
+      const visible=document.createElement('input');visible.type='checkbox';visible.checked=row.enabled;
+      visible.setAttribute('aria-label',row.name+' 显示');visible.onchange=()=>row.enabled=visible.checked;line.append(visible);
+      for (const [text,delta] of [['后移',-1],['前移',1]]) {
+        const b=document.createElement('button');b.textContent=text;b.type='button';b.className='btn btn-sm';
+        b.disabled=index+delta<0||index+delta>=canvasRows.length;
+        b.onclick=()=>{[canvasRows[index],canvasRows[index+delta]]=[canvasRows[index+delta],canvasRows[index]];drawCanvasRows();};line.append(b);
+      }
+      const range=document.createElement('input');range.type='range';range.min='0';range.max='1.5';range.step='0.05';range.value=row.motion_scale;
+      range.setAttribute('aria-label',row.module+' 摆动幅度');const value=document.createElement('output');value.textContent=range.value+'×';
+      range.oninput=()=>{canvasRows.filter(r=>r.module===row.module).forEach(r=>r.motion_scale=Number(range.value));value.textContent=range.value+'×';};
+      range.onchange=drawCanvasRows;line.append(range,value);box.append(line);
+    });
+  }
+  function renderCanvasJob(job) {
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    $('canvasWorkbench').hidden=false;$('canvasWatched').checked=false;
+    $('canvasPreviewFrame').src=job.canvas_preview_html+'?v='+job.rig_version;
+    canvasRows=job.canvas_layers.map(r=>({...r}));drawCanvasRows();
+    const labels={files_complete:'文件完整',loop_seam:'首尾无缝循环',original_coverage:'原图无大块漏件',rigid_no_stretch:'刚体无拉伸'};
+    $('canvasHardChecks').textContent=Object.entries(labels).map(([k,v])=>v+'：'+(job.canvas_checks[k]?'通过':'待处理')).join(' · ');
+    $('canvasWarnings').textContent=JSON.stringify({placement:job.canvas_diagnostics.placement_warnings,cleanup:job.canvas_diagnostics.cleanup,dynamic:job.canvas_diagnostics.dynamic_checks},null,2);
+    const downloads=$('canvasDownloads');downloads.replaceChildren();
+    for(const entry of Object.values(job.exports||{}))for(const file of entry.files||[]){const a=document.createElement('a');a.href=file.url;a.textContent=file.label;a.style.marginRight='16px';a.download=file.filename;downloads.append(a);}
+  }
+  async function canvasRequest(action,body) {
+    if(!state.currentJob){$('canvasMessage').textContent='请先上传原图创建任务。';return;}
+    const buttons=['btnApplyCanvas','btnCanvasTweaks','btnCanvasSignoff'];buttons.forEach(id=>$(id).disabled=true);
+    $('canvasMessage').textContent='正在生成完整预览，请稍候；本次不会调用付费生成服务。';
+    try {const job=await apiJson('/api/jobs/'+state.currentJob.job_id+'/'+action,{method:'POST',body:JSON.stringify(body)});
+      await applyJobState(job);$('canvasMessage').textContent='完成。请检查完整循环及接缝。';
+    }catch(e){$('canvasMessage').textContent=e.message;}finally{buttons.forEach(id=>$(id).disabled=false);}
+  }
+  $('btnApplyCanvas').onclick=()=>canvasRequest('apply-canvas-layers',{parts_dir:$('canvasPartsPath').value,plan:$('canvasPlanPath').value,cleanup:true});
+  $('btnCanvasTweaks').onclick=()=>{
+    const layers={},modules={};canvasRows.forEach((r,i)=>{layers[r.name]={drawOrder:i,enabled:r.enabled};modules[r.module]={motion_scale:r.motion_scale};});
+    canvasRequest('layer-tweaks',{layers,modules});
+  };
+  $('btnCanvasSignoff').onclick=()=>{if(!$('canvasWatched').checked){$('canvasMessage').textContent='请先观看完整循环并勾选确认。';return;}canvasRequest('user-signoff',{decision:'pass',reviewer:'工具页使用者'});};
+
   async function applyJobState(job) {
     const previousReviewKey = JSON.stringify(state.currentJob?.review_binding || null);
     state.currentJob = job;
+    if(job.canvas_mode){renderCanvasJob(job);return;}
+    $("canvasWorkbench").hidden=true;
     state.requestedJobId = job.job_id;
     if (previousReviewKey !== JSON.stringify(job.review_binding || null)) {
       $('chkVisualLoop').checked = false;

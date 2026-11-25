@@ -275,6 +275,11 @@ class StudioJobManager:
             "comparison_url": review_images.get(module.get("id")),
         } for module in contract.get("modules", [])]
         return {
+            "canvas_mode": job.get("canvas_mode", False),
+            "canvas_layers": copy.deepcopy(job.get("canvas_layers", [])),
+            "canvas_checks": copy.deepcopy(job.get("canvas_checks", {})),
+            "canvas_diagnostics": copy.deepcopy(job.get("canvas_diagnostics", {})),
+            "canvas_preview_html": job.get("canvas_preview_html"),
             "job_id": job["job_id"],
             "character": job["character"],
             "filename": job["filename"],
@@ -1311,7 +1316,104 @@ class StudioJobManager:
         finally:
             self._release_serial()
 
+    def apply_canvas_layers_job(self, job_id, payload):
+        """Local aligned layers go directly to a preview; no model/service calls."""
+        from scripts.canvas_to_spine import run_preview
+        from PIL import Image
+        with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None: raise JobNotFoundError(job_id)
+        self._acquire_serial(job_id)
+        try:
+            config = copy.deepcopy(payload)
+            parts = Path(config['parts_dir']).resolve()
+            plan_path = Path(config['plan']).resolve()
+            material = json.loads((parts/'parts.json').read_text())
+            if not (Path(job['job_dir'])/'matted.png').is_file():
+                raise ValueError('请先完成当前原图预处理。')
+            with Image.open(material['originalSource']) as source, Image.open(Path(job['job_dir'])/'matted.png') as current:
+                import numpy as np
+                if not np.array_equal(np.asarray(source.convert('RGBA')), np.asarray(current.convert('RGBA'))):
+                    raise ValueError('Canvas原图与当前上传角色不同。')
+            revision = job.get('canvas_revision', 0) + 1
+            destination = Path(job['job_dir'])/('canvas-r'+str(revision))
+            root = Path(os.path.commonpath([str(parts), str(plan_path.parent), job['job_dir']]))
+            job.update(status='running', exports={}, visual_review=None, canvas_signoff=None, canvas_revision=revision)
+            diagnostics = run_preview(parts, plan_path, destination, evidence_root=root,
+                character=job['character'], preset=job['preset'], gain=job['gain'], fps=30,
+                cleanup=config.get('cleanup', True), tweaks=config.get('tweaks'))
+            prepared = destination/'prepared'/'parts'/'parts.json'
+            actual = json.loads(prepared.read_text()) if prepared.exists() else material
+            spec = json.loads((destination/'rig-spec/rig-spec.json').read_text())
+            checks = {'files_complete': diagnostics['files_complete'],
+                'loop_seam': diagnostics['loop_seam_max_diff'] <= 2,
+                'original_coverage': not diagnostics.get('cleanup',{}).get('missing_original_regions', []),
+                'rigid_no_stretch': diagnostics['dynamic_checks']['rigid_max_singular_deviation'] < 1e-5}
+            health = {'hardGates': {'rest_diff': {'passed':diagnostics['rest_composite_diff']['maxRGBA'] <= 2}},
+                'quality': {'overall': {'status':'pending','exportAllowed':False},
+                            'bindingMotion': {'checks': {'rigidity': {'status':'pass' if checks['rigid_no_stretch'] else 'fail'}}}}}
+            (destination/'rig/health-report.json').write_text(json.dumps(health))
+            job.update(canvas_mode=True, canvas_config=config, canvas_output=str(destination),
+                canvas_checks=checks, canvas_diagnostics=diagnostics,
+                canvas_layers=[{'name':p['name'],'module':p['moduleId'],'drawOrder':p['drawOrder'],
+                    'enabled':p.get('enabled',True),'motion_scale':next(m for m in spec['moduleContract']['modules'] if m['id']==p['moduleId']).get('motion_scale',1.)} for p in actual['parts']],
+                status='canvas_preview', rig_spec=spec, health_report=health, module_contract=None,
+                rig_url=self._job_url(job_id, destination.name+'/rig/'+job['character']+'.spine.json'),
+                health_report_url=self._job_url(job_id,destination.name+'/rig/health-report.json'),
+                canvas_preview_html=self._job_url(job_id,destination.name+'/'+job['character']+'-standalone-preview.html'),
+                rig_build_count=job['rig_build_count']+1, updated_at=_now_iso())
+            self._persist_job_meta(job)
+            return self._public_view(job)
+        except Exception:
+            if job.get('status')=='running':
+                job.update(status='failed',canvas_signoff=None,exports={})
+            raise
+        finally: self._release_serial()
+
+    def layer_tweaks_job(self, job_id, payload):
+        with self._state_lock:
+            job=self._jobs.get(job_id)
+            if job is None: raise JobNotFoundError(job_id)
+            if not job.get('canvas_mode'): raise InvalidJobStateError('先接入Canvas图层。')
+            config=copy.deepcopy(job['canvas_config'])
+        tweaks=config.setdefault('tweaks',{})
+        for group in ('layers','modules'):
+            for name,changes in payload.get(group,{}).items():
+                changes = copy.deepcopy(changes)
+                if group == 'layers' and changes.get('enabled') is True and 'effect_mode' not in changes:
+                    changes['effect_mode'] = 'keep'
+                tweaks.setdefault(group,{}).setdefault(name,{}).update(changes)
+        return self.apply_canvas_layers_job(job_id,config)
+
+    def canvas_signoff_job(self, job_id, payload):
+        with self._state_lock:
+            job=self._jobs.get(job_id)
+            if job is None: raise JobNotFoundError(job_id)
+            if not job.get('canvas_mode') or job['status'] not in ('canvas_preview','ready'):
+                raise InvalidJobStateError('当前没有可签收的Canvas预览。')
+            if payload.get('decision') != 'pass' or not all(job['canvas_checks'].values()):
+                raise InvalidJobStateError('四项基础检查通过且实际验收后才能签收。')
+        self._acquire_serial(job_id)
+        try:
+            out=Path(job['canvas_output']);signoff=out/'user-signoff.json'
+            signoff.write_text(json.dumps({'decision':'pass','reviewer':str(payload.get('reviewer') or '工具页使用者'),
+                'user_quote':'人工验收通过','revision':job['canvas_revision'],'date':_now_iso()},ensure_ascii=False))
+            result=export_default_package(out/'rig',out/'exports',render_previews=False,user_signoff_path=signoff)
+            files=[Path(result['zip_path']),Path(result['standalone_html'])]
+            files += sorted(out.glob('*-preview-*.mp4'))
+            job['exports']={'spine_package':{'kind':'spine_package','files':[{
+                'label':p.name,'filename':p.name,'url':self._job_url(job_id,str(p.relative_to(Path(job['job_dir']))))} for p in files]}}
+            job.update(status='ready',canvas_signoff=str(signoff),updated_at=_now_iso())
+            self._persist_job_meta(job)
+            return self._public_view(job)
+        finally: self._release_serial()
+
     def export_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self._state_lock:
+            current = self._jobs.get(job_id)
+            if current and current.get('canvas_mode'):
+                if not current.get('canvas_signoff'): raise InvalidJobStateError('请先人工验收签收。')
+                return copy.deepcopy(current['exports']['spine_package'])
         kind = str(payload.get("kind") or "spine_package")
         if kind not in ("spine_package", "preview_video", "transparent_web", "standalone_html"):
             raise ValueError(f"不支持的导出类型 {kind!r}，可选：spine_package / preview_video / transparent_web / standalone_html")
@@ -1620,6 +1722,12 @@ def create_studio_server(
                 parts = [p for p in path.split("/") if p]
                 if len(parts) == 4 and parts[0] == "api" and parts[1] == "jobs":
                     job_id, action = parts[2], parts[3]
+                    if action == "apply-canvas-layers":
+                        self._send_json(HTTPStatus.OK, job_manager.apply_canvas_layers_job(job_id, body)); return
+                    if action == "layer-tweaks":
+                        self._send_json(HTTPStatus.OK, job_manager.layer_tweaks_job(job_id, body)); return
+                    if action == "user-signoff":
+                        self._send_json(HTTPStatus.OK, job_manager.canvas_signoff_job(job_id, body)); return
                     if action == "apply-analysis":
                         self._send_json(HTTPStatus.OK, job_manager.apply_analysis_job(job_id, body))
                         return

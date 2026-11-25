@@ -160,6 +160,10 @@ def _import_layers(receipt_path,source_path,working_path,assets_dir,out_dir,*,pa
             entry['status']='needs_canvas_registration';results.append(entry);continue
         aligned=warp_rgba(layer,matrix,working_size)
         dest=out/(node['node_id']+'-aligned.png');Image.fromarray(aligned).save(dest)
+        from src.pipeline.canvas_layer_cleanup import clean_layer
+        cleaned,cleanup_stats=clean_layer(aligned,source)
+        clean_path=out/(node['node_id']+'-cleaned.png');Image.fromarray(cleaned).save(clean_path)
+        entry['cleanup']={**cleanup_stats,'image':str(clean_path),'sha256':sha(clean_path)}
         entry.update(status='aligned_pending_review',image=str(dest),sha256=sha(dest),transform=matrix.tolist())
         ys,xs=np.nonzero(aligned[...,3]>0)
         if not len(xs):raise ValueError('对齐图层落在画布外。')

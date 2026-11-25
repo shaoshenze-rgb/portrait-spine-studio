@@ -218,7 +218,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
                'bone': driver, 'pivot': pos, 'pieces': names, 'visibleMasks': [paths[n] for n in names],
                'maskSemantics': 'independent_layer_support_not_exclusive_source_ownership',
                'motion': 'static' if m['motion_type'] == 'static' else 'required', 'motionProfile': m['motion'], 'motionType': m['motion_type'],
-               'softBones': soft, 'confidence': m['confidence'], 'side': m.get('side')}
+               'softBones': soft, 'motion_scale': m.get('motion_scale', 1.), 'confidence': m['confidence'], 'side': m.get('side')}
         if m.get('static_reason'): row['staticReason'] = m['static_reason']
         if soft: row['centerline'] = [point(p) for p in m['centerline']]
         if m.get('locked_root'): row['lockedRoot'] = True

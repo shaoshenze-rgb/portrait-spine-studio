@@ -487,7 +487,7 @@ def build_module_specs(image_path: Union[str, Path], *, character: str,
               "motionProfile":m["motion"], "motionType":m["motion_type"],
               "pieces":module_pieces,"visibleMasks":module_masks,"bone":driver,
               "softBones":soft_bones,"parent":m["parent"],"pivot":pos,
-              "side":m.get("side"),"confidence":m["confidence"]}
+              "side":m.get("side"),"confidence":m["confidence"],"motion_scale":m.get("motion_scale",1.)}
         if m.get("static_reason"):
             pm["staticReason"] = m["static_reason"]
         if m.get("centerline"):
@@ -871,6 +871,13 @@ def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dic
             continue
         lag = ROLE_LAG_S.get(role, .65)
         motion[bn] = {"rotate": terms((sign * amp, 3, lag), (sign * amp * 0.25, 2, lag + 0.16))}
+    for m in modules:
+        factor = float(m.get('motion_scale', 1.0))
+        if not math.isfinite(factor) or not 0 <= factor <= 1.5:
+            raise VisionReviewRequired('motion_scale必须在0..1.5。')
+        for bone in [m['bone']] + list(m.get('softBones') or []):
+            for key, values in motion.get(bone, {}).items():
+                motion[bone][key] = [(a*factor, harmonic, phase) for a,harmonic,phase in values]
     return motion
 
 def preflight_module_motion(skeleton: dict, rig: dict, *, duration: float) -> dict:

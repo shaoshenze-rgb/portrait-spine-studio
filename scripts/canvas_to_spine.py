@@ -44,7 +44,8 @@ class FrameSequence:
 
 
 def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
-                character='canvas_layers', preset='agile_full', fps=30, gain=1.0):
+                character='canvas_layers', preset='agile_full', fps=30, gain=1.0,
+                cleanup=False, tweaks=None):
     parts_dir, plan_path = Path(parts_dir).resolve(), Path(plan_path).resolve()
     out = Path(out_dir).resolve()
     if not isinstance(fps, int) or fps <= 0: raise ValueError('fps must be a positive integer')
@@ -57,11 +58,28 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
     out.relative_to(root)
     if out.exists(): raise ValueError('Use a new output directory; existing previews are preserved')
     plan = json.loads(plan_path.read_text(encoding='utf-8'))
+    cleanup_report = {}
+    if cleanup or tweaks:
+        from src.pipeline.canvas_layer_cleanup import prepare_canvas_parts
+        parts_dir, plan, cleanup_report = prepare_canvas_parts(parts_dir, plan, out/'prepared',
+            evidence_root=root, cleanup=cleanup, tweaks=tweaks)
     material = json.loads((parts_dir / 'parts.json').read_text(encoding='utf-8'))
     rig_spec = compile_canvas_layer_bindings(parts_dir, plan, out / 'rig-spec',
         evidence_root=root, character=character, strict_placement=False)
     made = build_rig(parts_dir, rig_spec, out / 'rig', preset=preset, gain=gain)
-    renderer = SpineRenderer(out / 'rig')
+    return render_preview(parts_dir, out/'rig', out, fps=fps, rig_spec=rig_spec,
+                          plan_path=plan_path, cleanup_report=cleanup_report)
+
+
+def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_path=None, cleanup_report=None):
+    """Same preview and diagnostics for Canvas and existing source-sliced rigs."""
+    out=Path(out_dir).resolve();parts_dir=Path(parts_dir).resolve();rig_dir=Path(rig_dir).resolve()
+    material=json.loads((parts_dir/'parts.json').read_text())
+    report=json.loads((rig_dir/'rig-build-report.json').read_text())
+    made={'report':report};character=report['character'];ffmpeg=find_ffmpeg()
+    if not ffmpeg: raise RuntimeError('ffmpeg required')
+    rig_spec=rig_spec or {};cleanup_report=cleanup_report or {}
+    renderer = SpineRenderer(rig_dir)
     duration = float(made['report']['duration'])
     total = round(duration * fps)
     key_times = [0., 1.5, 3., 4.5, 6.]
@@ -73,6 +91,7 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
         for i in range(total):
             frames[i] = renderer.frame(i / fps)
             if i % max(1, fps) == 0: print(f'render {i}/{total}', flush=True)
+        dynamic_frames = {i*.5: frames[round(i*.5*fps)].copy() for i in range(16)}
         for t in key_times:
             frames_at[t] = (frames[round(t*fps)].copy() if round(t*fps) < total else renderer.frame(t))
         frame_zero = frames[0].copy()
@@ -85,7 +104,7 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
     snapshots = out / 'keyframes'; snapshots.mkdir()
     for t, frame in frames_at.items():
         Image.fromarray(over_bg(frame, (130, 130, 130))).save(snapshots / f't-{t:.1f}.png')
-    source = Image.open(material['originalSource']).convert('RGBA')
+    source = Image.open(material.get('originalSource', material['source'])).convert('RGBA')
     panels = [('Original', over_bg(_pm(source), (130, 130, 130)))]
     panels += [(f't={t:.1f}s', over_bg(frame, (130, 130, 130))) for t, frame in frames_at.items()]
     tile_w, tile_h = 500, 690
@@ -102,15 +121,18 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
     paths = [out/'rig'/'rig-build-report.json', out/'rig'/f'{character}.spine.json', html,
              out/f'{character}-preview-dark.mp4', out/f'{character}-preview-light.mp4']
     paths += list((out/'rig'/'images').glob('*.png'))
+    from src.gates.preview_diagnostics import inspect_dynamic
+    dynamic = inspect_dynamic(renderer, dynamic_frames, np.asarray(source), out)
     diagnostics = {
-        'character': character, 'material_mode': 'canvas_layers', 'duration': duration, 'fps': fps,
+        'cleanup': cleanup_report, 'dynamic_checks': dynamic,
+        'character': character, 'material_mode': material.get('materialMode','source_sliced'), 'duration': duration, 'fps': fps,
         'frame_count': total, 'files_complete': all(p.is_file() and p.stat().st_size > 0 for p in paths),
         'loop_seam_max_diff': _diff(frame_zero, renderer.frame(duration))['maxRGBA'],
         'rest_composite_diff': _diff(frame_zero, reference),
         'setup_pose_composite_diff': _diff(renderer.frame(None), reference),
-        'placement_warnings': rig_spec['placementWarnings'],
-        'advisory_notes': rig_spec['moduleContract']['advisoryNotes'],
-        'source': str(material['originalSource']), 'parts_dir': str(parts_dir), 'plan': str(plan_path),
+        'placement_warnings': rig_spec.get('placementWarnings', []),
+        'advisory_notes': rig_spec.get('moduleContract', {}).get('advisoryNotes', {}),
+        'source': str(material.get('originalSource', material['source'])), 'parts_dir': str(parts_dir), 'plan': str(plan_path),
         'new_canvas_calls': 0, 'visual_review': 'pending', 'export_approved': False,
         'files': {str(p.relative_to(out)): p.stat().st_size for p in paths},
     }
@@ -128,9 +150,12 @@ def main():
     parser.add_argument('--evidence-root', type=Path)
     parser.add_argument('--fps', default=30, type=int)
     parser.add_argument('--gain', default=1.0, type=float)
+    parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--tweaks', type=Path, help='JSON layers/module settings')
     args = parser.parse_args()
     result = run_preview(args.parts_dir, args.plan, args.out_dir, evidence_root=args.evidence_root,
-                         character=args.character, preset=args.preset, fps=args.fps, gain=args.gain)
+                         character=args.character, preset=args.preset, fps=args.fps, gain=args.gain, cleanup=args.cleanup,
+                         tweaks=json.loads(args.tweaks.read_text()) if args.tweaks else None)
     print(json.dumps({key: result[key] for key in ('character', 'files_complete', 'frame_count', 'loop_seam_max_diff')}, ensure_ascii=False))
 
 

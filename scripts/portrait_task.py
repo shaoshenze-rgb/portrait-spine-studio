@@ -34,6 +34,11 @@ def main(argv=None) -> int:
     apply = sub.add_parser('apply-analysis', help='应用当前对话读图产出的同任务视觉JSON，停在绑定预览')
     apply.add_argument('--job', required=True)
     apply.add_argument('--analysis', required=True, type=Path, help='完整模块 V2 JSON 文件，额外含 job_id')
+    canvas = sub.add_parser('apply-canvas', help='现有Canvas图层直接生成预览')
+    canvas.add_argument('--job', required=True)
+    canvas.add_argument('--parts-dir', required=True, type=Path)
+    canvas.add_argument('--plan', required=True, type=Path)
+    canvas.add_argument('--cleanup', action='store_true')
     generate = sub.add_parser('generate', help='确认已有绑定后生成动画；仅在本次任务已授权验收时使用')
     generate.add_argument('--job', required=True)
     generate.add_argument('--module-review', required=True, type=Path, help='实际查看当前原图及每个完整模块后的观察JSON，绑定确认与语义复核一次提交')
@@ -81,6 +86,9 @@ def main(argv=None) -> int:
         elif args.command == 'apply-analysis':
             analysis = json.loads(args.analysis.read_text(encoding='utf-8'))
             output = request('/api/jobs/' + args.job + '/apply-analysis', {'job_id': args.job, 'analysis': analysis})
+        elif args.command == 'apply-canvas':
+            output = request('/api/jobs/' + args.job + '/apply-canvas-layers', {
+                'parts_dir': str(args.parts_dir.resolve()), 'plan': str(args.plan.resolve()), 'cleanup': args.cleanup})
         elif args.command == 'generate':
             output = request('/api/jobs/' + args.job + '/confirm-rig',
                              {'module_review': json.loads(args.module_review.read_text(encoding='utf-8'))})

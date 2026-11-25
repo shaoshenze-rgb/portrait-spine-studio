@@ -110,7 +110,7 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
         w, h = int(xs.max()) + 1 - x, int(ys.max()) + 1 - y
         records.append((order, rgba[y:y+h, x:x+w].copy(), {
             'name': name, 'moduleId': mid, 'pieceId': name, 'drawOrder': order,
-            'kind': kind, 'parent': parent, 'pivot': list(pivot),
+            'kind': kind, 'parent': parent, 'pivot': list(pivot), 'enabled': piece.get('enabled', True),
             'bbox': [x, y, w, h], 'image': 'parts/' + name + '.png',
             'joints': {}, 'notes': 'Independent Canvas RGBA material; not source ownership',
             'canvasLayer': {'image': str(path), 'sha256': digest, 'provenance': provenance},
@@ -131,7 +131,7 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
         cropped.save(out / entry['image'])
         entry['imageSHA256'] = _sha(out / entry['image'])
         x, y, _, _ = entry['bbox']
-        composite.alpha_composite(cropped, (x, y))
+        if entry["enabled"]: composite.alpha_composite(cropped, (x, y))
         metadata.append(entry)
     reference = out / 'setup_composite.png'
     composite.save(reference)

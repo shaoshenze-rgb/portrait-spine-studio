@@ -663,7 +663,8 @@ def build_rig(
         else:
             raise ValueError(f"Unsupported attachment type {att_type!r} for part {name!r}")
 
-        skel["slots"].append({"name": name, "bone": slot_bone, "attachment": name})
+        if p.get("enabled", True):
+            skel["slots"].append({"name": name, "bone": slot_bone, "attachment": name})
         skel["skins"][0]["attachments"][name] = {name: att}
         att_report.append({
             "part": name, "attachment": att_type, "recipe": recipe_label, "bone": slot_bone,

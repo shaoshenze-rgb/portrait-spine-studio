@@ -252,7 +252,7 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
     by_id, pieces, orders = {}, {}, set()
     allowed = {"id", "role", "motion_type", "parent", "pivot", "motion", "pieces",
                "centerline", "confidence", "static_reason", "side", "representation",
-               "notes", "locked_root"}
+               "notes", "locked_root", "motion_scale"}
     for module in modules:
         if not isinstance(module, dict):
             raise VisionValidationError("模块必须是对象。")
@@ -260,6 +260,9 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
         mid = _id(module.get("id"), "module.id")
         if mid in by_id:
             raise VisionValidationError("模块id重复。")
+        motion_scale = _number(module.get("motion_scale", 1.0), mid + ".motion_scale")
+        if not 0 <= motion_scale <= 1.5: raise VisionValidationError("motion_scale必须在0..1.5。")
+        module["motion_scale"] = motion_scale
         role = module.get("role")
         if role not in MODULE_ROLES:
             raise VisionValidationError(mid + " 的role不受支持。")

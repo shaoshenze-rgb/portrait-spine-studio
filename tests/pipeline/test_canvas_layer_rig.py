@@ -195,5 +195,21 @@ class CanvasLayerRigTests(unittest.TestCase):
             positions.append([foot.worldX, foot.worldY])
         self.assertLess(np.ptp(positions, axis=0).max(), 1e-8)
 
+    def test_module_motion_scale_changes_only_its_own_motion(self):
+        from src.pipeline.module_rig import resolve_module_motion
+        spec = self.compile(); original = resolve_module_motion(spec, 'agile_full', duration=8)
+        body = next(m for m in spec['moduleContract']['modules'] if m['id']=='body')
+        head = next(m for m in spec['moduleContract']['modules'] if m['id']=='head')
+        head['motion_scale'] = .5
+        scaled = resolve_module_motion(spec, 'agile_full', duration=8)
+        self.assertEqual(original['module_body'], scaled['module_body'])
+        self.assertEqual(original['bend_flame1'], scaled['bend_flame1'])
+        self.assertEqual(original['module_head']['rotate'][0][0]*.5, scaled['module_head']['rotate'][0][0])
+        head['motion_scale'] = 0
+        frozen = resolve_module_motion(spec, 'agile_full', duration=8)
+        self.assertTrue(all(t[0]==0 for t in frozen['module_head']['rotate']))
+        head['motion_scale'] = 2
+        with self.assertRaises(ValueError): resolve_module_motion(spec,'agile_full',duration=8)
+
 
 if __name__ == '__main__': unittest.main()
