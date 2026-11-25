@@ -1,6 +1,6 @@
 interface:
   display_name: "Portrait Spine Idle"
-  short_description: "在对话中规划完整语义模块，检查保形轻摆、软配件与 Spine 动画质量"
-  default_prompt: "使用 $portrait-spine-idle 实际看这张立绘，规划完整模块 V2：身体和硬物保形、软配件轻弯，先停在绑定预览，确认后生成并逐项验收。"
+  short_description: "一次画布粗拆后先出八秒 Spine 预览，自动净化补底、局部微调并人工签收导出"
+  default_prompt: "用 $portrait-spine-idle 将这张立绘经一次 Canvas 粗拆、净化与原图补底制作成八秒预览，保持硬物保形和自然软摆，只修动态穿帮，验收后导出。"
 policy:
   allow_implicit_invocation: true

@@ -1,3 +1,36 @@
+# 当前验收状态
+
+更新：2026-11-26。当前主链以[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)和[使用指南](usage.md)为准：一次顶层粗拆、净化与原图补底、先出八秒预览、局部微调后人工签收。下方历史的“未提交”“未导出”与旧严格门禁只描述当时状态，不是当前指令。
+
+| 代表样本 | 最新验收事实 | 正式交付 |
+| --- | --- | --- |
+| 逐星暗影（用户归类为站立外观） | 用户对 starshadow-r2 明确签收“逐星没问题了”；肩甲层序、左右手/头部局部幅度与垫边已验证 | [starshadow-final](../.studio-work/deliverables-20261125/starshadow-final/) 四件套已导出；[签收](../.studio-work/deliverables-20261125/starshadow-final/user-signoff-r2.json) |
+| 爆破新星（浮空、去糊特效、补臂型） | 用户对 blastnova-noflame 明确签收“没问题，落实到通用规则和skill了吗”；完整手臂与无残丝版通过 | [blastnova-final](../.studio-work/deliverables-20261125/blastnova-final/) 四件套已导出；ZIP 完整，深浅底各 240 帧／8.0 秒；[签收](../.studio-work/deliverables-20261125/blastnova-final/user-signoff-noflame.json) |
+| 时空幻象（遮挡武器型） | 新主链回归待做；最后作品库读取为 unavailable / unauth_cache、任务映射为空 | 尚无新主链合格成品。需恢复作品库读取并实际读通，再单次粗拆；刷新/重启并不等于已恢复 |
+
+## 已验证的通用能力与边界
+
+- 独立 Canvas RGBA 保留层序进入标准 parts；自动裁外部白块、去白边。
+- omit 停止绘制糊特效；原图补底排除外围及凸包内同色残丝。主体缺块按 ≥200px 恢复到邻接合法层，保留恢复记录并复看归属。
+- 预览支持 grounded/airborne，静态 6px 距离仅提醒；单模块 motion_scale 与层级/显隐可在 Studio 调整。保持呼吸与软摆，四项基础检查加人工签收交付。
+- 两张代表已验收，不等于所有新图都能无人看图自动通过；自动补底归属、同色特效清理仍需原图和完整循环复核。
+- 不能把本次爆破新星通过描述为“两张新的单次 Canvas 粗拆已完成”：M3-A 新拆层被读取阻塞，先前两张新粗拆额度未消耗。已签收的是后续本地通用处理产出的 blastnova-noflame；旧套娃中间版不再作为验收基线。
+
+两个正式签收版本的构建报告均为 `poseType=airborne`、`ikCount=0`。因此“站立外观”不是真实 grounded 足锚通过的证据；grounded 能力有合成单测，仍待时空幻象完成真实回归。本轮只做文档与导出，未修改已签收动作。
+
+## 当前代码、测试与运行态
+
+通用特效残丝清理来自 ee41d7a；本轮仅固化 Skill/文档并导出，不修改动画、清理算法或冻结文件。工作在 feat/canvas-mainline-v3，本地提交；未合并 main、未 push，本轮没有付费 Canvas 调用。未重启 8765，不声称常驻服务已加载新版本。
+
+[本轮 M3-B 报告](../.studio-work/deliverables-20261125/M3B-REPORT.json)记录最终文件大小、ZIP/视频校验、双环境核心测试、文档检查与提交哈希；该链接指本机交付证据，被忽略目录不随 Git 克隆分发。[M3-A 报告](../.studio-work/deliverables-20261125/M3A-REPORT.json)保留读取阻塞和逐星导出证据。[M2 报告](../.studio-work/deliverables-20261125/M2-REPORT.json)中的爆破缺臂状态已由本次签收版取代。
+
+下一项回归是时空幻象：读取恢复后验证独立完整法杖与围巾遮挡下的站立动画。合并与推送仍等待明确授权。
+
+## 历史记录（仅供追溯，不作为现行流程）
+
+<details>
+<summary>展开 M1–M3 收口前的阶段记录、旧门禁与诊断证据</summary>
+
 # Portrait Spine Studio 当前验收状态
 
 ## 当前主链检查点：Canvas材质回接（2026-11-25）
@@ -143,3 +176,5 @@ Orca reviewer独立输入复核：两图FAIL/NEEDS_INPUT。爆破新星局部SAM
 独立视觉复核确认时空幻象唯一同等级重要残留是staff杆身中段断裂。按现有多piece同骨骼、正确前后层级和有界local补边做了一次候选，证据在 .studio-work/staff-occlusion-20261125/。可见原像素与握持/动作不变、rest_diff=0，但关键帧仍可见断杆，正常动作最大3220未补像素外露（压力3953）。FAIL/NEEDS_INPUT，不继续盲扩补色；需要可信杆身材质/原始分层才能继续可靠验证。
 
 这不推翻“持续有效遮挡即可不补”的标准：当前杖杆缺段确实会露出，故不符合该通过条件。代码/证据锁定限定APPROVED保留；两个新代表图整体未通过，统一提交前置不满足，未提交或导出。
+
+</details>

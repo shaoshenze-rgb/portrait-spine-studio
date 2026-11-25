@@ -1,17 +1,33 @@
 # Portrait Spine Studio
 
-每轮开工、恢复或派工前，先读[项目 Skill 的主目标](.agents/skills/portrait-spine-idle/SKILL.md#主目标每轮开工先读)，确认当前动作推进 Canvas→Spine 主链。角色仅作回归样本，不能滑向逐角色手工修图。
+将一张透明立绘制作成可交付的 Spine 待机动画：**一次 Canvas 粗拆 → 净化与原图补底 → 立即出 8 秒预览 → 局部微调、人工签收导出**。身体和武器保形，软饰件轻摆；持续遮住的内容不强补。
 
-在 Cindy 项目对话中实际看图，使用项目内 Skill 和脚本交接完整模块规划，再在本机工具页检查绑定、动画和质量。无需安装连接插件。
+Cindy 对话负责调用 Canvas、看图和规划图层；本地 Python 工具负责对齐、净化、骨架、渲染和导出。不是全自动语义拆分服务，也不需要安装专用 Cindy 连接插件。项目 Skill 随仓库分发：[四步 SOP](.agents/skills/portrait-spine-idle/SKILL.md)。
 
-    python3 bin/start-studio.py --port 8765 --no-open
+## 本机使用
 
-启动后访问 http://127.0.0.1:8765/；该地址指浏览器所在电脑。依赖 Python 3.9+、Pillow、numpy，视频导出另需已有 ffmpeg，没有 Node 构建步骤。
+依赖现有 Python 3.9+、Pillow、numpy；视频需要 ffmpeg。前端无 Node 构建或公网 CDN。
 
-当前生产入口要求完整模块 V2：头身、自然肢段、手和硬质器具保形；软模块保持完整归属并有限轻弯；接触、遮挡和输入缺陷显式声明。旧 V1 关键点或大主体掩码不能自动转成合格模块。
+```bash
+python3 bin/start-studio.py --port 8765 --no-open
+```
 
-    python3 scripts/portrait_task.py prepare --image <透明立绘路径>
+在运行服务的电脑打开 http://127.0.0.1:8765/。上传原图后，可接入已对齐的 Canvas parts 和骨架规划，再调图层前后、显隐和单模块摆幅，完整循环看过后签收下载。
 
-默认依次停在等待对话分析、绑定确认。生成后还需机器检查和同版本的五项视觉观察，全部通过才可导出。机器通过、模块mask没有改派、播放过8秒都不能单独证明成品合格。
+已有 parts 时可直接离线渲染，所有输入与新输出放在共同证据根下：
 
-当前验收状态和证据统一见[验收状态](docs/acceptance-summary.md)。2026-11-25正在接通Canvas拆层/补全主链：真实返回材质已完成物化，新的模块规划、实际分件/骨骼/动画和完整循环验收尚未完成，不能以历史单角色签收替代通用流程通过。操作见[使用指南](docs/usage.md)，检查方法见[项目Skill](.agents/skills/portrait-spine-idle/SKILL.md)。本轮未提交、推送或发布。
+```bash
+python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新输出目录> --evidence-root <任务根> --cleanup --fps 30
+```
+
+默认一次顶层粗拆，目标 5–10 个完整大块，不再递归拆子层；仅动态真穿帮且本地处理不足时，才在有效授权内补一次局部 Canvas。作品库原件不可读时先停生成，不浪费次数。
+
+## 已验证与交付
+
+逐星暗影第 2 版、爆破新星完整手臂且无火焰残丝版均已获用户视觉签收。正式交付为 Spine 4.2 ZIP、深浅底 30fps MP4 和单文件 HTML。时空幻象仍是待读取恢复后的回归样本，不把两图通过写成全库通过。两个签收版实际绑定均为 airborne、无 IK；grounded 有合成测试支持，但真实站立脚锚还待回归，不能只凭逐星的站立外观宣称已验证。
+
+- [使用指南](docs/usage.md)：原件交接、parts 物化、预览、Studio API、签收导出。
+- [验收状态](docs/acceptance-summary.md)：当前产物、真实限制和历史记录。
+- [局部返修](.agents/skills/portrait-spine-idle/references/rerun-and-troubleshooting.md)：残块、特效、缺件、接缝与读取故障。
+
+`canvas_repair_workflow.py` 和 `connection_diagnostics.py` 已冻结，不作为当前主链门禁。旧诊断命令保留维护；未传人工签收参数的历史严格导出路径没有被删除。
