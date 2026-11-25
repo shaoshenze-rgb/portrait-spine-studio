@@ -89,3 +89,25 @@ class OriginalBodyRecoveryTests(unittest.TestCase):
         restored,report,_=recover_missing_body_from_original(layers,original)
         self.assertEqual(report['recovered_pixel_count'],600)
         self.assertEqual(int(restored[0]['rgba'][45,60,3]),113)
+
+    def test_interior_omitted_effect_tendril_is_removed_while_body_elbow_is_recovered(self):
+        from src.pipeline.canvas_layer_cleanup import recover_missing_body_from_original
+        original,layers=self.fixture()
+        # Add an extended limb so convex hull encloses y=70..95, x=40..70
+        layers[0]['rgba'][80:100,10:90]=[50,60,70,255]
+        original[80:100,10:90]=[50,60,70,255]
+        # Pure fiery tendril INSIDE body convex hull (must be excluded when flame is omitted)
+        layers[0]['rgba'][62:78,40:70]=0
+        original[62:78,40:70]=[230,85,15,255]
+        # Outer flame pixels outside convex hull to define effect chromatic signature
+        original[30:60,115:140]=[235,80,12,255]
+        effect=np.zeros_like(original)
+        effect[30:60,115:140]=[235,80,12,255]
+        effect[62:78,40:70]=[230,85,15,255]
+        effect[30:60,40:60]=[240,80,0,255]  # overlaps neutral blue-gray missing elbow!
+        layers.append({'id':'flame','role':'effect_group','rgba':effect,'draw_order':1,'effect_mode':'omit','enabled':False})
+        _,report,composite=recover_missing_body_from_original(layers,original)
+        # Neutral elbow (600px) IS recovered; fiery interior tendril (480px) is NOT recovered!
+        self.assertEqual(report['recovered_pixel_count'],600)
+        self.assertTrue((composite[62:78,40:70,3]==0).all())
+        np.testing.assert_array_equal(composite[30:60,40:60],original[30:60,40:60])

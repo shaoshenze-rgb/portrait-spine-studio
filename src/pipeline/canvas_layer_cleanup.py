@@ -128,15 +128,59 @@ def recover_missing_body_from_original(layers, original_rgba, *, ignore_mask=Non
     body=np.zeros(shape,bool)
     for mask in supports.values():body |= mask
     omitted=np.zeros(shape,bool)
+    omitted_rgb_samples=[]
     for layer in result:
         if layer.get('role')=='effect_group' and (layer.get('effect_mode')=='omit' or not layer.get('enabled',True)):
-            omitted |= layer['rgba'][...,3]>8
-    ignored=omitted & ~dilate(_body_envelope(body),2)
+            om=layer['rgba'][...,3]>8
+            omitted |= om
+            omitted_rgb_samples.append((om, layer['rgba'][...,:3]))
+    outer_ignored=omitted & ~dilate(_body_envelope(body),2)
+    ignored=outer_ignored.copy()
     if ignore_mask is not None:
         supplied=np.asarray(ignore_mask,dtype=bool)
         if supplied.shape!=shape:raise ValueError('ignore_mask must match the original canvas')
         ignored |= supplied
     before=composite();raw_missing=(original_rgba[...,3]>=180)&(before[...,3]<40)
+    # Generic omitted-effect chromatic cleanup: learn the omitted effect's hue
+    # direction from its outer (non-body) pixels so interior dangling wisps and
+    # effect tendrils inside the body's convex hull are cleanly excluded without
+    # dropping neutral/body limbs (e.g. a missing elbow under an opaque effect).
+    effect_pixel_mask=np.zeros(shape,bool)
+    if omitted.any():
+        orig_rgb=original_rgba[...,:3].astype(np.float32)
+        cmax=orig_rgb.max(axis=2);cmin=orig_rgb.min(axis=2)
+        sat=(cmax-cmin)/np.maximum(cmax,1.0)
+        sample_mask=outer_ignored & (original_rgba[...,3]>=120) & (sat>0.40)
+        if int(sample_mask.sum())<30:
+            # Fallback: sample chromatic pixels directly from the omitted layer itself.
+            for om, lrgb in omitted_rgb_samples:
+                lr=lrgb.astype(np.float32); lm=lr.max(axis=2); ln=lr.min(axis=2)
+                ls=(lm-ln)/np.maximum(lm,1.0)
+                sample_mask |= om & (ls>0.40)
+        if int(sample_mask.sum())>=16:
+            pts=orig_rgb[sample_mask] if (outer_ignored & (original_rgba[...,3]>=120) & (sat>0.40)).sum()>=30 else np.concatenate(
+                [lrgb.astype(np.float32)[om & ((lrgb.max(axis=2)-lrgb.min(axis=2))/np.maximum(lrgb.max(axis=2),1.0)>0.40)] for om, lrgb in omitted_rgb_samples], axis=0)
+            norm_pts=pts/np.maximum(np.linalg.norm(pts,axis=1,keepdims=True),1.0)
+            mean_dir=norm_pts.mean(axis=0); nrm=float(np.linalg.norm(mean_dir))
+            if nrm>1e-6:
+                mean_dir=mean_dir/nrm
+                orig_dir=orig_rgb/np.maximum(np.linalg.norm(orig_rgb,axis=2,keepdims=True),1.0)
+                cos_sim=np.tensordot(orig_dir,mean_dir,axes=([2],[0]))
+                effect_pixel_mask=omitted & (sat>0.42) & (cos_sim>=0.94)
+                # Drop whole raw_missing components that are dominated by omitted effect
+                # (including their bright hot cores), and trim clinging wisps on mixed limbs.
+                pre_missing=raw_missing & ~ignored
+                pre_labels=_components(np.pad(pre_missing,1))[1:-1,1:-1]
+                pre_counts=np.bincount(pre_labels.ravel())
+                for pl in np.flatnonzero(pre_counts>=20):
+                    if pl==0:continue
+                    comp=pre_labels==pl
+                    in_om=float((comp & omitted).sum())/float(pre_counts[pl])
+                    eff_r=float((comp & effect_pixel_mask).sum())/float(pre_counts[pl])
+                    if in_om>=0.85 and eff_r>=0.50:
+                        ignored |= comp
+                # Also strip clinging fiery/glowing wisps (plus 1px halo) inside omitted area
+                ignored |= dilate(effect_pixel_mask, 1) & omitted
     missing=raw_missing & ~ignored
     labels=_components(np.pad(missing,1))[1:-1,1:-1];counts=np.bincount(labels.ravel())
     recovered=[];unresolved=[]
