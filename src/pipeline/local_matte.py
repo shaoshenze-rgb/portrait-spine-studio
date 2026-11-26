@@ -230,6 +230,206 @@ def _defringe_edges(rgb: np.ndarray, fg: np.ndarray, bg_median: np.ndarray) -> n
     return out
 
 
+def _clear_interior_solid_bg_holes(
+    rgb: np.ndarray,
+    bg_mask: np.ndarray,
+    bg_median: np.ndarray,
+    *,
+    min_area: int = 200,
+    max_channel_diff: float = 8.0,
+    max_grad: float = 4.0,
+) -> Tuple[np.ndarray, int]:
+    """Remove enclosed interior pockets of an exact solid backdrop (e.g. #808080 inside swirls/arms)."""
+    h, w = rgb.shape[:2]
+    bg_lum = float(0.299 * bg_median[0] + 0.587 * bg_median[1] + 0.114 * bg_median[2])
+    if not (30.0 <= bg_lum <= 220.0):
+        return bg_mask, 0
+    min_area = max(min_area, int(0.0004 * h * w))
+    arr = rgb.astype(np.float32)
+    diff = np.max(np.abs(arr - bg_median[None, None, :]), axis=2)
+    gx = np.zeros((h, w), dtype=np.float32)
+    gy = np.zeros((h, w), dtype=np.float32)
+    gx[:, 1:] = np.max(np.abs(arr[:, 1:] - arr[:, :-1]), axis=2)
+    gy[1:, :] = np.max(np.abs(arr[1:, :] - arr[:-1, :]), axis=2)
+    flat_match = (~bg_mask) & (diff <= max_channel_diff) & (np.maximum(gx, gy) <= max_grad)
+    if not flat_match.any():
+        return bg_mask, 0
+
+    out_bg = bg_mask.copy()
+    removed_px = 0
+    try:
+        import cv2
+
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(flat_match.astype(np.uint8), connectivity=4)
+        for cid in range(1, num):
+            area = int(stats[cid, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+            comp = labels == cid
+            comp_rgb = arr[comp]
+            mean_dist = float(np.max(np.abs(comp_rgb.mean(axis=0) - bg_median)))
+            std_val = float(comp_rgb.std(axis=0).max())
+            if mean_dist <= 6.5 and std_val <= 4.5:
+                out_bg[comp] = True
+                removed_px += area
+    except Exception:
+        visited = np.zeros((h, w), dtype=bool)
+        ys, xs = np.nonzero(flat_match)
+        for sy, sx in zip(ys.tolist(), xs.tolist()):
+            if visited[sy, sx]:
+                continue
+            q = deque([(sy, sx)])
+            visited[sy, sx] = True
+            pts = []
+            while q:
+                y, x = q.popleft()
+                pts.append((y, x))
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                    if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and flat_match[ny, nx]:
+                        visited[ny, nx] = True
+                        q.append((ny, nx))
+            if len(pts) < min_area:
+                continue
+            py = np.array([p[0] for p in pts], dtype=np.int32)
+            px = np.array([p[1] for p in pts], dtype=np.int32)
+            comp_rgb = arr[py, px]
+            if float(np.max(np.abs(comp_rgb.mean(axis=0) - bg_median))) <= 6.5 and float(comp_rgb.std(axis=0).max()) <= 4.5:
+                out_bg[py, px] = True
+                removed_px += len(pts)
+    return out_bg, removed_px
+
+
+_BG_LAYER_KEYWORDS = (
+    "背景",
+    "background",
+    "渐变填充",
+    "纯色填充",
+    "底色",
+    "color fill",
+    "gradient fill",
+)
+
+
+def _is_psd_bg_layer(layer: Any, canvas_w: int, canvas_h: int, is_bottom: bool) -> bool:
+    name = str(getattr(layer, "name", "") or "").strip().lower()
+    if name in ("bg", "底", "底图", "backdrop") or any(k in name for k in _BG_LAYER_KEYWORDS):
+        return True
+    if not is_bottom:
+        return False
+    # Check if bottom-most layer is a solid/gradient full-canvas opaque fill
+    try:
+        kind = str(getattr(layer, "kind", "") or "").lower()
+        if kind in ("solidcolorfill", "gradientfill", "patternfill"):
+            return True
+        if getattr(layer, "is_group", lambda: False)():
+            return False
+        w, h = int(getattr(layer, "width", 0)), int(getattr(layer, "height", 0))
+        if w * h >= 0.92 * float(canvas_w * canvas_h):
+            img = layer.topil()
+            if img is not None:
+                thumb = img.copy()
+                thumb.thumbnail((128, 128))
+                arr = np.asarray(thumb.convert("RGBA"))
+                if float((arr[..., 3] > 245).mean()) >= 0.98:
+                    rgb = arr[..., :3].astype(np.float32)
+                    # Solid or smooth gradient background has tiny local neighbor diffs
+                    dx = np.abs(rgb[:, 1:] - rgb[:, :-1]).mean()
+                    dy = np.abs(rgb[1:, :] - rgb[:-1, :]).mean()
+                    if float(max(dx, dy)) <= 2.2:
+                        return True
+    except Exception:
+        return False
+    return False
+
+
+def extract_psd_transparent_subject(
+    psd_path: Path,
+    *,
+    target_size: Optional[Tuple[int, int]] = None,
+) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
+    """Extract lossless artist-alpha subject from a sibling .psd by hiding background layers."""
+    src = Path(psd_path).resolve()
+    if not src.is_file():
+        return None
+    # Fast path: PSD composite already carries genuine transparency (e.g. saved without bg)
+    try:
+        with Image.open(src) as pim:
+            w, h = pim.size
+            arr = np.asarray(pim.convert("RGBA"), dtype=np.uint8)
+        tr = float((arr[..., 3] < 20).mean())
+        fg_r = float((arr[..., 3] >= 128).mean())
+        if 0.05 <= tr <= 0.96 and fg_r >= 0.02:
+            if target_size is not None and (w, h) != tuple(target_size):
+                arr = np.asarray(
+                    Image.fromarray(arr).resize(target_size, getattr(Image, "Resampling", Image).LANCZOS),
+                    dtype=np.uint8,
+                )
+                w, h = target_size
+            return arr, {
+                "method": "psd_composite_alpha",
+                "already_transparent": False,
+                "psd_source": str(src),
+                "size": [int(w), int(h)],
+                "transparent_ratio": round(float((arr[..., 3] < 20).mean()), 4),
+                "foreground_ratio": round(float((arr[..., 3] >= 128).mean()), 4),
+                "hidden_bg_layers": [],
+            }
+    except Exception:
+        pass
+
+    # Layer-level path via psd-tools: hide bottom background layers, composite remaining layers cleanly
+    try:
+        from psd_tools import PSDImage
+    except Exception:
+        return None
+
+    try:
+        psd = PSDImage.open(src)
+        cw, ch = int(psd.width), int(psd.height)
+        hidden_ids = set()
+        hidden_names = []
+        top_layers = list(psd)
+        for idx, layer in enumerate(top_layers):
+            if not getattr(layer, "visible", True):
+                continue
+            if _is_psd_bg_layer(layer, cw, ch, is_bottom=(idx <= 2)):
+                hidden_ids.add(id(layer))
+                hidden_names.append(str(getattr(layer, "name", "")))
+            elif idx <= 1 and getattr(layer, "is_group", lambda: False)():
+                # Check if bottom group is named bg / 背景
+                gname = str(getattr(layer, "name", "") or "").strip().lower()
+                if gname in ("bg", "背景", "background", "底", "底图") or any(k in gname for k in _BG_LAYER_KEYWORDS):
+                    hidden_ids.add(id(layer))
+                    hidden_names.append(str(getattr(layer, "name", "")))
+        if not hidden_ids:
+            return None
+
+        comp = psd.composite(layer_filter=lambda lyr: getattr(lyr, "visible", True) and id(lyr) not in hidden_ids)
+        if comp is None:
+            return None
+        rgba = np.asarray(comp.convert("RGBA"), dtype=np.uint8)
+        tr = float((rgba[..., 3] < 20).mean())
+        fg_r = float((rgba[..., 3] >= 128).mean())
+        if not (0.05 <= tr <= 0.96 and fg_r >= 0.02):
+            return None
+        if target_size is not None and (rgba.shape[1], rgba.shape[0]) != tuple(target_size):
+            rgba = np.asarray(
+                Image.fromarray(rgba).resize(target_size, getattr(Image, "Resampling", Image).LANCZOS),
+                dtype=np.uint8,
+            )
+        return rgba, {
+            "method": "psd_layer_extract",
+            "already_transparent": False,
+            "psd_source": str(src),
+            "size": [int(rgba.shape[1]), int(rgba.shape[0])],
+            "transparent_ratio": round(float((rgba[..., 3] < 20).mean()), 4),
+            "foreground_ratio": round(float((rgba[..., 3] >= 128).mean()), 4),
+            "hidden_bg_layers": hidden_names,
+        }
+    except Exception:
+        return None
+
+
 def parse_fg_box(raw: Optional[str], size: Tuple[int, int]) -> Optional[Tuple[int, int, int, int]]:
     if not raw:
         return None
@@ -275,12 +475,19 @@ def remove_background_local(
     method = "border_flood"
     fg: Optional[np.ndarray] = None
 
+    interior_holes_removed_px = 0
     if border_p90 <= 32.0 and fg_box is None:
         bg = _border_flood_bg(rgb, tol=28.0, step_tol=16.0)
+        if border_p90 <= 4.0:
+            bg, interior_holes_removed_px = _clear_interior_solid_bg_holes(rgb, bg, bg_median)
         seed_fg = ~bg
         seed_trans = float(bg.mean())
         if seed_trans >= 0.03 and seed_fg.any():
             fg = _refine_grabcut_mask(rgb, seed_fg, band_px=6)
+            if border_p90 <= 4.0:
+                bg2, extra_px = _clear_interior_solid_bg_holes(rgb, ~fg, bg_median)
+                fg = ~bg2
+                interior_holes_removed_px += extra_px
             method = "border_flood_grabcut"
 
     if fg is None and prefer_sam:
@@ -379,6 +586,7 @@ def matte_portrait_file(
     fg_box: Optional[str] = None,
     sam_weight: Optional[Path] = None,
     prefer_sam: bool = True,
+    prefer_psd: bool = True,
 ) -> Dict[str, Any]:
     src = Path(input_path).resolve()
     dst = Path(out_path).resolve()
@@ -387,16 +595,27 @@ def matte_portrait_file(
     with Image.open(src) as im:
         orig_rgba = np.asarray(im.convert("RGBA"), dtype=np.uint8)
         size = im.size
-    box = parse_fg_box(fg_box, size)
-    matted, report = remove_background_local(
-        orig_rgba,
-        fg_box=box,
-        sam_weight=sam_weight,
-        prefer_sam=prefer_sam,
-    )
+    trans_ratio = float((orig_rgba[..., 3] < 20).mean())
+    matted: Optional[np.ndarray] = None
+    report: Optional[Dict[str, Any]] = None
+    if prefer_psd and trans_ratio < 0.03 and fg_box is None:
+        sibling_psd = src.with_suffix(".psd")
+        if sibling_psd.is_file():
+            extracted = extract_psd_transparent_subject(sibling_psd)
+            if extracted is not None:
+                matted, report = extracted
+    if matted is None or report is None:
+        box = parse_fg_box(fg_box, size)
+        matted, report = remove_background_local(
+            orig_rgba,
+            fg_box=box,
+            sam_weight=sam_weight,
+            prefer_sam=prefer_sam,
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(matted, mode="RGBA").save(dst)
-    validate_matted_portrait(dst, expected_size=size)
+    Image.fromarray(matted).save(dst)
+    out_size = (int(matted.shape[1]), int(matted.shape[0]))
+    validate_matted_portrait(dst, expected_size=out_size)
     report["input"] = str(src)
     report["output"] = str(dst)
     report["source_sha256"] = _sha256(src)

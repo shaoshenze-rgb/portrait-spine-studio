@@ -82,5 +82,17 @@ class TestLocalMatte(unittest.TestCase):
                 self.assertEqual(im.size, (120, 160))
 
 
+    def test_removes_enclosed_interior_solid_gray_pocket(self):
+        img = np.full((160, 160, 4), (128, 128, 128, 255), dtype=np.uint8)
+        yy, xx = np.indices((160, 160))
+        dist = np.hypot(xx - 80, yy - 80)
+        ring = (dist >= 22) & (dist <= 58)
+        img[ring] = (180, 60, 220, 255)
+        matted, _report = remove_background_local(img, prefer_sam=False)
+        self.assertEqual(int(matted[5, 5, 3]), 0)
+        self.assertGreater(int(matted[80, 40, 3]), 220)
+        self.assertEqual(int(matted[80, 80, 3]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

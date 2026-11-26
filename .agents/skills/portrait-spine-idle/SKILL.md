@@ -11,6 +11,23 @@ description: 触发词「spine动画」（用户说“spine动画”/“Spine动
 四项基础检查加 100%/150% 压力体检后由用户看图签收；代码测试不等于角色验收。
 当前事实见[验收状态](../../../docs/acceptance-summary.md)，具体命令见[使用指南](../../../docs/usage.md)。
 
+## 0. 零残次品基础规范（永久生效 · 出品必可用）
+
+无论单张还是 20–30 张批量任务，**以下 4 条为不可突破的基础底线，宁慢勿烂，严禁产出不可用的残次预览**：
+
+1. **原画级透明底优先（PSD 优先 + 禁留封闭死灰洞）**：
+   - 不透明底立绘只要同目录存在 `.psd` 源文件，**必须优先从 `.psd` 隐藏背景/渐变填充层直接提取原画级无损透明底**（绝不允许只对报错图用 PSD、其余不透明图偷懒跑普通抠图）；
+   - 无 `.psd` 走 `local_matte.py` 时，必须清除封闭洞内纯色底（如漩涡/臂弯内的 `#808080` 死灰块），并逐张目检 `matte-overview.jpg` / 去底对照图确认**零死灰洞、零缺块、零截断火焰/特效**后，才允许进入分层。
+2. **禁止粗多边形盲切与大面积漏认硬粘**：
+   - 严禁在小缩略图上一口气盲写几十份粗略多边形后扔进后台队列一锅端；
+   - 每张分层必须贴合真实结构边界（复杂装备/领口/发丝/特效结合 SAM 2.1 精切），**漏认像素占比 `unclaimed_ratio` 必须 `< 1.5%`**（绝不允许留数万至数百万像素给自动补缺把刀刃、衣摆、火焰碎渣胡乱粘到头/手臂等错位部件上）；半透明火焰/光效/漩涡必须整组完整归属，不得切碎；后层垫边不得在摆动空隙中露出纯色涂抹糊块。
+3. **单张绿灯闸门（红灯必停，不绿灯不准开下一张）**：
+   - 每完成 1 张，**必须亲自目检 `all-layers-sheet.jpg`、`keyframes`、`seam-worst-crops.jpg`、`stress-150-frame.jpg` 及实际循环播放**；
+   - 必须同时满足：**四项基础检查全过 + 100%/150% 露底压测绿灯（`exposure_stress.status == "pass"`）+ 自动补缺无大块错粘（`recovered_pixel_count <= 12000` 且 `recovered_region_count <= 12`）+ 肉眼零明显锯齿/死灰块/飘碎渣/色块糊边**，才算“交付可用”；
+   - **红灯必停**：只要当前张亮红灯或目检穿帮，**必须当场停下来精修当前张直到绿灯**，严禁带着红灯继续盲跑下一张把残次品滚雪球。
+4. **批量「3 张打样立标杆 → 3–5 张小批精做」节奏**：
+   - 超过 5 张的批量任务，**必须先精做出前 3 张全绿灯样板交给用户过目确认品质达标**，再按每批 3–5 张小批精做稳步推进，绝不允许跳过样板确认直接通宵盲跑全批。
+
 ## 1. 本机直通准备原图（第 1 轮直接启动，不先调 Canvas）
 
 0. **全局调用仓库定位**：无论当前对话在哪个目录，所有命令先切到本技能软链指向的真实仓库根目录（`~/Documents/claude_code_ssz/projects/portrait-spine-studio`，可由 `dirname "$(realpath <SKILL.md>)"/../../..` 解析），再执行下文命令。
@@ -68,7 +85,7 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 .venv/bin/python3 scripts/batch_portrait.py init --input-dir <本地文件夹路径> --max-long-edge 4096 --workers 3
 ```
 
-2. **并发读图拆层（2–3 并发受控推进）**：遍历 `pending_split_items`（严禁碰 `locked: true` 角色），按第 2 节为每张图规划中文语义分层并运行 `.venv/bin/python3 scripts/split_local_body.py`，以 `python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts> --plan <plan.json> --cleanup --wait-if-busy` 排队灌入 Studio，跑完后执行 `python3 scripts/batch_portrait.py sync --batch <batch_id>`。
+2. **先 3 张打样立标杆 → 再 3–5 张小批精做（严格执行第 0 节绿灯闸门）**：严禁一口气盲写全批粗多边形扔后台队列盲跑，也严禁碰 `locked: true` 角色。先完成全批原画级透明底（有 `.psd` 一律优先隐藏背景层直出）并目检 `matte-overview.jpg`；随后**先精做前 3 张到全绿灯（`unclaimed_ratio < 1.5%`、`exposure_stress=pass`、目检零死灰块/碎渣/色块糊边）**并 `batch_portrait.py sync --batch <batch_id>` 交给用户确认品质标杆，确认后再按每批 3–5 张精做推进；单张亮红灯必须当场精修过绿，不带病进入下一张。
 3. **交付唯一批量验收链接**：提供 `http://127.0.0.1:8765/?batch=<batch_id>` 与 `matte-overview.jpg`。用户在左侧列表按红/黄/绿灯逐张过目，满意即点「确认锁定」（后端 409 硬锁保护），不满意则点「打回待修」并写一句修改备注。
 4. **集中返修打回项**：用户回对话说「修这一批里打回的」时，先运行 `python3 scripts/batch_portrait.py fix-list --batch <batch_id>`，**只针对返回的 `needs_fix` 角色按备注返修**，绝对禁止修改或解锁任何已锁定角色。
 5. **统一规格一键批量导出**：默认已勾选与火炬官网现有角色 100% 对齐的 **`官网同款 60帧双档`（60fps / 8 秒 / 480 帧多核并行渲染、自动裁透明边且拼接宽控在 ≤3840 显卡硬解线内、预乘 RGB|Alpha 左右拼接 H.264 + BT.709，一次输出 `idle-high-packed.mp4` + `idle-mobile-packed.mp4` + 无损 `poster.webp` + `media.json`）**；也可按需切换 4K 竖/横/长边 4096/2K/1080p/自定义尺寸或加勾 VP9 WebM / Spine 4.2 ZIP / MP4 / HTML，点击「一键批量导出已锁定角色」或跑 `python3 scripts/batch_portrait.py export --batch <batch_id>` 统一落盘并产出 `batch-export-manifest.json`。

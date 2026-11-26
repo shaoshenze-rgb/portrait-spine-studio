@@ -178,5 +178,16 @@ class TestLocalDirectSplit(unittest.TestCase):
             self.assertNotEqual(prov["result_asset_sha256"], pre_sha)
 
 
+    def test_high_unclaimed_pixels_emits_quality_warning(self):
+        body = np.zeros((200, 200, 4), dtype=np.uint8)
+        body[20:180, 20:180] = (180, 120, 90, 255)
+        m = np.zeros((200, 200), dtype=bool)
+        m[20:100, 20:180] = True
+        split = split_local_body(body, [BodyLayer("top", m, 0, False)], padding_px=8)
+        self.assertGreater(split.stats["unclaimed_ratio"], 0.4)
+        codes = [w["code"] for w in split.stats["warnings"]]
+        self.assertIn("high_unclaimed_pixels", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

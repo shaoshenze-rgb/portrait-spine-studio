@@ -413,6 +413,18 @@ def split_local_body(rgba, layers, *, padding_px=56, min_island_px=12,
                              'padding_under': {front.name: int((underlap & (owner == front_id)).sum())
                                                for front_id, front in enumerate(definitions)
                                                if front_id > index and (underlap & (owner == front_id)).any()}}
+    subject_px = int(subject.sum())
+    unclaimed_px = int((subject & (owner < 0)).sum())
+    unclaimed_ratio = float(unclaimed_px / max(1, subject_px))
+    if unclaimed_ratio > 0.015 and unclaimed_px >= 2000:
+        warnings.append({
+            'layer': '_body',
+            'code': 'high_unclaimed_pixels',
+            'unclaimed_px': unclaimed_px,
+            'unclaimed_ratio': round(unclaimed_ratio, 4),
+            'action': 'Refine semantic layer masks to cover the full subject (<1.5% unclaimed) so cleanup does not glue broken fragments onto wrong parts',
+        })
     return BodySplit(images, ownership, padding,
-                     {'layers': stats, 'unclaimed_px': int((subject & (owner < 0)).sum()),
+                     {'layers': stats, 'subject_px': subject_px,
+                      'unclaimed_px': unclaimed_px, 'unclaimed_ratio': round(unclaimed_ratio, 4),
                       'proposed_overlap_px': int((count > 1).sum()), 'warnings': warnings})
