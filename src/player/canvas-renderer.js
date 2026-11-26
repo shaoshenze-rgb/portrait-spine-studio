@@ -10,11 +10,13 @@ precision highp float;
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUv;
 uniform vec2 uCanvasSize;
+uniform vec2 uCanvasOrigin;
 out vec2 vUv;
 void main() {
+  vec2 relative = aPos - uCanvasOrigin;
   vec2 ndc = vec2(
-    (aPos.x / uCanvasSize.x) * 2.0 - 1.0,
-    1.0 - (aPos.y / uCanvasSize.y) * 2.0
+    (relative.x / uCanvasSize.x) * 2.0 - 1.0,
+    1.0 - (relative.y / uCanvasSize.y) * 2.0
   );
   gl_Position = vec4(ndc, 0.0, 1.0);
   vUv = aUv;
@@ -93,6 +95,7 @@ export class SpineCanvasRenderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.preferWebGL2 = options.preferWebGL2 ?? true;
+    this.webglSurface = options.webglSurface ?? null;
 
     /** @type {Map<string, HTMLImageElement|ImageBitmap|HTMLCanvasElement>} */
     this.images = new Map();
@@ -109,6 +112,7 @@ export class SpineCanvasRenderer {
     this._glUniformTex = null;
     /** @type {Map<string, WebGLTexture>} */
     this._glTextures = new Map();
+    this._glMeshes = new Map();
     this._checkerPattern = null;
 
     this.backend = 'canvas2d';
@@ -124,8 +128,10 @@ export class SpineCanvasRenderer {
       const gl = glCanvas.getContext('webgl2', {
         alpha: true,
         premultipliedAlpha: true,
-        antialias: true,
-        preserveDrawingBuffer: true,
+        antialias: !this.webglSurface,
+        preserveDrawingBuffer: !this.webglSurface,
+        depth: false,
+        desynchronized: !!this.webglSurface,
       });
       if (!gl) return;
 
@@ -145,28 +151,18 @@ export class SpineCanvasRenderer {
         return;
       }
 
-      const vao = gl.createVertexArray();
-      const vbo = gl.createBuffer();
-      const ibo = gl.createBuffer();
-
-      gl.bindVertexArray(vao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-      gl.enableVertexAttribArray(0);
-      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
-      gl.enableVertexAttribArray(1);
-      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-      gl.bindVertexArray(null);
-
       this._glCanvas = glCanvas;
       this._gl = gl;
       this._glProgram = prog;
-      this._glVao = vao;
-      this._glVbo = vbo;
-      this._glIbo = ibo;
       this._glUniformCanvasSize = gl.getUniformLocation(prog, 'uCanvasSize');
+      this._glUniformOrigin = gl.getUniformLocation(prog, 'uCanvasOrigin');
       this._glUniformTex = gl.getUniformLocation(prog, 'uTex');
       this.backend = 'webgl2';
+      if (this.webglSurface) {
+        glCanvas.className = 'cw-webgl-art';
+        glCanvas.setAttribute('aria-hidden', 'true');
+        this.webglSurface.prepend(glCanvas);
+      }
     } catch (_err) {
       this.backend = 'canvas2d';
       this._gl = null;
@@ -241,6 +237,37 @@ export class SpineCanvasRenderer {
       this._gl.deleteTexture(tex);
     }
     this._glTextures.clear();
+    for (const mesh of this._glMeshes.values()) {
+      this._gl.deleteVertexArray(mesh.vao);
+      for (const buffer of mesh.buffers) this._gl.deleteBuffer(buffer);
+    }
+    this._glMeshes.clear();
+    this._currentArtWindow = null;
+  }
+
+  _getGlMesh(geom) {
+    const gl = this._gl;
+    const key = geom.attachment;
+    if (this._glMeshes.has(key)) return this._glMeshes.get(key);
+    const vao = gl.createVertexArray();
+    const position = gl.createBuffer();
+    const uv = gl.createBuffer();
+    const index = gl.createBuffer();
+    const coordinates = new Float32Array(geom.vertexCount * 2);
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, position);
+    gl.bufferData(gl.ARRAY_BUFFER, coordinates.byteLength, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, uv);
+    gl.bufferData(gl.ARRAY_BUFFER, Float32Array.from(geom.uvs), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geom.triangles, gl.STATIC_DRAW);
+    const mesh = {vao, position, coordinates, buffers:[position, uv, index]};
+    this._glMeshes.set(key, mesh);
+    return mesh;
   }
 
   /**
@@ -283,6 +310,14 @@ export class SpineCanvasRenderer {
     const ctx = this.ctx;
     const cw = this.canvas.width;
     const ch = this.canvas.height;
+    if (this.webglSurface && this._gl) {
+      if (this.webglSurface.dataset.background !== mode) this.webglSurface.dataset.background = mode;
+      if (this._needsOverlayClear) {
+        ctx.clearRect(0, 0, cw, ch);
+        this._needsOverlayClear = false;
+      }
+      return;
+    }
 
     if (mode === 'light') {
       ctx.fillStyle = '#dcdcdc';
@@ -320,11 +355,13 @@ export class SpineCanvasRenderer {
   /**
    * Render all slot meshes onto the internal WebGL2 canvas, then composite onto the 2D canvas.
    */
-  _renderMeshesWebGL2(geometries, spec, viewport) {
+  _renderMeshesWebGL2(geometries, spec, viewport, crop = null) {
     const gl = this._gl;
     const glCanvas = this._glCanvas;
-    const targetW = Math.max(1, Math.round(spec.width));
-    const targetH = Math.max(1, Math.round(spec.height));
+    const window = crop ?? {x:0, y:0, width:spec.width, height:spec.height};
+    const resolution = Math.min(1, viewport.scale);
+    const targetW = Math.max(1, Math.round(window.width * resolution));
+    const targetH = Math.max(1, Math.round(window.height * resolution));
 
     if (glCanvas.width !== targetW || glCanvas.height !== targetH) {
       glCanvas.width = targetW;
@@ -338,10 +375,10 @@ export class SpineCanvasRenderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
     gl.useProgram(this._glProgram);
-    gl.uniform2f(this._glUniformCanvasSize, spec.width, spec.height);
+    gl.uniform2f(this._glUniformCanvasSize, window.width, window.height);
+    gl.uniform2f(this._glUniformOrigin, window.x, window.y);
     gl.uniform1i(this._glUniformTex, 0);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindVertexArray(this._glVao);
 
     for (let i = 0; i < geometries.length; i++) {
       const geom = geometries[i];
@@ -350,24 +387,27 @@ export class SpineCanvasRenderer {
       const tex = this._getOrCreateGlTexture(resolved.key, resolved.img);
       if (!tex) continue;
 
-      const n = geom.vertexCount;
-      const interleaved = new Float32Array(n * 4);
-      for (let k = 0; k < n; k++) {
-        interleaved[k * 4] = geom.vertices[2 * k];
-        interleaved[k * 4 + 1] = geom.vertices[2 * k + 1];
-        interleaved[k * 4 + 2] = geom.uvs[2 * k];
-        interleaved[k * 4 + 3] = geom.uvs[2 * k + 1];
-      }
-
+      const mesh = this._getGlMesh(geom);
+      mesh.coordinates.set(geom.vertices);
+      gl.bindVertexArray(mesh.vao);
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._glVbo);
-      gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.STREAM_DRAW);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this._glIbo);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geom.triangles, gl.STREAM_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.position);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, mesh.coordinates);
       gl.drawElements(gl.TRIANGLES, geom.triangles.length, gl.UNSIGNED_INT, 0);
     }
 
     gl.bindVertexArray(null);
+    if (this.webglSurface) {
+      const {offsetX, offsetY, scale, dpr} = viewport;
+      const dimensions = [(offsetX + window.x * scale) / dpr, (offsetY + window.y * scale) / dpr,
+        window.width * scale / dpr, window.height * scale / dpr];
+      const current = dimensions.join(',');
+      if (this._presentedDimensions !== current) {
+        this._presentedDimensions = current;
+        [glCanvas.style.left, glCanvas.style.top, glCanvas.style.width, glCanvas.style.height] = dimensions.map(value => value + 'px');
+      }
+      return;
+    }
     this.ctx.imageSmoothingEnabled = true;
     this.ctx.imageSmoothingQuality = 'high';
     this.ctx.drawImage(
@@ -654,6 +694,45 @@ export class SpineCanvasRenderer {
     ctx.restore();
   }
 
+  _drawFocus(geometry, viewport) {
+    const { scale, offsetX, offsetY, dpr } = viewport;
+    const vertices = geometry.vertices;
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (let index = 0; index < vertices.length; index += 2) {
+      left = Math.min(left, vertices[index]); right = Math.max(right, vertices[index]);
+      top = Math.min(top, vertices[index + 1]); bottom = Math.max(bottom, vertices[index + 1]);
+    }
+    if (!Number.isFinite(left)) return;
+    const ctx = this.ctx;
+    const margin = 5 * dpr;
+    ctx.save();
+    ctx.strokeStyle = '#ffda94'; ctx.shadowColor = '#ffc166';
+    ctx.shadowBlur = 9 * dpr; ctx.lineWidth = 1.6 * dpr;
+    ctx.beginPath();
+    ctx.roundRect(offsetX + left * scale - margin, offsetY + top * scale - margin,
+      (right - left) * scale + 2 * margin, (bottom - top) * scale + 2 * margin, 7 * dpr);
+    ctx.stroke(); ctx.restore();
+  }
+
+  _artWindow(geometries, spec, viewport) {
+    if (!geometries.length) return null;
+    let left = spec.width, top = spec.height, right = 0, bottom = 0;
+    for (const {bounds} of geometries) {
+      left = Math.min(left, bounds.minX); top = Math.min(top, bounds.minY);
+      right = Math.max(right, bounds.maxX); bottom = Math.max(bottom, bounds.maxY);
+    }
+    const previous = this._currentArtWindow;
+    if (previous && left >= previous.x && top >= previous.y && right <= previous.right && bottom <= previous.bottom) return previous;
+    const padding = Math.ceil(28 * viewport.dpr / viewport.scale);
+    const x = Math.max(0, Math.floor(left) - padding);
+    const y = Math.max(0, Math.floor(top) - padding);
+    right = Math.min(spec.width, Math.ceil(right) + padding);
+    bottom = Math.min(spec.height, Math.ceil(bottom) + padding);
+    if (right <= x || bottom <= y) return null;
+    this._currentArtWindow = {x,y,right,bottom,width:right-x,height:bottom-y};
+    return this._currentArtWindow;
+  }
+
   /**
    * Render the skeleton's current evaluated pose onto the canvas.
    *
@@ -680,13 +759,25 @@ export class SpineCanvasRenderer {
     const viewport = this._computeViewport(spec, padding);
 
     const geometries = [];
-    for (let i = 0; i < skeleton.slots.length; i++) {
-      const geom = skeleton.computeWorldGeometry(skeleton.slots[i], spec);
-      if (geom) geometries.push(geom);
+    const order = options.slotOrder;
+    const hidden = options.hiddenSlots;
+    let slots = skeleton.slots;
+    if (order?.length) {
+      const ranks = new Map(order.map((name, index) => [name, index]));
+      slots = slots.slice().sort((left, right) => (ranks.get(left.name) ?? Infinity) - (ranks.get(right.name) ?? Infinity));
+    }
+    let focus = null;
+    for (const slot of slots) {
+      if (hidden?.has(slot.name) && options.highlightSlot !== slot.name) continue;
+      const geom = skeleton.computeWorldGeometry(slot, spec);
+      if (!geom) continue;
+      if (slot.name === options.highlightSlot) focus = geom;
+      if (!hidden?.has(slot.name)) geometries.push(geom);
     }
 
     if (this._gl && this._glCanvas) {
-      this._renderMeshesWebGL2(geometries, spec, viewport);
+      const crop = this.webglSurface ? this._artWindow(geometries, spec, viewport) : null;
+      this._renderMeshesWebGL2(geometries, spec, viewport, crop);
     } else {
       this._renderMeshesCanvas2D(geometries, viewport);
     }
@@ -694,23 +785,23 @@ export class SpineCanvasRenderer {
     if (showParts) {
       this._drawPartsOverlay(geometries, viewport);
     }
+    if (focus) this._drawFocus(focus, viewport);
     if (showBones) {
       this._drawBonesOverlay(skeleton, spec, viewport);
     }
     if (compareFrame0) {
       this._drawCompareBadge(viewport);
     }
+    this._needsOverlayClear = !!(showParts || showBones || compareFrame0 || focus);
   }
 
   dispose() {
     this._clearGlTextures();
     if (this._gl) {
-      if (this._glVbo) this._gl.deleteBuffer(this._glVbo);
-      if (this._glIbo) this._gl.deleteBuffer(this._glIbo);
-      if (this._glVao) this._gl.deleteVertexArray(this._glVao);
       if (this._glProgram) this._gl.deleteProgram(this._glProgram);
     }
     this._gl = null;
+    if (this.webglSurface) this._glCanvas?.remove();
     this._glCanvas = null;
     this.images.clear();
   }

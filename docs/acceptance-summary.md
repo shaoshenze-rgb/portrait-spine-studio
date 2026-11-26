@@ -1,30 +1,19 @@
 # 当前验收状态
 
-更新：2026-11-26。当前主链以[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)和[使用指南](usage.md)为准：一次顶层粗拆、净化与原图补底、先出八秒预览、局部微调后人工签收。下方历史的“未提交”“未导出”与旧严格门禁只描述当时状态，不是当前指令。
+更新：2026-11-26。当前主链以[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)和[使用指南](usage.md)为准：启动本机 Studio → 一次顶层粗拆 → 必要时 `scripts/split_local_body.py` 边缘贴合与后层桥接补全 → 净化与 100%/150% 全身压力体检 → 实时网页工作台微调并人工签收导出。下方历史折叠块仅作追溯，不是现行规则。
 
 | 代表样本 | 最新验收事实 | 正式交付 |
 | --- | --- | --- |
 | 逐星暗影（用户归类为站立外观） | 用户对 starshadow-r2 明确签收“逐星没问题了”；肩甲层序、左右手/头部局部幅度与垫边已验证 | [starshadow-final](../.studio-work/deliverables-20261125/starshadow-final/) 四件套已导出；[签收](../.studio-work/deliverables-20261125/starshadow-final/user-signoff-r2.json) |
 | 爆破新星（浮空、去糊特效、补臂型） | 用户对 blastnova-noflame 明确签收“没问题，落实到通用规则和skill了吗”；完整手臂与无残丝版通过 | [blastnova-final](../.studio-work/deliverables-20261125/blastnova-final/) 四件套已导出；ZIP 完整，深浅底各 240 帧／8.0 秒；[签收](../.studio-work/deliverables-20261125/blastnova-final/user-signoff-noflame.json) |
-| 时空幻象（遮挡武器型） | 新主链回归待做；最后作品库读取为 unavailable / unauth_cache、任务映射为空 | 尚无新主链合格成品。需恢复作品库读取并实际读通，再单次粗拆；刷新/重启并不等于已恢复 |
+| 时空幻象（遮挡武器 + 站立 `grounded`） | 已恢复作品库读取并完成单次三层粗拆（独立魔法书、完整法杖、人物整层）+ 17 层后层桥接补全；自然待机摆动下 100%/150% 全身压力门禁通过，已验证新版实时交互工作台 | Studio 实时预览已就绪，待人工签收导出正式四件套 |
 
-## 已验证的通用能力与边界
+## 已落地的通用升级与硬边界
 
-- 独立 Canvas RGBA 保留层序进入标准 parts；自动裁外部白块、去白边。
-- omit 停止绘制糊特效；原图补底排除外围及凸包内同色残丝。主体缺块按 ≥200px 恢复到邻接合法层，保留恢复记录并复看归属。
-- 预览支持 grounded/airborne，静态 6px 距离仅提醒；单模块 motion_scale 与层级/显隐可在 Studio 调整。保持呼吸与软摆，四项基础检查加人工签收交付。
-- 两张代表已验收，不等于所有新图都能无人看图自动通过；自动补底归属、同色特效清理仍需原图和完整循环复核。
-- 不能把本次爆破新星通过描述为“两张新的单次 Canvas 粗拆已完成”：M3-A 新拆层被读取阻塞，先前两张新粗拆额度未消耗。已签收的是后续本地通用处理产出的 blastnova-noflame；旧套娃中间版不再作为验收基线。
-
-两个正式签收版本的构建报告均为 `poseType=airborne`、`ikCount=0`。因此“站立外观”不是真实 grounded 足锚通过的证据；grounded 能力有合成单测，仍待时空幻象完成真实回归。本轮只做文档与导出，未修改已签收动作。
-
-## 当前代码、测试与运行态
-
-通用特效残丝清理来自 ee41d7a；本轮仅固化 Skill/文档并导出，不修改动画、清理算法或冻结文件。工作在 feat/canvas-mainline-v3，本地提交；未合并 main、未 push，本轮没有付费 Canvas 调用。未重启 8765，不声称常驻服务已加载新版本。
-
-[本轮 M3-B 报告](../.studio-work/deliverables-20261125/M3B-REPORT.json)记录最终文件大小、ZIP/视频校验、双环境核心测试、文档检查与提交哈希；该链接指本机交付证据，被忽略目录不随 Git 克隆分发。[M3-A 报告](../.studio-work/deliverables-20261125/M3A-REPORT.json)保留读取阻塞和逐星导出证据。[M2 报告](../.studio-work/deliverables-20261125/M2-REPORT.json)中的爆破缺臂状态已由本次签收版取代。
-
-下一项回归是时空幻象：读取恢复后验证独立完整法杖与围巾遮挡下的站立动画。合并与推送仍等待明确授权。
+- **通用本地分层与后层补全（`src/pipeline/local_body_split.py` + `scripts/split_local_body.py`）**：内置 GrabCut / 色彩梯度动态规划贴边、高 `draw_order` 优先归属（前景零外溢）、被遮挡连续后层全桥接补全与 40–64 px 平滑本色深垫边（静止首帧零可见改动）。
+- **防复发自动检测（`src/pipeline/canvas_layer_cleanup.py` + `src/gates/preview_diagnostics.py`）**：自动检测同源本地分层像素串层（`local_layer_pixel_bleed`）、软层大断岛（`separated_soft_islands`）、100%/150% 满滑块全身封闭与开口露底压力扫描（`exposure_stress`），自动生成全单层棋盘底总览 `all-layers-sheet.jpg` 与高风险接缝特写 `seam-worst-crops.jpg`；红线禁止压低默认布料/呼吸幅度绕过压力检查。
+- **实时交互 Studio 工作台（`src/studio/web/canvas-workbench.{js,css}` + `src/player/`）**：左右分栏、默认关闭骨骼线与 IK 调试字块、中文部件名 + 真实部位缩略图 + 分组折叠、原生 JS Spine 播放器支持 0 延迟实时调节单部位幅度/整体动感/显隐/前后顺序与悬停高亮，支持工作台内一键烘焙并人工签收导出。
+- **冻结与边界**：`canvas_repair_workflow.py` 与 `connection_diagnostics.py` 保持冻结；本轮无角色名/文件名/哈希特判；三张代表样本不代表全图免目检。
 
 ## 历史记录（仅供追溯，不作为现行流程）
 

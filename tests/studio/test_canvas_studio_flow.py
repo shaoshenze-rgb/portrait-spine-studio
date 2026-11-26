@@ -13,6 +13,7 @@ class CanvasStudioFlowTests(unittest.TestCase):
     def setUp(self):
         f=fixtures.CanvasLayerRigTests();f.setUp();self.addCleanup(f.doCleanups);self.root=f.root
         self.parts=f.parts;self.plan=f.plan
+        next(module for module in self.plan['modules'] if module['id']=='head')['label']='角色头部'
         manifest=json.loads((self.parts/'parts.json').read_text());source=Path(manifest['originalSource'])
         source.write_bytes(Path(manifest['source']).read_bytes());manifest['originalSourceSHA256']=hashlib.sha256(source.read_bytes()).hexdigest()
         (self.parts/'parts.json').write_text(json.dumps(manifest));self.source=source
@@ -35,14 +36,48 @@ class CanvasStudioFlowTests(unittest.TestCase):
         status,job=self.post(path+'/apply-canvas-layers',{'parts_dir':str(self.parts),'plan':str(self.planpath),'cleanup':True})
         self.assertEqual(status,200,job);self.assertEqual(job['status'],'canvas_preview');self.assertTrue(all(job['canvas_checks'].values()),job['canvas_checks'])
         self.assertEqual(job['canvas_diagnostics']['frame_count'],240)
-        status,job=self.post(path+'/layer-tweaks',{'layers':{'head':{'drawOrder':0},'body':{'drawOrder':2},'flame':{'effect_mode':'omit'}},'modules':{'head':{'motion_scale':.5}}})
+        with urllib.request.urlopen(self.url+'/?job='+job['job_id']) as response:
+            page=response.read().decode('utf-8')
+        self.assertIn('id="canvasMotionTab"',page)
+        self.assertIn('id="canvasLiveStage"',page)
+        self.assertNotIn('<iframe id="canvasPreviewFrame"',page)
+        self.assertIn('id="btnCanvasTweaks"',page)
+        self.assertIn('id="btnCanvasSignoff"',page)
+        self.assertIn('id="canvasSeamImage"',page)
+        self.assertIn('id="canvasLayerWarningStatus"',page)
+        self.assertIn("new URLSearchParams(window.location.search).get('job')",page)
+        with urllib.request.urlopen(self.url+path) as response:
+            deep_link_job=json.load(response)
+        self.assertEqual(deep_link_job['status'],'canvas_preview')
+        self.assertEqual(deep_link_job['canvas_diagnostics']['exposure_stress']['status'],'pass')
+        for key in ('rig_url','canvas_preview_html','canvas_seam_preview','canvas_live_rig_url','canvas_diagnostics_url','canvas_all_layers_url'):
+            with urllib.request.urlopen(self.url+deep_link_job[key]) as response:
+                self.assertEqual(response.status,200)
+                self.assertTrue(response.read(1))
+        head=next(p for p in job['canvas_layers'] if p['name']=='head')
+        self.assertEqual(head['label'],'角色头部');self.assertEqual(head['role'],'head')
+        self.assertTrue(head['motion_adjustable']);self.assertEqual(head['seam_crops_url'],job['canvas_seam_preview'])
+        body=next(p for p in job['canvas_layers'] if p['name']=='body')
+        self.assertRegex(body['label'],r'[\u4e00-\u9fff]')
+        with urllib.request.urlopen(self.url+head['thumb_url']) as response:
+            self.assertEqual(response.read(8),b'\x89PNG\r\n\x1a\n')
+        status,job=self.post(path+'/layer-tweaks',{'layers':{'head':{'drawOrder':0},'body':{'drawOrder':2},'flame':{'effect_mode':'omit'}},'modules':{'head':{'motion_scale':.5}},'global_motion_scale':1.8})
         self.assertEqual(status,200,job);self.assertFalse(next(p for p in job['canvas_layers'] if p['name']=='flame')['enabled'])
-        self.assertEqual(next(p for p in job['canvas_layers'] if p['name']=='head')['motion_scale'],.5)
+        self.assertEqual(next(p for p in job['canvas_layers'] if p['name']=='head')['baked_motion_scale'],.9)
+        self.assertEqual(job['canvas_global_motion_scale'],1.8)
+        with urllib.request.urlopen(self.url+job['canvas_live_rig_url']) as response:
+            self.assertIn('flame',[slot['name'] for slot in json.load(response)['slots']])
+        with urllib.request.urlopen(self.url+job['rig_url']) as response:
+            self.assertNotIn('flame',[slot['name'] for slot in json.load(response)['slots']])
+        status,_=self.post(path+'/user-signoff',{'decision':'pass','expected_rig_version':1})
+        self.assertEqual(status,409)
         # Hiding a layer can expose missing original pixels; re-enable before signing.
         status,job=self.post(path+'/layer-tweaks',{'layers':{'flame':{'enabled':True}}})
         self.assertEqual(status,200,job)
         status,job=self.post(path+'/user-signoff',{'decision':'pass','reviewer':'test-human'})
         self.assertEqual(status,200,job);self.assertEqual(job['status'],'ready')
+        with urllib.request.urlopen(self.url+path) as response:
+            self.assertEqual(json.load(response)['status'],'ready')
         status,record=self.post(path+'/export',{'kind':'spine_package'});self.assertEqual(status,200,record)
         self.assertEqual(len(record['files']),4)
         for file in record['files']:

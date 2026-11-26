@@ -261,12 +261,14 @@ class SpineRenderer:
         else:
             self.sk.apply(self.anim, t, gain=gain)
 
-    def frame(self, t: Optional[float] = None, gain: float = 1.0) -> np.ndarray:
+    def frame(self, t: Optional[float] = None, gain: float = 1.0, *, slot_names=None) -> np.ndarray:
         """Render at time t (None = setup pose). Returns uint8 (H, W, 4) premultiplied."""
         self.pose(t, gain=gain)
         ss = self.ss
         acc = np.zeros((self.height * ss, self.width * ss, 4), dtype=np.float32)
         for slot in self.sk.slots:
+            if slot_names is not None and slot['name'] not in slot_names:
+                continue
             world, uv, tris, _att = self.sk.attachment_vertices(slot)
             vc = self.to_canvas(world)
             y0, x0, M, U, V = raster_uv(vc, uv, tris, self.width, self.height, ss)

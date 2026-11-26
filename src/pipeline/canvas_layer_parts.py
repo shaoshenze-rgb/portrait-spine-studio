@@ -112,6 +112,7 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
             'name': name, 'moduleId': mid, 'pieceId': name, 'drawOrder': order,
             'kind': kind, 'parent': parent, 'pivot': list(pivot), 'enabled': piece.get('enabled', True),
             'bbox': [x, y, w, h], 'image': 'parts/' + name + '.png',
+            'label': piece.get('label'),
             'joints': {}, 'notes': 'Independent Canvas RGBA material; not source ownership',
             'canvasLayer': {'image': str(path), 'sha256': digest, 'provenance': provenance},
             'completionVisualReview': 'pending',

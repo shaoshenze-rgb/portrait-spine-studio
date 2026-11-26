@@ -743,6 +743,31 @@ def _assign_lateral_signs(modules: Sequence[dict]) -> Tuple[Dict[str, int], Dict
     return signs, slots
 
 
+def canvas_motion_policy(plan, tweaks=None):
+    tweaks = tweaks or {}
+    overall = tweaks.get('global_motion_scale', 1.)
+    if type(overall) not in (float, int) or not 0 <= overall <= 1.8:
+        raise ValueError('整体动感必须在 0%–180% 之间。')
+    defaults = {m['id']: m.get('motion_scale', 1.) for m in plan['modules']}
+    requested = {mid: 1. for mid in defaults}
+    for module_id, change in tweaks.get('modules', {}).items():
+        if module_id not in defaults:
+            raise ValueError('Unknown module '+module_id)
+        if 'motion_ratio' in change:
+            value = change['motion_ratio']
+            if type(value) not in (float, int) or not 0 <= value <= 1.5:
+                raise ValueError('部件摆幅必须在 0%–150% 之间。')
+        elif 'motion_scale' in change:
+            value = change['motion_scale']
+            if type(value) not in (float, int) or not 0 <= value <= 1.5:
+                raise ValueError('motion_scale必须在0..1.5。')
+            value = min(1.5, value / defaults[module_id]) if defaults[module_id] else 0.
+        else:
+            continue
+        requested[module_id] = value
+    return requested, {mid: min(1.5, ratio * overall) for mid, ratio in requested.items()}
+
+
 def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dict:
     """Role/profile/parent/geometry select motion; IDs and image hashes never tune it."""
     validate_module_rig_spec(rig)
@@ -871,13 +896,17 @@ def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dic
             continue
         lag = ROLE_LAG_S.get(role, .65)
         motion[bn] = {"rotate": terms((sign * amp, 3, lag), (sign * amp * 0.25, 2, lag + 0.16))}
+    canvas_ratios = rig.get('canvas_motion_ratios', {})
     for m in modules:
         factor = float(m.get('motion_scale', 1.0))
         if not math.isfinite(factor) or not 0 <= factor <= 1.5:
             raise VisionReviewRequired('motion_scale必须在0..1.5。')
+        final = canvas_ratios.get(m['id'], 1.)
+        if not math.isfinite(final) or not 0 <= final <= 1.5:
+            raise VisionReviewRequired('Canvas生效摆幅必须在0..1.5倍默认动作。')
         for bone in [m['bone']] + list(m.get('softBones') or []):
             for key, values in motion.get(bone, {}).items():
-                motion[bone][key] = [(a*factor, harmonic, phase) for a,harmonic,phase in values]
+                motion[bone][key] = [(a*factor*final, harmonic, phase) for a,harmonic,phase in values]
     return motion
 
 def preflight_module_motion(skeleton: dict, rig: dict, *, duration: float) -> dict:

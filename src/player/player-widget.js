@@ -6,6 +6,10 @@
 import { Spine42Skeleton } from './spine42-runtime.js';
 import { SpineCanvasRenderer } from './canvas-renderer.js';
 
+export function effectiveCanvasMotionRatio(part, overall = 1) {
+  return Math.min(1.5, Math.max(0, part) * Math.max(0, overall));
+}
+
 export const HARD_GATE_SPECS = [
   { key: 'rest_diff', label: 'Rest Diff', desc: 'Setup pose vs parts composite max diff' },
   { key: 'setup_identity', label: 'Setup Identity', desc: 'Frame 0 / 8.00s loop boundary match' },
@@ -279,6 +283,7 @@ export class PortraitSpinePlayer {
     this.canvas = options.canvas;
     this.renderer = new SpineCanvasRenderer(this.canvas, {
       preferWebGL2: options.preferWebGL2 ?? true,
+      webglSurface: options.webglSurface,
     });
 
     this.defaultDuration = options.defaultDuration ?? 8.0;
@@ -299,6 +304,10 @@ export class PortraitSpinePlayer {
     this.compareFrame0 = false;
     this.showParts = false;
     this.showBones = false;
+    this.liveMotionScales = new Map();
+    this.liveSlotOrder = null;
+    this.liveHiddenSlots = null;
+    this.highlightSlot = null;
     this.healthReport = normalizeHealthReport(null);
 
     this._rafId = null;
@@ -370,6 +379,12 @@ export class PortraitSpinePlayer {
     this.rigName = bundle.name ?? 'Untitled Rig';
     this.healthReport = normalizeHealthReport(bundle.healthReport ?? null);
 
+    if (bundle.live) {
+      this.liveMotionScales = new Map();
+      this.liveSlotOrder = bundle.live.slotOrder ?? null;
+      this.liveHiddenSlots = bundle.live.hiddenSlots ?? null;
+      this.highlightSlot = null;
+    }
     this.resize();
     this.renderCurrentFrame();
 
@@ -409,7 +424,7 @@ export class PortraitSpinePlayer {
         ? new URL(spineJsonUrl, window.location.href).href
         : spineJsonUrl;
 
-    const resp = await fetch(absSpineUrl);
+    const resp = await fetch(absSpineUrl, {signal:options.signal});
     if (!resp.ok) {
       throw new Error(`Failed to fetch Spine JSON (${resp.status}): ${spineJsonUrl}`);
     }
@@ -453,12 +468,14 @@ export class PortraitSpinePlayer {
     const fileName = absSpineUrl.split('/').pop() ?? 'rig';
     const name = fileName.replace(/\.spine\.json$/i, '').replace(/\.json$/i, '');
 
+    if (options.signal?.aborted) return null;
     return this.loadRigData({
       spineJson,
       images,
       healthReport,
       name,
       autoPlay: options.autoPlay ?? true,
+      live: options.live,
     });
   }
 
@@ -586,6 +603,43 @@ export class PortraitSpinePlayer {
     this._emitState();
   }
 
+  setLiveMotionScales(moduleScaleMap, bakedScaleMap, globalScale = 1) {
+    const desired = moduleScaleMap instanceof Map ? moduleScaleMap : new Map(Object.entries(moduleScaleMap || {}));
+    const baked = bakedScaleMap instanceof Map ? bakedScaleMap : new Map(Object.entries(bakedScaleMap || {}));
+    const softIds = [...desired.keys()].sort((left, right) => right.length - left.length);
+    const perBone = new Map();
+    const timelines = this.skeleton?.json.animations?.[this.animationName]?.bones || {};
+    for (const boneName of Object.keys(timelines)) {
+      const id = boneName.startsWith('module_') ? boneName.slice(7)
+        : softIds.find(candidate => boneName.startsWith('bend_' + candidate)
+          && /^\d+$/.test(boneName.slice(5 + candidate.length)));
+      const base = baked.get(id) ?? 1;
+      const value = desired.get(id) ?? base;
+      perBone.set(boneName, base > 0 ? value / base * globalScale : 1);
+    }
+    this.liveMotionScales = perBone;
+    this._refreshEditedFrame();
+  }
+
+  setLiveSlotOrder(slotNames) {
+    this.liveSlotOrder = slotNames;
+    this._refreshEditedFrame();
+  }
+
+  setLiveHiddenSlots(hiddenSet) {
+    this.liveHiddenSlots = hiddenSet;
+    this._refreshEditedFrame();
+  }
+
+  setHighlightSlot(slotNameOrNull) {
+    this.highlightSlot = slotNameOrNull;
+    this._refreshEditedFrame();
+  }
+
+  _refreshEditedFrame() {
+    if (!this.playing) this.renderCurrentFrame();
+  }
+
   renderCurrentFrame() {
     if (!this.skeleton) {
       this.renderer.render(null, { background: this.background });
@@ -598,6 +652,7 @@ export class PortraitSpinePlayer {
       this.skeleton.apply(this.animationName, this.currentTime, {
         loop: true,
         duration: this.duration,
+        boneMotionScales: this.liveMotionScales,
       });
     }
     this.renderer.render(this.skeleton, {
@@ -605,6 +660,9 @@ export class PortraitSpinePlayer {
       compareFrame0: this.compareFrame0,
       showParts: this.showParts,
       showBones: this.showBones,
+      slotOrder: this.liveSlotOrder,
+      hiddenSlots: this.liveHiddenSlots,
+      highlightSlot: this.highlightSlot,
     });
   }
 

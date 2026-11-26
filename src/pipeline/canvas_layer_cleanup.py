@@ -2,11 +2,14 @@
 from __future__ import annotations
 import copy
 import hashlib
+import io
 import json
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
+from src.gates.review_binding import read_evidence_rgba, resolve_evidence_path
 from .split_parts import _components
+from .local_body_split import separated_soft_islands
 
 
 def dilate(mask, radius=1):
@@ -61,9 +64,51 @@ def check_missing_original_regions(original_rgba, composite_rgba, min_area=400):
     return sorted(regions,key=lambda r:r['area_px'],reverse=True)
 
 
+def inspect_local_layer_warnings(layers, original_rgba):
+    """Check actual textures, not an upstream splitter's self-reported warnings."""
+    warnings = []
+    siblings = {}
+    for layer in sorted(layers, key=lambda item: item['draw_order']):
+        if not layer.get('enabled', True) or layer.get('effect_mode') == 'omit':
+            continue
+        opaque = layer['rgba'][..., 3] >= 120
+        if layer.get('kind') == 'soft':
+            islands = separated_soft_islands(opaque)
+            if islands:
+                warnings.append({'code': 'separated_soft_islands', 'layer': layer['id'],
+                                 'islands': islands, 'suggestion': 'split by depth or into independent left/right pieces'})
+        provenance = layer.get('provenance') or {}
+        derivation = provenance.get('local_derivation')
+        if not isinstance(derivation, dict):
+            continue
+        parent = derivation.get('parent_aligned_sha256') or provenance.get('result_asset_sha256')
+        if not parent:
+            continue
+        family = siblings.setdefault(parent, [])
+        valid = opaque & (original_rgba[..., 3] >= 180)
+        rgb = layer['rgba'][..., :3]
+        from_source = np.max(np.abs(rgb.astype(np.int16) - original_rgba[..., :3]), axis=2) <= 3
+        for lower, lower_opaque, lower_from_source in family:
+            overlap = valid & lower_opaque
+            area = int(overlap.sum())
+            if area <= 250:
+                continue
+            shared = overlap & from_source & lower_from_source
+            left = lower['rgba'][..., :3][shared].astype(np.int16)
+            right = rgb[shared]
+            duplicate = int((np.max(np.abs(left - right), axis=1) <= 2).sum())
+            ratio = duplicate / area
+            if duplicate > 250 and ratio > .60:
+                warnings.append({'code': 'local_layer_pixel_bleed', 'layers': [lower['id'], layer['id']],
+                                 'duplicate_pixels': duplicate, 'overlap_pixels': area,
+                                 'duplicate_ratio': ratio, 'suggestion': 'replace copied colors with lower-layer underlap'})
+        family.append((layer, opaque, from_source))
+    return warnings
+
+
 def cleanup_layers(layers, original_rgba):
     """Layers have id, rgba, role, draw_order, enabled and effect_mode."""
-    result=[];metrics={};warnings=[]
+    result=[];metrics={};warnings=inspect_local_layer_warnings(layers,original_rgba)
     for layer in layers:
         clean,stats=clean_layer(layer['rgba'],original_rgba,effect_mode=layer.get('effect_mode','keep'))
         lower=np.zeros(original_rgba.shape[:2],bool)
@@ -220,20 +265,47 @@ def recover_missing_body_from_original(layers, original_rgba, *, ignore_mask=Non
     return result,report,after
 
 
+def _read_canvas_source(parts, root):
+    path = resolve_evidence_path(parts['originalSource'], root=root)
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != parts['originalSourceSHA256']:
+        raise ValueError('Original source changed after materialization')
+    with Image.open(io.BytesIO(data)) as image:
+        if image.size != tuple(parts['canvas']):
+            raise ValueError('Original source size mismatch')
+        return np.array(image.convert('RGBA'))
+
+
+def _read_cleanup_layer(part, size, root):
+    entry = part['canvasLayer']
+    _, _, rgba = read_evidence_rgba(entry['image'], entry['sha256'], size, root=root)
+    return {'id': part['name'], 'rgba': rgba, 'kind': part['kind'], 'provenance': entry['provenance'],
+            'draw_order': part['drawOrder'], 'enabled': part.get('enabled', True)}
+
+
+def inspect_canvas_parts_warnings(parts_dir, *, evidence_root):
+    manifest = resolve_evidence_path(Path(parts_dir) / 'parts.json', root=evidence_root)
+    parts = json.loads(manifest.read_text())
+    original = _read_canvas_source(parts, evidence_root)
+    layers = [_read_cleanup_layer(part, parts['canvas'], evidence_root) for part in parts['parts']]
+    return {'layers': {}, 'warnings': inspect_local_layer_warnings(layers, original)}
+
+
 def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None, recover_missing=True):
     """Re-materialize source layers; always start from base inputs, never compound edits."""
     from .canvas_layer_parts import materialize_canvas_layer_parts
-    parts=json.loads((Path(parts_dir)/'parts.json').read_text());plan=copy.deepcopy(plan)
+    manifest_path=resolve_evidence_path(Path(parts_dir)/'parts.json',root=evidence_root)
+    parts=json.loads(manifest_path.read_text());plan=copy.deepcopy(plan)
     tweaks=tweaks or {}; overrides=tweaks.get('layers',{}); scales=tweaks.get('modules',{})
     byid={m['id']:m for m in plan['modules']}
     for mid,changes in scales.items():
         if mid not in byid:raise ValueError('Unknown module '+mid)
         byid[mid]['motion_scale']=changes.get('motion_scale',byid[mid].get('motion_scale',1.))
-    original=np.asarray(Image.open(parts['originalSource']).convert('RGBA'))
+    original=_read_canvas_source(parts,evidence_root)
     layers=[];entries={}
     for part in parts['parts']:
         name=part['name'];opt=overrides.get(name,{})
-        layers.append({'id':name,'rgba':np.asarray(Image.open(part['canvasLayer']['image']).convert('RGBA')),
+        layers.append({**_read_cleanup_layer(part,parts['canvas'],evidence_root),
                        'role':byid[part['moduleId']]['role'],'draw_order':opt.get('drawOrder',part['drawOrder']),
                        'enabled':opt.get('enabled',part.get('enabled',True)),
                        'effect_mode':opt.get('effect_mode',byid[part['moduleId']].get('effect_mode','keep'))})
@@ -243,7 +315,7 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
     if cleanup:layers,report,composite=cleanup_layers(layers,original)
     else:
         for layer in layers:layer['enabled'] &= layer['effect_mode']!='omit'
-        report={'layers':{},'warnings':[]}
+        report={'layers':{},'warnings':inspect_local_layer_warnings(layers,original)}
     recovery_ignore=np.zeros(original.shape[:2],bool)
     if cleanup and recover_missing:
         layers,recovery,composite=recover_missing_body_from_original(layers,original)
@@ -256,10 +328,11 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
         # A fully removed background layer is disabled; its original support is
         # retained solely for stable bone planning, never drawn in the preview.
         if not rgba[...,3].any():
-            layer['enabled']=False;rgba=np.asarray(Image.open(part['canvasLayer']['image']).convert('RGBA'))
+            layer['enabled']=False;rgba=_read_cleanup_layer(part,parts['canvas'],evidence_root)['rgba']
             report['warnings'].append({'code':'EMPTY_LAYER_DISABLED','layer':layer['id']})
         Image.fromarray(rgba).save(image)
         manifest['pieces'].append({'id':part['name'],'module_id':part['moduleId'],'kind':part['kind'],
+            'label':part.get('label'),
             'parent':part['parent'],'pivot':part['pivot'],'draw_order':order,'enabled':layer['enabled'],
             'image':str(image),'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
             'provenance':{**part['canvasLayer']['provenance'],'cleanup_source_image':part['canvasLayer']['image']}})

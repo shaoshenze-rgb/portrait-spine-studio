@@ -59,6 +59,63 @@ from .vision_provider import CindyVisionProvider, ConversationHandoffProvider, V
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+_CANVAS_ROLES = {
+    'head': '头部', 'face': '面部', 'torso': '躯干', 'body': '身体', 'pelvis': '腰胯',
+    'weapon': '武器', 'prop': '悬浮道具', 'arm': '手臂', 'upper_arm': '上臂', 'forearm': '前臂',
+    'hand': '手部', 'upper_leg': '大腿', 'lower_leg': '小腿', 'leg': '腿部', 'foot': '脚部',
+    'hair': '头发', 'cloth': '布料', 'cape': '披风', 'soft_accessory': '软饰件', 'tail': '尾部',
+    'armor': '护甲', 'effect_group': '特效', 'fin': '鳍饰', 'fish_tail': '鱼尾',
+}
+
+
+def _canvas_label(part, module):
+    for label in (part.get('label'), module.get('label')):
+        if isinstance(label, str) and label.strip():
+            return label.strip()[:60]
+    tokens = set(re.split(r'[_-]+', module['id'].lower()))
+    side = {'L': '左', 'R': '右'}.get(module.get('side'), '')
+    if not side:
+        side = '左' if tokens & {'l', 'left'} else '右' if tokens & {'r', 'right'} else ''
+    role = module.get('role')
+    if role in ('cloth', 'cape', 'soft_accessory'):
+        if 'scarf' in tokens:
+            return side + ('围巾飘尾' if 'tail' in tokens else '领口围巾' if 'neck' in tokens else '围巾')
+        if tokens & {'flap', 'skirt', 'coat'}:
+            return side + ('侧后衣摆' if side and 'back' in tokens else '后衣摆' if 'back' in tokens else '前衣摆' if 'front' in tokens else '衣摆')
+    return side + _CANVAS_ROLES.get(role, '饰件')
+
+
+def _canvas_workbench_files(destination, parts, spec, spine_file):
+    """Expose an editable rig without adding disabled slots to the exported rig."""
+    rig_dir = destination / 'rig'
+    spine = json.loads((rig_dir / spine_file).read_text())
+    built = json.loads((rig_dir / 'rig-build-report.json').read_text())
+    by_slot = {slot['name']: slot for slot in spine['slots']}
+    attachments = {entry['part']: entry['bone'] for entry in built['attachments']}
+    modules = {module['id']: module for module in spec['moduleContract']['modules']}
+    ratios = spec.get('canvas_motion_ratios', {})
+    requests = spec.get('canvas_motion_requests', {})
+    animated = spine.get('animations', {}).get('idle', {}).get('bones', {})
+    rows = []
+    spine['slots'] = []
+    for part in sorted(parts, key=lambda piece: piece['drawOrder']):
+        name, module_id = part['name'], part['moduleId']
+        spine['slots'].append(by_slot.get(name) or {'name': name, 'bone': attachments[name], 'attachment': name})
+        module = modules[module_id]
+        driver = module
+        while driver.get('motionProfile') == 'follow' and driver.get('parent') in modules:
+            driver = modules[driver['parent']]
+        has_motion = any(bone in animated for bone in [driver['bone'], *driver.get('softBones', [])])
+        rows.append({'name': name, 'module': module_id, 'drawOrder': part['drawOrder'],
+                     'enabled': part.get('enabled', True), 'role': module['role'], 'side': module.get('side'),
+                     'motion_type': module['motionType'], 'label': _canvas_label(part, module),
+                     'motion_scale': module.get('motion_scale', 1.), 'driver_module': driver['id'],
+                     'motion_adjustable': has_motion and driver.get('motion_scale', 1.) > 0,
+                     'motion_ratio': requests.get(driver['id'], 1.), 'baked_motion_ratio':ratios.get(driver['id'], 1.),
+                     'baked_motion_scale': driver.get('motion_scale', 1.) * ratios.get(driver['id'], 1.)})
+    (rig_dir / 'live.spine.json').write_text(json.dumps(spine, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+    return rows
 PLAYER_DIR = REPO_ROOT / "src" / "player"
 
 mimetypes.add_type("application/javascript", ".js")
@@ -280,6 +337,11 @@ class StudioJobManager:
             "canvas_checks": copy.deepcopy(job.get("canvas_checks", {})),
             "canvas_diagnostics": copy.deepcopy(job.get("canvas_diagnostics", {})),
             "canvas_preview_html": job.get("canvas_preview_html"),
+            "canvas_seam_preview": job.get("canvas_seam_preview"),
+            "canvas_live_rig_url": job.get("canvas_live_rig_url"),
+            "canvas_global_motion_scale": job.get("canvas_global_motion_scale", 1.),
+            "canvas_diagnostics_url": job.get("canvas_diagnostics_url"),
+            "canvas_all_layers_url": job.get("canvas_all_layers_url"),
             "job_id": job["job_id"],
             "character": job["character"],
             "filename": job["filename"],
@@ -1324,8 +1386,12 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None: raise JobNotFoundError(job_id)
         self._acquire_serial(job_id)
+        previous = copy.deepcopy(job)
         try:
             config = copy.deepcopy(payload)
+            expected = config.pop('expected_rig_version', None)
+            if expected is not None and expected != job['rig_build_count']:
+                raise InvalidJobStateError('预览版本已经变化，请刷新后重新调整。', 409)
             parts = Path(config['parts_dir']).resolve()
             plan_path = Path(config['plan']).resolve()
             material = json.loads((parts/'parts.json').read_text())
@@ -1337,6 +1403,9 @@ class StudioJobManager:
                     raise ValueError('Canvas原图与当前上传角色不同。')
             revision = job.get('canvas_revision', 0) + 1
             destination = Path(job['job_dir'])/('canvas-r'+str(revision))
+            while destination.exists():
+                revision += 1
+                destination = Path(job['job_dir'])/('canvas-r'+str(revision))
             root = Path(os.path.commonpath([str(parts), str(plan_path.parent), job['job_dir']]))
             job.update(status='running', exports={}, visual_review=None, canvas_signoff=None, canvas_revision=revision)
             diagnostics = run_preview(parts, plan_path, destination, evidence_root=root,
@@ -1353,20 +1422,32 @@ class StudioJobManager:
                 'quality': {'overall': {'status':'pending','exportAllowed':False},
                             'bindingMotion': {'checks': {'rigidity': {'status':'pass' if checks['rigid_no_stretch'] else 'fail'}}}}}
             (destination/'rig/health-report.json').write_text(json.dumps(health))
+            seam_url = self._job_url(job_id, destination.name+'/seam-worst-crops.jpg')
+            rows = _canvas_workbench_files(destination, actual['parts'], spec, job['character']+'.spine.json')
+            for row in rows:
+                row['thumb_url'] = self._job_url(job_id, destination.name+'/rig/images/'+row['name']+'.png')
+                row['seam_crops_url'] = seam_url
             job.update(canvas_mode=True, canvas_config=config, canvas_output=str(destination),
                 canvas_checks=checks, canvas_diagnostics=diagnostics,
-                canvas_layers=[{'name':p['name'],'module':p['moduleId'],'drawOrder':p['drawOrder'],
-                    'enabled':p.get('enabled',True),'motion_scale':next(m for m in spec['moduleContract']['modules'] if m['id']==p['moduleId']).get('motion_scale',1.)} for p in actual['parts']],
+                canvas_layers=rows, canvas_global_motion_scale=(config.get('tweaks') or {}).get('global_motion_scale', 1.),
                 status='canvas_preview', rig_spec=spec, health_report=health, module_contract=None,
                 rig_url=self._job_url(job_id, destination.name+'/rig/'+job['character']+'.spine.json'),
                 health_report_url=self._job_url(job_id,destination.name+'/rig/health-report.json'),
                 canvas_preview_html=self._job_url(job_id,destination.name+'/'+job['character']+'-standalone-preview.html'),
+                canvas_seam_preview=seam_url,
+                canvas_live_rig_url=self._job_url(job_id,destination.name+'/rig/live.spine.json'),
+                canvas_diagnostics_url=self._job_url(job_id,destination.name+'/preview-diagnostics.json'),
+                canvas_all_layers_url=self._job_url(job_id,destination.name+'/all-layers-sheet.jpg'),
                 rig_build_count=job['rig_build_count']+1, updated_at=_now_iso())
             self._persist_job_meta(job)
             return self._public_view(job)
         except Exception:
             if job.get('status')=='running':
-                job.update(status='failed',canvas_signoff=None,exports={})
+                if previous.get('canvas_mode'):
+                    job.update(previous)
+                else:
+                    job.update(status='failed',canvas_signoff=None,exports={})
+                self._persist_job_meta(job)
             raise
         finally: self._release_serial()
 
@@ -1377,6 +1458,13 @@ class StudioJobManager:
             if not job.get('canvas_mode'): raise InvalidJobStateError('先接入Canvas图层。')
             config=copy.deepcopy(job['canvas_config'])
         tweaks=config.setdefault('tweaks',{})
+        if 'expected_rig_version' in payload:
+            config['expected_rig_version'] = payload['expected_rig_version']
+        if 'global_motion_scale' in payload:
+            value = payload['global_motion_scale']
+            if type(value) not in (float, int) or not 0 <= value <= 1.8:
+                raise ValueError('整体动感必须在 0%–180% 之间。')
+            tweaks['global_motion_scale'] = value
         for group in ('layers','modules'):
             for name,changes in payload.get(group,{}).items():
                 changes = copy.deepcopy(changes)
@@ -1393,8 +1481,13 @@ class StudioJobManager:
                 raise InvalidJobStateError('当前没有可签收的Canvas预览。')
             if payload.get('decision') != 'pass' or not all(job['canvas_checks'].values()):
                 raise InvalidJobStateError('四项基础检查通过且实际验收后才能签收。')
+            if (job['canvas_diagnostics'].get('exposure_stress') or {}).get('status') != 'pass':
+                raise InvalidJobStateError('先通过满滑块露底压力体检，再人工签收。')
         self._acquire_serial(job_id)
         try:
+            expected = payload.get('expected_rig_version')
+            if expected is not None and expected != job['rig_build_count']:
+                raise InvalidJobStateError('预览版本已经变化，请重新观看并验收。', 409)
             out=Path(job['canvas_output']);signoff=out/'user-signoff.json'
             signoff.write_text(json.dumps({'decision':'pass','reviewer':str(payload.get('reviewer') or '工具页使用者'),
                 'user_quote':'人工验收通过','revision':job['canvas_revision'],'date':_now_iso()},ensure_ascii=False))

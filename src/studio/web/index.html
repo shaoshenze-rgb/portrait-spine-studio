@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Portrait Spine Studio — 本机离线工具台</title>
+<link rel="stylesheet" href="/canvas-workbench.css" />
 <style>
   :root {
     --bg-0: #0b0d12;
@@ -959,23 +960,70 @@
   </details>
   <p id="canvasMessage" role="status"></p>
 </section>
-<section class="card" id="canvasWorkbench" hidden style="margin:16px auto;max-width:1120px;padding:16px">
-  <h2>Canvas 动画预览</h2>
-  <iframe id="canvasPreviewFrame" title="独立图层动画预览" style="width:100%;height:620px;border:0"></iframe>
-  <p id="canvasHardChecks"></p>
-  <details><summary>图层顺序、显示与摆幅</summary>
-    <p>列表从后层到前层；单模块摆幅不会改变全局呼吸频率。改完后应用到预览。</p>
-    <div id="canvasLayerRows"></div>
-    <button id="btnCanvasTweaks" type="button" class="btn">应用调整并更新预览</button>
-  </details>
-  <details><summary>检查告警与动态接缝</summary><pre id="canvasWarnings" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
-  <p><label><input type="checkbox" id="canvasWatched">我已观看完整循环并确认画面</label></p>
-  <button id="btnCanvasSignoff" type="button" class="btn">人工验收通过并导出</button>
-  <div id="canvasDownloads"></div>
+<section id="canvasWorkbench" class="canvas-workbench" hidden aria-label="角色动画实时工作台">
+  <section class="cw-stage" aria-labelledby="canvasJobTitle">
+    <header class="cw-stage-header">
+      <div><p class="cw-kicker">动作工作台</p><h2 id="canvasJobTitle">角色预览</h2></div>
+      <span id="canvasLiveBadge" class="cw-live">实时预览</span>
+    </header>
+    <div class="cw-art"><canvas id="canvasLiveStage" aria-label="角色待机动画"></canvas><span id="canvasFocusLabel" class="cw-focus" hidden></span></div>
+    <div class="cw-transport" aria-label="播放控制">
+      <button type="button" id="canvasPlay" class="cw-button">暂停</button>
+      <button type="button" id="canvasRestart" class="cw-button" title="回到开头">↺<span class="cw-visually-hidden">回到开头</span></button>
+      <label class="cw-timeline"><span class="cw-visually-hidden">播放进度</span><input id="canvasTime" type="range" min="0" max="8" value="0" step="0.01"><output id="canvasTimeText">0.0 / 8.0 秒</output></label>
+      <select id="canvasSpeed" aria-label="播放倍速"><option value="0.5">0.5 倍速</option><option value="1" selected>正常速度</option><option value="1.5">1.5 倍速</option></select>
+      <select id="canvasBackground" aria-label="舞台背景"><option value="dark">深底</option><option value="light">浅底</option><option value="checker">透明棋盘</option></select>
+      <label class="cw-bones"><input id="canvasBones" type="checkbox">显示骨骼线</label>
+    </div>
+    <div class="cw-healthbar"><ul id="canvasHardChecks" class="cw-checks"></ul><button type="button" id="canvasSeamButton" class="cw-link">查看接缝特写图 ↗</button></div>
+    <p id="canvasLayerWarningStatus" class="cw-alert" role="status" hidden></p>
+  </section>
+  <aside class="cw-controls" aria-label="微调控制面板">
+    <header class="cw-panel-header"><p class="cw-kicker">只影响当前预览，保存后生效</p><h2>实时微调</h2></header>
+    <div class="cw-tabs" role="tablist" aria-label="微调类别">
+      <button id="canvasMotionTab" type="button" role="tab" aria-selected="true" aria-controls="canvasMotionPanel">动效幅度</button>
+      <button id="canvasOrderTab" type="button" role="tab" aria-selected="false" aria-controls="canvasOrderPanel" tabindex="-1">前后层级</button>
+      <button id="canvasReviewTab" type="button" role="tab" aria-selected="false" aria-controls="canvasReviewPanel" tabindex="-1">检查与导出</button>
+    </div>
+    <div class="cw-control-scroll" id="canvasControlScroll">
+      <section id="canvasMotionPanel" role="tabpanel" aria-labelledby="canvasMotionTab">
+        <div class="cw-global">
+          <div><label for="canvasGlobal">整体动感</label><span>100% 是默认动作；叠加后各部位最多 150%</span></div>
+          <button type="button" id="canvasReset" class="cw-link" title="恢复本次载入的原始数值">恢复默认</button>
+          <input id="canvasGlobal" type="range" min="0" max="180" step="1" value="100"><output id="canvasGlobalValue">100%</output>
+        </div>
+        <p id="canvasZeroNotice" class="cw-note" hidden>整体动作当前为静止态；提高「整体动感」后保存一次，即可重新激活动作。</p>
+        <div id="canvasLayerRows"></div>
+      </section>
+      <section id="canvasOrderPanel" role="tabpanel" aria-labelledby="canvasOrderTab" hidden>
+        <p class="cw-note">最上面是最前景。调整顺序或显隐，左侧马上更新。</p><div id="canvasOrderRows"></div>
+      </section>
+      <section id="canvasReviewPanel" role="tabpanel" aria-labelledby="canvasReviewTab" hidden>
+        <h3>预览体检</h3><ul id="canvasReviewChecks" class="cw-checks"></ul>
+        <p id="canvasStressResult" class="cw-note"></p>
+        <ul id="canvasLayerWarnings" class="cw-warning-list"></ul>
+        <a id="canvasSeamLink" target="_blank" rel="noopener" hidden><img id="canvasSeamImage" alt="原图、起始帧及最大变化帧的接缝对照" loading="lazy"><span>打开原尺寸接缝特写 ↗</span></a>
+        <a id="canvasLayerSheet" target="_blank" rel="noopener" hidden>查看全部图层补全总览 ↗</a>
+        <label class="cw-attestation"><input type="checkbox" id="canvasWatched">我已看过完整循环并确认画面无穿帮</label>
+        <button type="button" id="canvasReviewExport" class="cw-button cw-primary">保存当前微调并导出正式包</button>
+        <div id="canvasDownloads" class="cw-downloads"></div>
+        <details class="cw-technical"><summary>开发者与技术详情</summary>
+          <a id="canvasOpenStandalone" target="_blank" rel="noopener">单独打开单文件 HTML</a>
+          <a id="canvasOpenRig" target="_blank" rel="noopener">查看骨架 JSON</a>
+          <a id="canvasOpenDiagnostics" target="_blank" rel="noopener">原始诊断 JSON</a>
+        </details>
+      </section>
+    </div>
+    <footer class="cw-actions"><p id="canvasWorkbenchMessage" role="status">拖动滑块即可看到变化，不必等待保存。</p><div>
+      <button type="button" id="btnCanvasTweaks" class="cw-button" disabled>保存实时微调</button>
+      <button type="button" id="btnCanvasSignoff" class="cw-button cw-primary">确认验收并导出</button>
+    </div></footer>
+  </aside>
 </section>
 </div>
 <script type="module">
   import { PortraitSpinePlayer, normalizeHealthReport } from '/player/player-widget.js';
+  import { createCanvasWorkbench } from '/canvas-workbench.js';
 
   const $ = (id) => document.getElementById(id);
 
@@ -1032,14 +1080,17 @@
   const ro = new ResizeObserver(() => player.resize());
   ro.observe($('canvasStage'));
 
-  function setStep(stepNum) {
+  function setStep(stepNum, canvasMode = false) {
     for (let i = 1; i <= 3; i += 1) {
-      $(`viewStep${i}`).classList.toggle('active', i === stepNum);
+      $(`viewStep${i}`).classList.toggle('active', i === stepNum && !canvasMode);
       const pill = $(`stepPill${i}`);
       pill.classList.toggle('active', i === stepNum);
       pill.classList.toggle('done', i < stepNum);
+      pill.querySelector('.num').textContent = i < stepNum ? '✓' : String(i);
+      if (i === stepNum) pill.setAttribute('aria-current', 'step');
+      else pill.removeAttribute('aria-current');
     }
-    if (stepNum === 3) {
+    if (stepNum === 3 && !canvasMode) {
       requestAnimationFrame(() => player.resize());
     }
   }
@@ -1054,11 +1105,22 @@
     el.classList.add('visible');
   }
 
+  function renderCanvasStatus({busy, ready}) {
+    if (!state.currentJob?.canvas_mode) return;
+    const indicator = $('serverStatusPill');
+    indicator.textContent = busy ? '保存烘焙中' : ready ? '已就绪 · 实时微调' : '载入预览中';
+    indicator.classList.toggle('busy', !!busy);
+    indicator.classList.toggle('canvas-ready', ready && !busy);
+  }
+
   function setBusy(isBusy) {
     state.busy = !!isBusy;
     const pill = $('serverStatusPill');
-    pill.textContent = state.busy ? '任务执行中（串行锁定）' : '空闲就绪';
-    pill.classList.toggle('busy', state.busy);
+    if (!state.currentJob?.canvas_mode) {
+      pill.textContent = state.busy ? '任务执行中（串行锁定）' : '空闲就绪';
+      pill.classList.remove('canvas-ready');
+      pill.classList.toggle('busy', state.busy);
+    }
     $('btnStartGenerate').disabled = state.busy || !state.imageBase64;
     $('btnContinueGenerate').disabled = state.busy;
     $('btnRetryStage').disabled = state.busy;
@@ -1344,58 +1406,31 @@
     }
   }
 
-  let canvasRows = [];
-  function drawCanvasRows() {
-    const box=$('canvasLayerRows'); box.replaceChildren();
-    canvasRows.forEach((row,index)=>{
-      const line=document.createElement('div');
-      line.style.cssText='display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 0;border-bottom:1px solid #54606a';
-      const label=document.createElement('span');label.textContent=row.name+' · '+row.module;line.append(label);
-      const visible=document.createElement('input');visible.type='checkbox';visible.checked=row.enabled;
-      visible.setAttribute('aria-label',row.name+' 显示');visible.onchange=()=>row.enabled=visible.checked;line.append(visible);
-      for (const [text,delta] of [['后移',-1],['前移',1]]) {
-        const b=document.createElement('button');b.textContent=text;b.type='button';b.className='btn btn-sm';
-        b.disabled=index+delta<0||index+delta>=canvasRows.length;
-        b.onclick=()=>{[canvasRows[index],canvasRows[index+delta]]=[canvasRows[index+delta],canvasRows[index]];drawCanvasRows();};line.append(b);
-      }
-      const range=document.createElement('input');range.type='range';range.min='0';range.max='1.5';range.step='0.05';range.value=row.motion_scale;
-      range.setAttribute('aria-label',row.module+' 摆动幅度');const value=document.createElement('output');value.textContent=range.value+'×';
-      range.oninput=()=>{canvasRows.filter(r=>r.module===row.module).forEach(r=>r.motion_scale=Number(range.value));value.textContent=range.value+'×';};
-      range.onchange=drawCanvasRows;line.append(range,value);box.append(line);
-    });
-  }
-  function renderCanvasJob(job) {
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-    $('canvasWorkbench').hidden=false;$('canvasWatched').checked=false;
-    $('canvasPreviewFrame').src=job.canvas_preview_html+'?v='+job.rig_version;
-    canvasRows=job.canvas_layers.map(r=>({...r}));drawCanvasRows();
-    const labels={files_complete:'文件完整',loop_seam:'首尾无缝循环',original_coverage:'原图无大块漏件',rigid_no_stretch:'刚体无拉伸'};
-    $('canvasHardChecks').textContent=Object.entries(labels).map(([k,v])=>v+'：'+(job.canvas_checks[k]?'通过':'待处理')).join(' · ');
-    $('canvasWarnings').textContent=JSON.stringify({placement:job.canvas_diagnostics.placement_warnings,cleanup:job.canvas_diagnostics.cleanup,dynamic:job.canvas_diagnostics.dynamic_checks},null,2);
-    const downloads=$('canvasDownloads');downloads.replaceChildren();
-    for(const entry of Object.values(job.exports||{}))for(const file of entry.files||[]){const a=document.createElement('a');a.href=file.url;a.textContent=file.label;a.style.marginRight='16px';a.download=file.filename;downloads.append(a);}
-  }
-  async function canvasRequest(action,body) {
-    if(!state.currentJob){$('canvasMessage').textContent='请先上传原图创建任务。';return;}
-    const buttons=['btnApplyCanvas','btnCanvasTweaks','btnCanvasSignoff'];buttons.forEach(id=>$(id).disabled=true);
-    $('canvasMessage').textContent='正在生成完整预览，请稍候；本次不会调用付费生成服务。';
-    try {const job=await apiJson('/api/jobs/'+state.currentJob.job_id+'/'+action,{method:'POST',body:JSON.stringify(body)});
-      await applyJobState(job);$('canvasMessage').textContent='完成。请检查完整循环及接缝。';
-    }catch(e){$('canvasMessage').textContent=e.message;}finally{buttons.forEach(id=>$(id).disabled=false);}
-  }
-  $('btnApplyCanvas').onclick=()=>canvasRequest('apply-canvas-layers',{parts_dir:$('canvasPartsPath').value,plan:$('canvasPlanPath').value,cleanup:true});
-  $('btnCanvasTweaks').onclick=()=>{
-    const layers={},modules={};canvasRows.forEach((r,i)=>{layers[r.name]={drawOrder:i,enabled:r.enabled};modules[r.module]={motion_scale:r.motion_scale};});
-    canvasRequest('layer-tweaks',{layers,modules});
+  const canvasWorkbench = createCanvasWorkbench({request:apiJson, onJob:applyJobState, onStatus:renderCanvasStatus});
+  $('btnApplyCanvas').onclick = async () => {
+    if (!state.currentJob) { $('canvasMessage').textContent='请先上传原图创建任务。'; return; }
+    const button = $('btnApplyCanvas'); button.disabled = true;
+    $('canvasMessage').textContent = '正在生成完整预览；本次不会调用付费生成服务。';
+    try {
+      const next = await apiJson('/api/jobs/' + state.currentJob.job_id + '/apply-canvas-layers', {
+        method:'POST', body:JSON.stringify({parts_dir:$('canvasPartsPath').value, plan:$('canvasPlanPath').value, cleanup:true}),
+      });
+      await applyJobState(next);
+    } catch (error) { $('canvasMessage').textContent = error.message; }
+    finally { button.disabled = false; }
   };
-  $('btnCanvasSignoff').onclick=()=>{if(!$('canvasWatched').checked){$('canvasMessage').textContent='请先观看完整循环并勾选确认。';return;}canvasRequest('user-signoff',{decision:'pass',reviewer:'工具页使用者'});};
 
   async function applyJobState(job) {
     const previousReviewKey = JSON.stringify(state.currentJob?.review_binding || null);
     state.currentJob = job;
-    if(job.canvas_mode){renderCanvasJob(job);return;}
-    $("canvasWorkbench").hidden=true;
     state.requestedJobId = job.job_id;
+    if (job.canvas_mode && job.canvas_preview_html) {
+      $('canvasIntake').hidden = true;
+      setStep(3, true);
+      return canvasWorkbench.render(job);
+    }
+    canvasWorkbench.hide();
+    $('canvasIntake').hidden=false;
     if (previousReviewKey !== JSON.stringify(job.review_binding || null)) {
       $('chkVisualLoop').checked = false;
       $('chkOriginalModules').checked = false;

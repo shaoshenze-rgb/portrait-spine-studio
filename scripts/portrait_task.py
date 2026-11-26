@@ -30,6 +30,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest='command', required=True)
     prepare = sub.add_parser('prepare', help='上传立绘，预处理后停在 awaiting_analysis')
     prepare.add_argument('--image', required=True, type=Path)
+    prepare.add_argument('--character', help='Studio 任务和输出文件使用的角色标识')
     prepare.add_argument('--preset', choices=['agile_full', 'heavy_weapon_full', 'bust_half'], default='agile_full')
     apply = sub.add_parser('apply-analysis', help='应用当前对话读图产出的同任务视觉JSON，停在绑定预览')
     apply.add_argument('--job', required=True)
@@ -81,7 +82,7 @@ def main(argv=None) -> int:
             output = request('/api/jobs', {
                 'filename': args.image.name,
                 'image_base64': base64.b64encode(args.image.read_bytes()).decode('ascii'),
-                'preset': args.preset, 'pause_before_animation': True,
+                'preset': args.preset, 'character': args.character, 'pause_before_animation': True,
             })
         elif args.command == 'apply-analysis':
             analysis = json.loads(args.analysis.read_text(encoding='utf-8'))

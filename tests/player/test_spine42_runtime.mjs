@@ -10,8 +10,8 @@ import {
   deformAt,
   Spine42Skeleton,
 } from '../../src/player/spine42-runtime.js';
-import { computeConvexHull } from '../../src/player/canvas-renderer.js';
-import { normalizeHealthReport } from '../../src/player/player-widget.js';
+import { computeConvexHull, SpineCanvasRenderer } from '../../src/player/canvas-renderer.js';
+import { normalizeHealthReport, PortraitSpinePlayer, effectiveCanvasMotionRatio } from '../../src/player/player-widget.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +29,59 @@ const tests = [];
 function test(name, fn) {
   tests.push({ name, fn });
 }
+
+test('Overall and local canvas dials cap the combined ratio to the original baseline', () => {
+  assert.equal(effectiveCanvasMotionRatio(1.5,1.8),1.5);
+  assert.equal(effectiveCanvasMotionRatio(.5,1.8),.9);
+  assert.equal(effectiveCanvasMotionRatio(1,0),0);
+  assert.equal(effectiveCanvasMotionRatio(1),1);
+});
+
+test('Live motion scales multiply only timeline offsets, including setup scale and shear', () => {
+  const data = {bones:[{name:'root'}, {name:'module_head', parent:'root', x:10, y:5, rotation:4, scaleX:2, shearY:3},
+    {name:'bend_cloth1', parent:'root', x:30}], slots:[], skins:[], animations:{idle:{bones:{
+      module_head:{rotate:[{value:18}], translatex:[{value:20}], translatey:[{value:8}],
+        scale:[{x:1.5,y:.9}], shear:[{x:6,y:8}]},
+      bend_cloth1:{translate:[{x:12,y:-9}]},
+    }}}};
+  const skeleton = new Spine42Skeleton(data);
+  skeleton.apply('idle', 0, {boneMotionScales:new Map([['module_head', .5], ['bend_cloth1', 2]])});
+  const head = skeleton.byName.get('module_head');
+  const cloth = skeleton.byName.get('bend_cloth1');
+  assert.deepEqual([head.rotation,head.x,head.y,head.scaleX,head.scaleY,head.shearX,head.shearY], [13,20,9,2.5,.95,3,7]);
+  assert.deepEqual([cloth.x,cloth.y], [54,-18]);
+  skeleton.apply('idle',0,{boneMotionScales:{module_head:0}});
+  assert.deepEqual([head.rotation,head.x,head.y,head.scaleX,head.shearY],[4,10,5,2,3]);
+  assert.equal(cloth.x,42);
+  skeleton.apply('idle',0);
+  assert.equal(head.rotation,22);
+});
+
+test('Player translates saved slider values to module and soft-chain ratios', () => {
+  const player = Object.create(PortraitSpinePlayer.prototype);
+  player.playing = true;
+  player.animationName = 'idle';
+  player.skeleton = {json:{animations:{idle:{bones:{module_head:{}, module_cloth:{}, bend_cloth1:{}, bend_cloth2:{}, module_zero:{}}}}}};
+  player.setLiveMotionScales({head:1,cloth:.3,zero:1}, {head:.5,cloth:.6,zero:0}, 1.2);
+  assert.equal(player.liveMotionScales.get('module_head'),2.4);
+  for (const bone of ['module_cloth','bend_cloth1','bend_cloth2']) assert.equal(player.liveMotionScales.get(bone),.6);
+  assert.equal(player.liveMotionScales.get('module_zero'),1);
+});
+
+test('Renderer applies live order, hides slots, and highlights a hidden slot without drawing its texture', () => {
+  const renderer = Object.create(SpineCanvasRenderer.prototype);
+  renderer._drawBackground = () => {};
+  renderer._computeViewport = () => ({});
+  let order, focus;
+  renderer._renderMeshesCanvas2D = geometries => { order = geometries.map(geometry => geometry.slotName); };
+  renderer._drawFocus = geometry => { focus = geometry.slotName; };
+  const skeleton = {slots:['back','middle','front'].map(name=>({name})), getCanvasSpec:()=>({}),
+    computeWorldGeometry:slot=>({slotName:slot.name})};
+  renderer.render(skeleton,{slotOrder:['front','middle','back'],hiddenSlots:new Set(['middle']),highlightSlot:'middle'});
+  assert.deepEqual(order,['front','back']);
+  assert.equal(focus,'middle');
+  assert.deepEqual(skeleton.slots.map(slot=>slot.name),['back','middle','front']);
+});
 
 // ---------------------------------------------------------------------------
 // 1. Bezier curve solver accuracy & boundary clamping

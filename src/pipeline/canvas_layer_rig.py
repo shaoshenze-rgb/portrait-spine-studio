@@ -65,6 +65,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
     by_id = {m['id']: m for m in modules}
     if len(by_id) != len(modules):
         raise ValueError('Duplicate Canvas module')
+    labels = {module['id']: module.pop('label', None) for module in modules}
     for m in modules:
         if m.get('pieces'):
             raise ValueError('Layer pieces come from the material manifest, not replacement masks')
@@ -220,6 +221,8 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
                'motion': 'static' if m['motion_type'] == 'static' else 'required', 'motionProfile': m['motion'], 'motionType': m['motion_type'],
                'softBones': soft, 'motion_scale': m.get('motion_scale', 1.), 'confidence': m['confidence'], 'side': m.get('side')}
         if m.get('static_reason'): row['staticReason'] = m['static_reason']
+        label = labels.get(mid)
+        if isinstance(label, str) and label.strip(): row['label'] = label.strip()[:60]
         if soft: row['centerline'] = [point(p) for p in m['centerline']]
         if m.get('locked_root'): row['lockedRoot'] = True
         projection.append(row)

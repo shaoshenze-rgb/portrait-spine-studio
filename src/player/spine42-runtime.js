@@ -438,7 +438,7 @@ export class Spine42Skeleton {
    *
    * @param {string} animName
    * @param {number} t
-   * @param {{ loop?: boolean, duration?: number|null }} [options]
+   * @param {{ loop?: boolean, duration?: number|null, boneMotionScales?: Map<string,number>|Record<string,number> }} [options]
    */
   apply(animName, t, options = {}) {
     this.setupPose();
@@ -456,34 +456,38 @@ export class Spine42Skeleton {
     }
 
     const animBones = anim.bones ?? {};
+    const scales = options.boneMotionScales;
     for (const bname of Object.keys(animBones)) {
       const b = this.byName.get(bname);
       if (!b) continue;
       const sd = b.data;
+      const requested = scales?.get ? scales.get(bname) : scales?.[bname];
+      const motionScale = Number.isFinite(requested) ? requested : 1;
+      if (!motionScale) continue;
       const tls = animBones[bname];
       for (const kind of Object.keys(tls)) {
         const keys = tls[kind];
         if (kind === 'rotate') {
           const [val] = sampleTimeline(keys, evalT, ['value'], [0.0]);
-          b.rotation = (sd.rotation ?? 0.0) + val;
+          b.rotation = (sd.rotation ?? 0.0) + val * motionScale;
         } else if (kind === 'translate') {
           const [x, y] = sampleTimeline(keys, evalT, ['x', 'y'], [0.0, 0.0]);
-          b.x = (sd.x ?? 0.0) + x;
-          b.y = (sd.y ?? 0.0) + y;
+          b.x = (sd.x ?? 0.0) + x * motionScale;
+          b.y = (sd.y ?? 0.0) + y * motionScale;
         } else if (kind === 'translatex') {
           const [val] = sampleTimeline(keys, evalT, ['value'], [0.0]);
-          b.x = (sd.x ?? 0.0) + val;
+          b.x = (sd.x ?? 0.0) + val * motionScale;
         } else if (kind === 'translatey') {
           const [val] = sampleTimeline(keys, evalT, ['value'], [0.0]);
-          b.y = (sd.y ?? 0.0) + val;
+          b.y = (sd.y ?? 0.0) + val * motionScale;
         } else if (kind === 'scale') {
           const [x, y] = sampleTimeline(keys, evalT, ['x', 'y'], [1.0, 1.0]);
-          b.scaleX = (sd.scaleX ?? 1.0) * x;
-          b.scaleY = (sd.scaleY ?? 1.0) * y;
+          b.scaleX = (sd.scaleX ?? 1.0) * (1 + (x - 1) * motionScale);
+          b.scaleY = (sd.scaleY ?? 1.0) * (1 + (y - 1) * motionScale);
         } else if (kind === 'shear') {
           const [x, y] = sampleTimeline(keys, evalT, ['x', 'y'], [0.0, 0.0]);
-          b.shearX = (sd.shearX ?? 0.0) + x;
-          b.shearY = (sd.shearY ?? 0.0) + y;
+          b.shearX = (sd.shearX ?? 0.0) + x * motionScale;
+          b.shearY = (sd.shearY ?? 0.0) + y * motionScale;
         } else {
           throw new Error(`Unsupported bone timeline "${kind}"`);
         }

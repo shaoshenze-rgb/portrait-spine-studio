@@ -32,6 +32,60 @@ class CanvasCleanupTests(unittest.TestCase):
         full=np.full((32,32,4),255,np.uint8)
         self.assertEqual(check_missing_original_regions(full,np.zeros_like(full))[0]['area_px'],1024)
 
+    def test_same_source_copy_warns_but_derived_underlap_does_not(self):
+        from src.pipeline.local_body_split import BodyLayer,split_local_body
+        original=np.full((80,80,4),[45,61,138,255],np.uint8)
+        original[:,40:]=[229,144,56,255]
+        front=np.zeros_like(original);front[:,40:]=original[:,40:]
+        lower=original.copy();lower[:,48:]=0
+        provenance={'local_derivation':{'parent_aligned_sha256':'abc'}}
+        layers=[{'id':'lower','rgba':lower,'draw_order':0,'kind':'rigid','provenance':provenance},
+                {'id':'front','rgba':front,'draw_order':1,'kind':'rigid','provenance':provenance}]
+        _,report,_=cleanup_layers(layers,original)
+        self.assertEqual(report['warnings'][0]['code'],'local_layer_pixel_bleed')
+        self.assertEqual(report['warnings'][0]['layers'],['lower','front'])
+        self.assertEqual(report['warnings'][0]['duplicate_pixels'],640)
+        masks=[BodyLayer('lower',lower[...,3]>0,0),BodyLayer('front',front[...,3]>0,1)]
+        split=split_local_body(original,masks,padding_px=8)
+        self.assertGreater(split.stats['layers']['lower']['padding_px'],250)
+        layers[0]['rgba']=split.rgba['lower']
+        _,report,_=cleanup_layers(layers,original)
+        self.assertEqual(report['warnings'],[])
+
+    def test_prepare_scans_soft_layer_not_generated_by_splitter_even_without_cleanup(self):
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        from src.pipeline.canvas_layer_cleanup import inspect_canvas_parts_warnings,prepare_canvas_parts
+        from src.pipeline.canvas_layer_parts import materialize_canvas_layer_parts
+        root_dir=Path(__file__).resolve().parents[2]/'.studio-work'
+        with tempfile.TemporaryDirectory(dir=root_dir) as tmp:
+            root=Path(tmp)
+            original=np.full((75,120,4),255,np.uint8)
+            source=root/'original.png';Image.fromarray(original).save(source)
+            soft=np.zeros_like(original);soft[5:35,5:27]=255;soft[5:35,69:96]=255
+            original_hash=hashlib.sha256(source.read_bytes()).hexdigest()
+            pieces=[]
+            for index,(name,kind,rgba) in enumerate([('coat','soft',soft),('body','rigid',original)]):
+                path=root/(name+'.png');Image.fromarray(rgba).save(path)
+                pieces.append({'id':name,'module_id':name,'kind':kind,'parent':None,'pivot':[15,15],
+                               'draw_order':index,'image':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+                               'provenance':{'scene_id':'scene','node_id':name,'task_id':'task','operation':'split-layers',
+                                             'source_asset_sha256':original_hash,'result_asset_sha256':original_hash,
+                                             'transform':[[1,0,0],[0,1,0]]}})
+            parts=root/'base'
+            materialize_canvas_layer_parts({'version':1,'material_mode':'canvas_layers','image_size':[120,75],
+               'source_image':str(source),'source_sha256':original_hash,'pieces':pieces},parts,evidence_root=root)
+            plan={'modules':[{'id':'coat','role':'cloth'},{'id':'body','role':'torso'}]}
+            _,_,report=prepare_canvas_parts(parts,plan,root/'prepared',evidence_root=root,cleanup=False)
+            warnings=report['warnings']
+            self.assertEqual(warnings,inspect_canvas_parts_warnings(parts,evidence_root=root)['warnings'])
+            self.assertEqual(warnings,json.loads((root/'prepared/cleanup-report.json').read_text())['warnings'])
+            self.assertEqual(warnings[0]['code'],'separated_soft_islands')
+            self.assertEqual([island['pixels'] for island in warnings[0]['islands']],[660,810])
+
 class OriginalBodyRecoveryTests(unittest.TestCase):
     def fixture(self):
         original=np.zeros((100,150,4),np.uint8)

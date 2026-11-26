@@ -1,13 +1,13 @@
 # Portrait Spine Studio 使用指南
 
-当前主链是“一次 Canvas 顶层粗拆 → 自动对齐、净化与原图补底 → 立即预览 → 局部微调 → 人工签收导出”。[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)规定四步 SOP，[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
+默认主链是“启动 Studio 并准备任务 → 一次 Canvas 顶层粗拆 → 对齐到当前任务的 `matted.png` → 按需本地切分并净化补底 → Studio 交互预览、微调和人工签收”。交付必须包含可打开的任务页和单文件 HTML，不只给视频。[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
 
 ## 启动和准备
 
 在项目根执行，使用已有 Python 3.9+、Pillow、numpy 和 ffmpeg；不自动安装依赖。
 
 ```bash
-python3 bin/start-studio.py --port 8765 --no-open
+python3 bin/start-studio.py --port 8765
 python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agile_full
 ```
 
@@ -20,7 +20,7 @@ python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agi
 每张新图默认只对原图做一次顶层 split-layers，优先分开人物本体、悬浮道具、完整武器和独立特效；禁止二、三级递归拆子层。下载层原件、核 SHA，保存真实回执，再对齐：
 
 ```bash
-python3 scripts/canvas_handoff.py import-layers --receipt <回执.json> --source <本次Canvas输入.png> --working-image <工作原图.png> --assets-dir <原件目录> --out-dir <新对齐目录>
+python3 scripts/canvas_handoff.py import-layers --receipt <回执.json> --source <本次Canvas输入.png> --working-image <当前任务的matted.png> --assets-dir <原件目录> --out-dir <新对齐目录>
 ```
 
 成功产生 aligned PNG、变换、对照图和 import-report；附带 cleaned 候选及清理指标，原 aligned 层不覆盖。`needs_canvas_registration` 表示没有可靠位置，不猜坐标。保留主原图/工作图关系；主链不使用历史 `--parent-report` 递归拆层入口。
@@ -32,7 +32,15 @@ python3 scripts/canvas_handoff.py import-layers --receipt <回执.json> --source
 - 材质清单：`version=1`、`material_mode=canvas_layers`、原图路径/SHA、画布尺寸、pieces。每 piece 提供 id、module_id、kind（rigid/soft）、parent、像素 pivot、draw_order、全画布 aligned RGBA 路径/SHA 与真实 provenance（scene/node/task、源/结果资产 SHA、相似变换、operation）。
 - 骨架规划：pose_type、anatomy、modules、connections、occlusions、uncertainties。模块的 parent/pivot/type 与材质对应；连接用真实关节点。grounded 全身需两段刚体腿链及独立静态 foot 锚，airborne 采用浮空动作。规划不是根据文件名自动猜人体。
 
-字段以[材质适配器](../src/pipeline/canvas_layer_parts.py)和[绑定编译器](../src/pipeline/canvas_layer_rig.py)为准。若只拿到干净人物整层，在本地拆为 6–10 个完整语义大块，关节留少量重叠；看图复核后与原独立层合并为同坐标 RGBA。已独立的 Canvas 层不重切。
+字段以[材质适配器](../src/pipeline/canvas_layer_parts.py)和[绑定编译器](../src/pipeline/canvas_layer_rig.py)为准。若只拿到干净人物整层，先标注语义种子掩码或左右轮廓，再运行：
+
+```bash
+python3 scripts/split_local_body.py --body <对齐人物.png> --spec <分层规格.json> --out-dir <新目录>
+```
+
+规格为 `version: 1`、`layers` 数组；每层声明 `id`、`kind`（rigid/soft）、`draw_order`，再二选一：`seed_mask`（相对规格文件路径，同画布二值 PNG，可设 `band_px`）；或 `contour`（`left_guides`、`right_guides`，各为等高、按 y 递增的像素点，可设 `radius`）。[分层模块](../src/pipeline/local_body_split.py) 用 GrabCut 或无 cv2 时的色差梯度贴边，轮廓分支用感知色差沿行寻边。命令输出 RGBA、可见归属掩码及 `split-stats.json`（含摘要、重叠与告警）；不自动决定语义。
+
+前后衣摆、领巾与臂后围巾尾分别提供深度和软链。低层遇到被前景切开的连续布料，先在不透明遮挡内沿横纵跨度桥接，再以欧氏距离做默认 56 px 本色垫边（常用 40–64 px，外沿 3 px 羽化）。从本层向内轻蚀后取色，不拖暗描边，也不采样遮挡者；原可见像素不改。复核归属和完整性后再合并；已经独立的 Canvas 层不重切。
 
 本地分件的 `provenance` 复用已验证 Canvas 父层的 `scene_id`、`node_id`、`task_id`、`operation`、`source_asset_sha256`、`result_asset_sha256`、`transform`，不将本地切分冒充新操作；附 `provenance.local_derivation` 记录父层对齐图 SHA、方法和掩码。分件自身的 `image` 和 `sha256` 指向本地派生 RGBA。已有标准 parts 可跳过物化；首次从清单物化：
 
@@ -43,9 +51,9 @@ manifest = json.load(open(".studio-work/task/material.json", encoding="utf-8"))
 materialize_canvas_layer_parts(manifest, ".studio-work/task/parts", evidence_root=".studio-work")
 ```
 
-## 净化、补底和预览
+## 净化、补底和离线批处理备选
 
-输入 paths 与新输出目录必须都在 evidence-root 内；输出已存在时换新目录，不覆盖旧视频。
+默认走下节 Studio 接入。仅在无界面批处理时用下列离线命令；输入和新输出目录必须在 evidence-root 内，不覆盖旧结果。
 
 ```bash
 python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新预览目录> --evidence-root <共同证据根> --cleanup --fps 30 --tweaks <微调.json>
@@ -68,25 +76,29 @@ python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> 
 - `frame_count=240`、fps=30，首尾差在基础阈值内。
 - `rest_composite_diff` 对照当前 setup_composite，不是证明原图所有像素未被改画。
 - `cleanup` 记录净化、recovered_regions、主体 missing_original_regions；raw 缺失可能包含有意去掉的特效。
-- `dynamic_checks` 抽样 16 时刻查新封闭透明洞及头—手、躯干—手最大相对摆角。开放裂缝可能不形成洞，必须看原速完整循环。
+- `cleanup.warnings` 扫描实际贴图，即使跳过本地拆分 CLI 也会检查。发现 `local_layer_pixel_bleed` 必须重做下层垫边直到告警清零；发现 `separated_soft_islands` 要看图确认遮挡或按前后/左右分件。
+- `dynamic_checks` 抽样 16 时刻，保留头臂、躯干臂相对摆角，并按局部边缘变化选最多四处软层或本地切分交界。Studio 直接显示告警与 `seam-worst-crops.jpg`；复核原图、起始帧和最大变化帧，再看原速完整循环。开放裂缝可能不形成洞。
+- `exposure_stress` 使用默认动作的 100% 和 150%，在两档分别记录各采样帧的总露底、最大连通区域、位置和邻层。它检查静止主体内核的封闭洞及材质接触带的开口露底，排除独立道具、武器和特效。默认单处 >120 px 阻断 Studio 签收；低于阈值也要把任何肉眼可见的新露底修掉。必看 `all-layers-sheet.jpg`、`stress-150-frame.jpg` 和 150% 接缝对照。采样不能穷尽所有时间和滑块组合。
 
 ## Studio 接入与微调
 
-上传同一原图后，在页面“接入已有 Canvas 图层”填写 parts 目录和规划 JSON，净化后直接预览；也可用 CLI：
+用 `prepare` 得到的原图任务直接接入 parts 和规划 JSON：
 
 ```bash
 python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts目录> --plan <plan.json> --cleanup
 ```
+
+成功后打开并交付返回的 `page_url`（`http://127.0.0.1:8765/?job=<job_id>`）与 `canvas_preview_html` 单文件 HTML。确认交互播放器、图层顺序/显隐、单模块滑块、应用和人工签收按钮直接可用。只把视频作为辅助。
 
 本机 API：
 
 | POST 路径 | 请求内容 | 结果 |
 | --- | --- | --- |
 | `/api/jobs/<id>/apply-canvas-layers` | `parts_dir`、`plan` 为本机路径，`cleanup: true`，可带 tweaks | 新八秒预览；支持 grounded/airborne |
-| `/api/jobs/<id>/layer-tweaks` | 与上述微调 JSON 相同的 layers/modules | 从基础输入重建新版本，不累积破坏原件 |
+| `/api/jobs/<id>/layer-tweaks` | layers/modules（`motion_ratio` 为默认动作的 0–1.5 倍）、`global_motion_scale`（0–1.8），可带当前 `expected_rig_version` | 相乘后每部件封顶 1.5 倍默认动作；实时和烘焙同口径，不累积放大 |
 | `/api/jobs/<id>/user-signoff` | `{"decision":"pass","reviewer":"实际验收人"}` | 四项基础检查通过后，写签收并提供 ZIP/MP4/HTML 下载 |
 
-页面支持前后移层、单层显隐、单模块滑块；调整后点击应用更新。优先修层序和目标摆幅，再处理真实露缝。始终被挡住的脖子等不用补。只有动态真穿帮且本地补底/垫边不足，才在有效授权内对单一局部最多补一次 Canvas；结果未知不重提。
+工作台左侧播放、右侧调节。动效滑块、显隐、层级实时改变舞台，不发保存请求；武器与持握手臂联动，避免脱手。只有点击“保存实时微调”才烘焙。如果旧动作幅度为零，先保存以激活，再看完整循环并勾选验收。骨骼线默认关闭，原始诊断移入“开发者与技术详情”。需要区分同类部位时，可在分件清单或规划的模块上写可选中文 `label`。
 
 ## 四项基础检查与导出
 

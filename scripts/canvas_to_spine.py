@@ -58,20 +58,31 @@ def run_preview(parts_dir, plan_path, out_dir, *, evidence_root=None,
     out.relative_to(root)
     if out.exists(): raise ValueError('Use a new output directory; existing previews are preserved')
     plan = json.loads(plan_path.read_text(encoding='utf-8'))
-    cleanup_report = {}
+    from src.pipeline.module_rig import canvas_motion_policy
+    requests, effective = canvas_motion_policy(plan, tweaks)
+    material_tweaks = {'layers': (tweaks or {}).get('layers', {})}
+    from src.pipeline.canvas_layer_cleanup import inspect_canvas_parts_warnings, prepare_canvas_parts
     if cleanup or tweaks:
-        from src.pipeline.canvas_layer_cleanup import prepare_canvas_parts
         parts_dir, plan, cleanup_report = prepare_canvas_parts(parts_dir, plan, out/'prepared',
-            evidence_root=root, cleanup=cleanup, tweaks=tweaks, recover_missing=recover_missing)
+            evidence_root=root, cleanup=cleanup, tweaks=material_tweaks, recover_missing=recover_missing)
+    else:
+        cleanup_report = inspect_canvas_parts_warnings(parts_dir, evidence_root=root)
     material = json.loads((parts_dir / 'parts.json').read_text(encoding='utf-8'))
     rig_spec = compile_canvas_layer_bindings(parts_dir, plan, out / 'rig-spec',
         evidence_root=root, character=character, strict_placement=False)
+    baseline_rig = out / 'rig'
+    if any(value != 1 for value in effective.values()):
+        baseline_rig = out / 'stress-baseline'
+        build_rig(parts_dir, rig_spec, baseline_rig, preset=preset, gain=gain)
+    rig_spec['canvas_motion_ratios'] = effective
+    rig_spec['canvas_motion_requests'] = requests
+    (out/'rig-spec/rig-spec.json').write_text(json.dumps(rig_spec, ensure_ascii=False, indent=2))
     made = build_rig(parts_dir, rig_spec, out / 'rig', preset=preset, gain=gain)
     return render_preview(parts_dir, out/'rig', out, fps=fps, rig_spec=rig_spec,
-                          plan_path=plan_path, cleanup_report=cleanup_report)
+                          plan_path=plan_path, cleanup_report=cleanup_report, stress_rig_dir=baseline_rig)
 
 
-def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_path=None, cleanup_report=None):
+def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_path=None, cleanup_report=None, stress_rig_dir=None):
     """Same preview and diagnostics for Canvas and existing source-sliced rigs."""
     out=Path(out_dir).resolve();parts_dir=Path(parts_dir).resolve();rig_dir=Path(rig_dir).resolve()
     material=json.loads((parts_dir/'parts.json').read_text())
@@ -122,9 +133,12 @@ def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_p
              out/f'{character}-preview-dark.mp4', out/f'{character}-preview-light.mp4']
     paths += list((out/'rig'/'images').glob('*.png'))
     from src.gates.preview_diagnostics import inspect_dynamic
-    dynamic = inspect_dynamic(renderer, dynamic_frames, np.asarray(source), out)
+    stress_renderer = (renderer if Path(stress_rig_dir).resolve() == rig_dir else SpineRenderer(stress_rig_dir)) if stress_rig_dir else None
+    dynamic = inspect_dynamic(renderer, dynamic_frames, np.asarray(source), out,
+                              parts_dir=parts_dir, material=material, stress_renderer=stress_renderer)
     diagnostics = {
         'cleanup': cleanup_report, 'dynamic_checks': dynamic,
+        'exposure_stress': dynamic.get('exposure_stress'),
         'character': character, 'material_mode': material.get('materialMode','source_sliced'), 'duration': duration, 'fps': fps,
         'frame_count': total, 'files_complete': all(p.is_file() and p.stat().st_size > 0 for p in paths),
         'loop_seam_max_diff': _diff(frame_zero, renderer.frame(duration))['maxRGBA'],
