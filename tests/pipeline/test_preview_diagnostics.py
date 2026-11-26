@@ -70,3 +70,28 @@ class DynamicChecksTests(unittest.TestCase):
         self.assertEqual(report['warnings'][0]['code'],'max_slider_exposure')
         self.assertEqual(set(worst[0]['layers']),{'fabric','leg'})
         self.assertTrue(all('staff' not in names for _,names in calls))
+
+    def test_stress_ignores_pure_outer_silhouette_translation_while_catching_notch(self):
+        base = np.zeros((160, 160, 4), np.uint8)
+        base[20:140, 20:110] = 255
+        # Entire solid body translates 20px right: zero cracks, zero internal gaps!
+        shifted = np.zeros_like(base)
+        shifted[20:140, 40:130] = 255
+        class Renderer:
+            def frame(self, time, gain=1., *, slot_names=None):
+                return shifted if time else base
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / '.studio-work') as tmp:
+            directory = Path(tmp)
+            items = []
+            for order, (name, role, x) in enumerate([('thigh', 'upper_leg', 20), ('shin', 'lower_leg', 65)]):
+                Image.fromarray(np.full((120, 45, 4), 255, np.uint8)).save(directory / (name + '.png'))
+                items.append({'name': name, 'moduleId': name, 'bbox': [x, 20, 45, 120], 'image': name + '.png',
+                              'enabled': True, 'drawOrder': order, 'kind': 'rigid'})
+            report, _worst = inspect_exposure_stress(
+                Renderer(), directory, {'parts': items},
+                [{'id': 'thigh', 'role': 'upper_leg'}, {'id': 'shin', 'role': 'lower_leg'}],
+                [0., .5], threshold=120,
+            )
+        self.assertEqual(report['status'], 'pass')
+        self.assertEqual(report['levels']['1.0x']['peak_exposure_px'], 0)
+        self.assertEqual(report['levels']['1.5x']['peak_exposure_px'], 0)

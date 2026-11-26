@@ -163,7 +163,23 @@ def _exposure_regions(missing, contacts):
     return sorted(result,key=lambda item:item['area_px'],reverse=True)
 
 
-def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, threshold=120):
+def _morph_close(mask, radius):
+    """Close open seam notches between moving parts without filling vacated outer silhouette motion."""
+    if radius <= 0 or not mask.any():
+        return mask
+    try:
+        import cv2
+        k = 2 * int(radius) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel) > 0
+    except Exception:
+        k = 2 * int(radius) + 1
+        im = Image.fromarray(mask.astype(np.uint8) * 255)
+        closed = im.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.MinFilter(k))
+        return np.asarray(closed) > 0
+
+
+def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, threshold=None):
     """Measure missing opaque interior and open seams near material contacts at both gains."""
     roles = {m['id']:m.get('role') for m in modules}
     body = {part['name'] for part in material['parts'] if part.get('enabled', True)
@@ -172,7 +188,12 @@ def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, th
         return {'status':'not_applicable', 'warnings':[], 'levels':{}}, None
     rest = renderer.frame(0., slot_names=body)
     rest_alpha = rest[...,3]
+    long_edge = max(rest_alpha.shape)
+    if threshold is None:
+        scale = max(1.0, long_edge / 1800.0)
+        threshold = int(round(120 * scale * scale))
     edge_guard = max(2, round(min(rest_alpha.shape)*.006))
+    close_radius = max(12, round(min(rest_alpha.shape)*.02))
     interior = np.asarray(Image.fromarray(rest_alpha).filter(ImageFilter.MinFilter(edge_guard*2+1))) >= 180
     contacts, sweep = _rest_contacts(parts_dir, material, body, interior)
     levels, warnings, worst = {}, [], None
@@ -188,7 +209,10 @@ def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, th
             spans = _components(transparent)
             exterior = np.unique(np.concatenate((spans[0], spans[-1], spans[:,0], spans[:,-1])))
             enclosed = transparent & ~np.isin(spans, exterior)
-            missing = (transparent & sweep) | (enclosed & interior)
+            # Only flag exterior transparent pixels inside sweep when they form a genuine seam notch/gap
+            # between moving body parts (filled by closing the moved silhouette), not normal outer drift.
+            closed_pose = _morph_close(~transparent, close_radius)
+            missing = (transparent & sweep & closed_pose) | (enclosed & interior)
             regions = _exposure_regions(missing, contacts)
             for region in regions:
                 region['time'] = time
