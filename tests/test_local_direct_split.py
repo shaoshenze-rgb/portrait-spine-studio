@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src.pipeline.canvas_layer_cleanup import cleanup_layers
+from src.pipeline.canvas_layer_cleanup import cleanup_layers, prepare_canvas_parts
 from src.pipeline.canvas_layer_parts import materialize_canvas_layer_parts
 from src.pipeline.local_body_split import BodyLayer, split_local_body
 
@@ -140,6 +140,42 @@ class TestLocalDirectSplit(unittest.TestCase):
             _, bad_report, _ = cleanup_layers(leaky, src)
             bad_bleeds = [w for w in bad_report["warnings"] if w.get("code") == "local_layer_pixel_bleed"]
             self.assertEqual(len(bad_bleeds), 1)
+
+    def test_local_direct_split_prepare_canvas_parts_cleanup_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest = self._build_fixture(root)
+            # Inject an out-of-silhouette stray pixel so cleanup genuinely rewrites torso.png
+            torso_path = Path(manifest["pieces"][0]["image"])
+            torso_rgba = np.asarray(Image.open(torso_path).convert("RGBA")).copy()
+            torso_rgba[0:3, 0:3] = (240, 240, 240, 200)
+            Image.fromarray(torso_rgba, mode="RGBA").save(torso_path)
+            pre_sha = _sha(torso_path)
+            manifest["pieces"][0]["sha256"] = pre_sha
+            manifest["pieces"][0]["provenance"]["result_asset_sha256"] = pre_sha
+
+            materialize_canvas_layer_parts(manifest, root / "parts_raw", evidence_root=root)
+            plan = {
+                "version": 1,
+                "modules": [
+                    {"id": "torso", "role": "torso", "kind": "rigid", "parent": None, "pivot": [30, 52]},
+                    {"id": "head", "role": "head", "kind": "rigid", "parent": "torso", "pivot": [30, 35]},
+                ],
+            }
+            cleaned_parts_dir, _, _ = prepare_canvas_parts(
+                root / "parts_raw",
+                plan,
+                root / "cleaned",
+                evidence_root=root,
+                cleanup=True,
+            )
+            cleaned = json.loads((cleaned_parts_dir / "parts.json").read_text())
+            torso_entry = next(p for p in cleaned["parts"] if p["name"] == "torso")
+            prov = torso_entry["canvasLayer"]["provenance"]
+            self.assertEqual(prov["operation"], "local-direct-split")
+            self.assertEqual(prov["cleanup_pre_result_sha256"], pre_sha)
+            self.assertEqual(prov["result_asset_sha256"], torso_entry["canvasLayer"]["sha256"])
+            self.assertNotEqual(prov["result_asset_sha256"], pre_sha)
 
 
 if __name__ == "__main__":

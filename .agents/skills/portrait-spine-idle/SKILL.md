@@ -1,6 +1,6 @@
 ---
 name: portrait-spine-idle
-description: 触发词「spine动画」（用户说“spine动画”或“Spine动画”时直接触发）。在对话中接收立绘素材，默认本机直通完成去底、边缘贴合分层、后层桥接补全与 100%/150% 全身压力体检，首轮直出可交互 Studio 实时预览网页；仅复杂遮挡或糊特效时按需局部补一次 Canvas。
+description: 触发词「spine动画」（用户说“spine动画”/“Spine动画”，或在任意对话发角色立绘并说“做个待机动画 / 把这张立绘做成动态待机 / 让立绘动起来 / 生成 Spine 4.2 待机循环 / portrait spine”时都会自动触发）。接收角色立绘素材，默认本机直通完成去底、边缘贴合分层、后层桥接补全与 100%/150% 全身压力体检，首轮直出可交互 Studio 实时预览网页；仅复杂遮挡或糊特效时按需局部补一次 Canvas。不用于普通静态修图或与 Spine 动画无关的问答。
 ---
 
 # Portrait Spine Idle
@@ -13,7 +13,8 @@ description: 触发词「spine动画」（用户说“spine动画”或“Spine�
 
 ## 1. 本机直通准备原图（第 1 轮直接启动，不先调 Canvas）
 
-1. 启动或确认本机 Studio 在线：`python3 bin/start-studio.py --port 8765`（先查 `http://127.0.0.1:8765/api/health`）。
+0. **全局调用仓库定位**：无论当前对话在哪个目录，所有命令先切到本技能软链指向的真实仓库根目录（`~/Documents/claude_code_ssz/projects/portrait-spine-studio`，可由 `dirname "$(realpath <SKILL.md>)"/../../..` 解析），再执行下文命令。
+1. 启动或确认本机 Studio 在线：`python3 bin/start-studio.py --port 8765 --no-open`（先查 `http://127.0.0.1:8765/api/health`；若已在跑但版本过旧不识别 `local-direct-split`，原位重启 `8765`，保留 `.studio-work/` 已有任务不删除）。
 2. 直接读取用户本轮对话附件原图：
    - **已是透明 PNG**：直接进入第 3 步。
    - **带不透明背景（JPG/PNG）**：用 `.venv/bin/python3 scripts/local_matte.py --input <附件原图> --out <透明原图.png> --check-out <去底对照.jpg>` 本机去底，目检 `<去底对照.jpg>` 确认人物轮廓干净、未误抠内部高光。

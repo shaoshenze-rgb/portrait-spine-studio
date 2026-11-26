@@ -331,11 +331,16 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
             layer['enabled']=False;rgba=_read_cleanup_layer(part,parts['canvas'],evidence_root)['rgba']
             report['warnings'].append({'code':'EMPTY_LAYER_DISABLED','layer':layer['id']})
         Image.fromarray(rgba).save(image)
+        cleaned_sha=hashlib.sha256(image.read_bytes()).hexdigest()
+        prov={**part['canvasLayer']['provenance'],'cleanup_source_image':part['canvasLayer']['image']}
+        if prov.get('operation')=='local-direct-split':
+            prov['cleanup_pre_result_sha256']=prov.get('result_asset_sha256')
+            prov['result_asset_sha256']=cleaned_sha
         manifest['pieces'].append({'id':part['name'],'module_id':part['moduleId'],'kind':part['kind'],
             'label':part.get('label'),
             'parent':part['parent'],'pivot':part['pivot'],'draw_order':order,'enabled':layer['enabled'],
-            'image':str(image),'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
-            'provenance':{**part['canvasLayer']['provenance'],'cleanup_source_image':part['canvasLayer']['image']}})
+            'image':str(image),'sha256':cleaned_sha,
+            'provenance':prov})
     result=materialize_canvas_layer_parts(manifest,out/'parts',evidence_root=evidence_root)
     composite=np.asarray(Image.open(result['source']).convert('RGBA'))
     reference=original.copy();reference[recovery_ignore]=0
