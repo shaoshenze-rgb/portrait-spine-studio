@@ -84,16 +84,16 @@ export function createBatchWorkbench({ request, onSelectJob, onClearJob }) {
         presetSel.appendChild(opt);
       }
     }
-    presetSel.value = prof.size_preset || '4k_portrait';
+    presetSel.value = prof.size_preset || 'torchlight_web_60';
     $('bwCustomSizeWrap').hidden = presetSel.value !== 'custom';
     $('bwCustomW').value = prof.width || 2160;
     $('bwCustomH').value = prof.height || 3840;
     $('bwAlign').value = prof.align || 'bottom_center';
-    $('bwUpscalePolicy').value = prof.upscale_policy || 'allow_upscale';
-    $('bwFps').value = String(prof.fps || 30);
+    $('bwUpscalePolicy').value = prof.upscale_policy || 'no_upscale';
+    $('bwFps').value = String(prof.fps || 60);
     $('bwOutputDir').value = prof.output_dir || '';
 
-    const selected = new Set(prof.formats || ['transparent_web']);
+    const selected = new Set(prof.formats || ['torchlight_web']);
     for (const cb of document.querySelectorAll('input[name="bwFormat"]')) {
       cb.checked = selected.has(cb.value);
     }

@@ -24,7 +24,7 @@ python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> 
 
 ## 文件夹批量处理与真 4K 统一导出
 
-面向 20–30 张立绘的批量生产，提供 `scripts/batch_portrait.py` 与批量验收工作台 `http://127.0.0.1:8765/?batch=<batch_id>`：支持直接扫描本地文件夹并行去底并输出 `matte-overview.jpg` 总览图，输入上限放开至 `4096px` 保留真 4K 清晰度；每个角色支持网页内一键「确认锁定」（服务端 `409 JOB_LOCKED` 写保护 + 重启持久化，重扫目录与返修绝不覆盖已确认项）或填备注「打回待修」集中返修；全部过目后可按统一导出规格（默认勾选 **4K 竖屏 2160×3840 + 底边居中对齐 + 透明网页视频**，并支持 4K 横屏/长边 4096/2K/1080p/自定义及多选 Spine 4.2 ZIP / MP4 / HTML）一键批量导出并生成 `batch-export-manifest.json`。
+面向 20–30 张立绘的批量生产，提供 `scripts/batch_portrait.py` 与批量验收工作台 `http://127.0.0.1:8765/?batch=<batch_id>`：支持直接扫描本地文件夹并行去底并输出 `matte-overview.jpg` 总览图，输入上限放开至 `4096px` 保留真 4K 清晰度；每个角色支持网页内一键「确认锁定」（服务端 `409 JOB_LOCKED` 写保护 + 重启持久化，重扫目录与返修绝不覆盖已确认项）或填备注「打回待修」集中返修；全部过目后可按统一导出规格（默认勾选 **官网同款 60帧双档（PC + 手机预乘 H.264 + BT.709 + 无损 `poster.webp` + `media.json`，多核并行渲染且拼接宽 ≤3840 稳 60 帧硬解）**，并支持 4K 横屏/长边 4096/2K/1080p/自定义及多选 Spine 4.2 ZIP / MP4 / HTML）一键批量导出并生成 `batch-export-manifest.json`。
 
 ## 已验证与交付
 

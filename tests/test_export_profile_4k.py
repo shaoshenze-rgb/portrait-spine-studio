@@ -1,4 +1,6 @@
+import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -11,6 +13,7 @@ from src.export.export_profile import (
     DEFAULT_EXPORT_PROFILE,
     compute_canvas_transform,
     export_job_with_profile,
+    export_torchlight_web_package,
     fit_frame_to_profile,
     normalize_export_profile,
     scale_spine_rig_to_profile,
@@ -74,15 +77,28 @@ def _make_minimal_rig(root: Path, *, width: int = 120, height: int = 160, charac
 
 
 class TestExportProfile4K(unittest.TestCase):
-    def test_default_profile_is_4k_portrait_and_transparent_web(self):
+    def test_default_profile_is_torchlight_web_60_dual_tier(self):
         prof = normalize_export_profile()
-        self.assertEqual(prof["size_preset"], "4k_portrait")
-        self.assertEqual(prof["width"], 2160)
-        self.assertEqual(prof["height"], 3840)
+        self.assertEqual(prof["size_preset"], "torchlight_web_60")
         self.assertEqual(prof["align"], "bottom_center")
-        self.assertEqual(prof["formats"], ["transparent_web"])
-        self.assertEqual(prof["fps"], 30)
-        self.assertEqual(DEFAULT_EXPORT_PROFILE["size_preset"], "4k_portrait")
+        self.assertEqual(prof["upscale_policy"], "no_upscale")
+        self.assertEqual(prof["formats"], ["torchlight_web"])
+        self.assertEqual(prof["fps"], 60)
+        self.assertEqual(DEFAULT_EXPORT_PROFILE["size_preset"], "torchlight_web_60")
+        self.assertEqual(DEFAULT_EXPORT_PROFILE["formats"], ["torchlight_web"])
+
+        # Huge 4K portrait stays within 1920 visible width (<=3840 SBS H.264 HW decode) and preserves aspect
+        tr_big = compute_canvas_transform(3000, 4000, {"size_preset": "torchlight_web_60"})
+        self.assertLessEqual(tr_big["out_w"], 1920)
+        self.assertLessEqual(tr_big["out_h"], 2160)
+        self.assertEqual(tr_big["out_w"] % 2, 0)
+        self.assertEqual(tr_big["out_h"] % 2, 0)
+        self.assertAlmostEqual(tr_big["out_w"] / tr_big["out_h"], 3000 / 4000, delta=0.01)
+
+        # Native portrait <= 1920x2160 is kept 1:1 without upscaling or aspect distortion
+        tr_native = compute_canvas_transform(1334, 1568, {"size_preset": "torchlight_web_60"})
+        self.assertEqual((tr_native["out_w"], tr_native["out_h"]), (1334, 1568))
+        self.assertFalse(tr_native["upscaled"])
 
     def test_4k_presets_and_upscale_policy(self):
         tr_4k_v = compute_canvas_transform(1000, 1800, {"size_preset": "4k_portrait", "upscale_policy": "allow_upscale"})
@@ -197,6 +213,97 @@ class TestExportProfile4K(unittest.TestCase):
             f0 = ren.frame(0.0)
             self.assertEqual(f0.shape, (1920, 1080, 4))
             self.assertTrue((f0[..., 3] > 200).any())
+
+
+    def test_export_torchlight_web_60_dual_tier_bt709_and_multicore_parity(self):
+        ff = find_ffmpeg()
+        if not ff:
+            self.skipTest("ffmpeg binary unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rig_dir = _make_minimal_rig(root / "work", width=160, height=220, character="tl_hero")
+            signoff = root / "user-signoff.json"
+            signoff.write_text(json.dumps({"decision": "pass", "reviewer": "tester"}), encoding="utf-8")
+
+            out_single = root / "tl_single"
+            out_multi = root / "tl_multi"
+
+            res1 = export_torchlight_web_package(
+                rig_dir,
+                out_single,
+                character="tl_hero",
+                label="测试英雄",
+                profile={"size_preset": "torchlight_web_60", "fps": 60, "render_workers": 1, "h264_preset": "fast"},
+                ffmpeg_bin=ff,
+                max_frames=10,
+                user_signoff_path=signoff,
+                require_approved=True,
+            )
+            res2 = export_torchlight_web_package(
+                rig_dir,
+                out_multi,
+                character="tl_hero",
+                label="测试英雄",
+                profile={"size_preset": "torchlight_web_60", "fps": 60, "render_workers": 2, "h264_preset": "fast"},
+                ffmpeg_bin=ff,
+                max_frames=10,
+                user_signoff_path=signoff,
+                require_approved=True,
+            )
+
+            self.assertEqual(res1["workers_used"], 1)
+            self.assertEqual(res2["workers_used"], 2)
+            self.assertEqual(res1["high_encoded_size"], res2["high_encoded_size"])
+            self.assertEqual(res1["mobile_encoded_size"], res2["mobile_encoded_size"])
+
+            for out_dir in (out_single, out_multi):
+                for fname in ("idle-high-packed.mp4", "idle-mobile-packed.mp4", "poster.webp", "media.json"):
+                    self.assertTrue((out_dir / fname).is_file(), f"missing {fname}")
+
+            m1 = json.loads((out_single / "media.json").read_text(encoding="utf-8"))
+            m2 = json.loads((out_multi / "media.json").read_text(encoding="utf-8"))
+            self.assertEqual(m1["role"], "tl_hero")
+            self.assertEqual(m1["label"], "测试英雄")
+            self.assertEqual(m1["fps"], 60)
+            self.assertEqual(m1["frames"], 10)
+            self.assertEqual(m1["packing"], "side-by-side")
+            self.assertEqual(m1["rgbAlphaMode"], "premultiplied")
+            self.assertEqual(m1["rgbRect"], [0, 0, 0.5, 1])
+            self.assertEqual(m1["alphaRect"], [0.5, 0, 0.5, 1])
+            self.assertIsNone(m1["crop"])
+            self.assertEqual(m1["master"]["width"], 160)
+            self.assertEqual(m1["master"]["height"], 220)
+            self.assertEqual(len(m1["master"]["alphaUnionBBox"]), 4)
+            self.assertEqual(m1["poster"]["sha256"], m2["poster"]["sha256"])
+
+            for vkey in ("high", "mobile"):
+                v = m1["variants"][vkey]
+                vp = out_single / v["src"]
+                self.assertEqual(v["bytes"], vp.stat().st_size)
+                self.assertEqual(v["sha256"], hashlib.sha256(vp.read_bytes()).hexdigest())
+                self.assertEqual(v["encodedWidth"], v["visibleWidth"] * 2)
+                self.assertLessEqual(v["encodedWidth"], 3840)
+                self.assertEqual(len(v["crop"]), 6)
+                self.assertEqual(v["encoding"]["colorspace"], "bt709")
+
+                probe = subprocess.run([ff, "-i", str(vp)], capture_output=True, text=True)
+                self.assertIn("60 fps", probe.stderr)
+                self.assertIn("bt709", probe.stderr)
+                self.assertIn("yuv420p", probe.stderr)
+
+                f0_png = root / f"f0_{vkey}.png"
+                subprocess.run(
+                    [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", str(vp), "-vframes", "1", str(f0_png)],
+                    check=True,
+                )
+                arr = np.asarray(Image.open(f0_png).convert("RGB"), dtype=np.int16)
+                w = arr.shape[1] // 2
+                left_rgb, right_a = arr[:, :w], arr[:, w:, 0]
+                bg = left_rgb[right_a < 10]
+                self.assertTrue(bg.size > 0)
+                self.assertLessEqual(float(np.median(bg)), 2.0)
+                self.assertLessEqual(float(np.percentile(bg, 95)), 6.0)
+                self.assertTrue((right_a > 200).any())
 
 
 if __name__ == "__main__":

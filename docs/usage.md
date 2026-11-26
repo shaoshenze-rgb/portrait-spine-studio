@@ -142,11 +142,11 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 # 3. 仅拉取用户在批量网页标记「打回待修」的角色与修改备注（绝不含已锁定角色）
 python3 scripts/batch_portrait.py fix-list --batch <batch_id>
 
-# 4. 统一规格批量导出全部已锁定角色（默认 4K 竖屏 2160x3840 + 透明网页视频）
+# 4. 统一规格批量导出全部已锁定角色（默认官网同款 60帧双档：PC+手机预乘 H.264 + poster.webp + media.json）
 python3 scripts/batch_portrait.py export --batch <batch_id> --output-dir <输出目录>
 ```
 
-打开 `http://127.0.0.1:8765/?batch=<batch_id>` 即可进入批量验收台：左侧按红/黄/绿体检灯浏览全部角色，满意点「确认锁定」（服务端返回 `409 JOB_LOCKED` 拒绝任何覆盖修改，重启 Studio 后自动恢复锁定状态），有问题填备注点「打回待修」，全部过目后在顶部面板调整统一导出尺寸（4K 竖/横/长边 4096、2K、1080p、自定义、对齐方式）与格式（默认勾选 `透明网页视频`，可多选 `Spine 4.2 ZIP`、`深浅底 MP4`、`单文件 HTML`）并一键批量导出。
+打开 `http://127.0.0.1:8765/?batch=<batch_id>` 即可进入批量验收台：左侧按红/黄/绿体检灯浏览全部角色，满意点「确认锁定」（服务端返回 `409 JOB_LOCKED` 拒绝任何覆盖修改，重启 Studio 后自动恢复锁定状态），有问题填备注点「打回待修」，全部过目后在顶部面板调整统一导出尺寸（4K 竖/横/长边 4096、2K、1080p、自定义、对齐方式）与格式（默认勾选 `官网同款 60帧双档`，可多选 `VP9 透明 WebM`、`Spine 4.2 ZIP`、`深浅底 MP4`、`单文件 HTML`）并一键批量导出。
 
 ## 连接诊断与返修编排（历史遗留／当前主链停用）
 

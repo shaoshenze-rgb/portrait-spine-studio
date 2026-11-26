@@ -2018,6 +2018,7 @@ class StudioJobManager:
                     char_out,
                     profile,
                     character=char_name,
+                    label=str(item.get("display_name") or char_name),
                     user_signoff_path=signoff_path if signoff_path and signoff_path.is_file() else None,
                     max_frames=max_frames,
                     require_approved=True,

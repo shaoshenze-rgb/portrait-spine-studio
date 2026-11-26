@@ -129,8 +129,9 @@ class TestBatchWorkflow(unittest.TestCase):
             b1 = bm.create_or_rescan_batch(src_dir, name="test-batch")
             bid = b1["batch_id"]
             self.assertEqual(len(b1["items"]), 2)
-            self.assertEqual(b1["export_profile"]["size_preset"], "4k_portrait")
-            self.assertEqual(b1["export_profile"]["formats"], ["transparent_web"])
+            self.assertEqual(b1["export_profile"]["size_preset"], "torchlight_web_60")
+            self.assertEqual(b1["export_profile"]["formats"], ["torchlight_web"])
+            self.assertEqual(b1["export_profile"]["fps"], 60)
 
             item0 = b1["items"][0]
             bm.lock_item(bid, item0["item_id"], revision=1, rig_version=1)
@@ -231,7 +232,7 @@ class TestBatchWorkflow(unittest.TestCase):
                 out_export = root / "final_exports"
                 formats = ["spine_package"]
                 if find_ffmpeg():
-                    formats.insert(0, "transparent_web")
+                    formats.insert(0, "torchlight_web")
                 st_ex, ex_res = self._http(
                     base,
                     f"/api/batches/{bid}/export",
@@ -239,7 +240,12 @@ class TestBatchWorkflow(unittest.TestCase):
                         "async": False,
                         "max_frames": 2,
                         "output_dir": str(out_export),
-                        "export_profile": {"size_preset": "1080p_portrait", "formats": formats, "fps": 30},
+                        "export_profile": {
+                            "size_preset": "torchlight_web_60",
+                            "formats": formats,
+                            "fps": 60,
+                            "h264_preset": "fast",
+                        },
                     },
                 )
                 self.assertEqual(st_ex, 200, ex_res)
@@ -249,8 +255,11 @@ class TestBatchWorkflow(unittest.TestCase):
                 self.assertTrue((out_export / item1["character"] / f"{item1['character']}-spine42.zip").is_file())
                 self.assertFalse((out_export / item2["character"]).exists())
                 if find_ffmpeg():
-                    self.assertTrue((out_export / item1["character"] / f"{item1['character']}-alpha-vp9.webm").is_file())
-                    self.assertTrue((out_export / item1["character"] / f"{item1['character']}-poster.webp").is_file())
+                    cdir = out_export / item1["character"]
+                    self.assertTrue((cdir / "idle-high-packed.mp4").is_file())
+                    self.assertTrue((cdir / "idle-mobile-packed.mp4").is_file())
+                    self.assertTrue((cdir / "poster.webp").is_file())
+                    self.assertTrue((cdir / "media.json").is_file())
 
                 st_un, _ = self._http(base, f"/api/batches/{bid}/items/{item1['item_id']}/unlock", {})
                 self.assertEqual(st_un, 200)

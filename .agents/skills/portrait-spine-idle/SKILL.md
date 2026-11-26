@@ -71,7 +71,7 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 2. **并发读图拆层（2–3 并发受控推进）**：遍历 `pending_split_items`（严禁碰 `locked: true` 角色），按第 2 节为每张图规划中文语义分层并运行 `.venv/bin/python3 scripts/split_local_body.py`，以 `python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts> --plan <plan.json> --cleanup --wait-if-busy` 排队灌入 Studio，跑完后执行 `python3 scripts/batch_portrait.py sync --batch <batch_id>`。
 3. **交付唯一批量验收链接**：提供 `http://127.0.0.1:8765/?batch=<batch_id>` 与 `matte-overview.jpg`。用户在左侧列表按红/黄/绿灯逐张过目，满意即点「确认锁定」（后端 409 硬锁保护），不满意则点「打回待修」并写一句修改备注。
 4. **集中返修打回项**：用户回对话说「修这一批里打回的」时，先运行 `python3 scripts/batch_portrait.py fix-list --batch <batch_id>`，**只针对返回的 `needs_fix` 角色按备注返修**，绝对禁止修改或解锁任何已锁定角色。
-5. **统一规格一键批量导出**：默认已勾选 **`4K 竖屏 (2160×3840)` + `底边居中对齐` + `透明网页视频`（VP9 WebM + Safari Packed H.264 MP4 + 透明首帧 WebP）**，也可在批量网页切换 4K 横屏/长边 4096/2K/1080p/自定义尺寸及加勾 Spine 4.2 ZIP / MP4 / HTML，点击「一键批量导出已锁定角色」或跑 `python3 scripts/batch_portrait.py export --batch <batch_id>` 统一落盘并产出 `batch-export-manifest.json`。
+5. **统一规格一键批量导出**：默认已勾选与火炬官网现有角色 100% 对齐的 **`官网同款 60帧双档`（60fps / 8 秒 / 480 帧多核并行渲染、自动裁透明边且拼接宽控在 ≤3840 显卡硬解线内、预乘 RGB|Alpha 左右拼接 H.264 + BT.709，一次输出 `idle-high-packed.mp4` + `idle-mobile-packed.mp4` + 无损 `poster.webp` + `media.json`）**；也可按需切换 4K 竖/横/长边 4096/2K/1080p/自定义尺寸或加勾 VP9 WebM / Spine 4.2 ZIP / MP4 / HTML，点击「一键批量导出已锁定角色」或跑 `python3 scripts/batch_portrait.py export --batch <batch_id>` 统一落盘并产出 `batch-export-manifest.json`。
 
 ## 红线
 

@@ -965,7 +965,7 @@
 <section id="batchWorkbench" class="batch-shell" hidden aria-label="批量验收与统一导出工作台">
   <header class="bw-header">
     <div class="bw-title-wrap">
-      <p class="bw-kicker">批量验收台 · 默认真 4K + 透明网页视频</p>
+      <p class="bw-kicker">批量验收台 · 默认官网同款 60帧双档（预乘透明 · 4K 硬解线内稳 60 帧）</p>
       <h1 class="bw-title"><span id="bwBatchTitle">批量任务</span><span id="bwBatchIdBadge" class="bw-stat-pill"></span></h1>
       <p id="bwSourceDir" class="bw-path"></p>
     </div>
@@ -1007,8 +1007,8 @@
       <div class="bw-field">
         <label for="bwFps">帧率 (FPS)</label>
         <select id="bwFps" class="bw-select">
-          <option value="30">30 fps（推荐）</option>
-          <option value="60">60 fps</option>
+          <option value="60" selected>60 fps（官网同款推荐）</option>
+          <option value="30">30 fps</option>
           <option value="24">24 fps</option>
           <option value="15">15 fps</option>
         </select>
@@ -1021,14 +1021,15 @@
 
     <div class="bw-formats-row">
       <span style="color:#a9a79d;font-weight:600;font-size:12px;">统一导出格式：</span>
-      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="transparent_web" checked /> 透明网页视频 (VP9 WebM + Safari H.264 + poster.webp)</label>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="torchlight_web" checked /> 官网同款 60帧双档 (PC + 手机预乘 H.264 + poster.webp + media.json)</label>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="transparent_web" /> VP9 透明 WebM (额外兼容)</label>
       <label class="bw-chk"><input type="checkbox" name="bwFormat" value="spine_package" /> Spine 4.2 工程包 (.zip)</label>
       <label class="bw-chk"><input type="checkbox" name="bwFormat" value="preview_mp4" /> 深浅底预览视频 (.mp4)</label>
       <label class="bw-chk"><input type="checkbox" name="bwFormat" value="standalone_html" /> 单文件交互 HTML</label>
     </div>
 
     <div class="bw-export-footer">
-      <div id="bwExportStatus" class="bw-export-status">默认规格：4K 竖屏 (2160×3840) + 透明网页视频。</div>
+      <div id="bwExportStatus" class="bw-export-status">默认规格：官网同款 60帧双档（PC+手机预乘 H.264 + poster.webp + media.json，4K 硬解线内稳 60 帧）。</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button id="bwSaveProfile" type="button" class="bw-btn">保存规格</button>
         <button id="bwRunExport" type="button" class="bw-btn bw-btn-primary" disabled>一键批量导出已锁定角色 (0 张)</button>
