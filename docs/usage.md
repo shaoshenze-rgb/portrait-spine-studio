@@ -15,7 +15,7 @@ python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agi
 
 ## Canvas交接主链
 
-由当前 Cindy 对话调用 Canvas，脚本不代为提交付费任务。先实际读通作品库 original 原件及当前任务原生映射；unauth_cache / unavailable 时停止生成，记录精确字段，待读取恢复。刷新面板或重启 Cindy 不是读取已恢复的证明。
+由当前 Cindy 对话调用 Canvas，脚本不代为提交付费任务。先通过 `read_images(original)` 与宿主注入的只读根路径实际打开原件（不要只查 shell 环境变量 `$LIBRARY_READ_ROOT`）。若全新会话第 1 轮已返回 `available` 但只读映射要到第 2 轮才生效，保留已入板节点、不报故障，附一键 `cindy-ui`「继续并开始拆层」按钮触发下一轮（日常复用已跑通的同一会话不会再停）；若为 `unauth_cache` / `unavailable` / `unauthorized` 或第 2 轮仍无映射，则停止生成并记录精确字段。刷新面板或重启 Cindy 不是读取已恢复的证明。
 
 每张新图默认只对原图做一次顶层 split-layers，优先分开人物本体、悬浮道具、完整武器和独立特效；禁止二、三级递归拆子层。下载层原件、核 SHA，保存真实回执，再对齐：
 

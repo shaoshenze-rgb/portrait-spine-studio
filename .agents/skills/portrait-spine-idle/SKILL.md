@@ -15,7 +15,10 @@ description: 触发词「spine动画」（用户说“spine动画”或“Spine�
 
 默认必须先启动 `python3 bin/start-studio.py --port 8765`，再用 `python3 scripts/portrait_task.py prepare --image <透明原图.png>` 创建任务，保留返回的 job_id 和 `matted.png`。在当前 Cindy 对话调用 Mivo Canvas，脚本本身不提交生成。
 
-提交前先读通作品库原件：`read_images` 请求 original，并通过当前任务的原生读取映射实际打开。`unavailable`、`unauthorized`、`unauth_cache` 或没有映射时停止生成并报告，保留调用额度；不能猜缓存路径或重复收费。
+提交前先读通作品库原件：`read_images` 请求 original，并用宿主注入的只读根路径实际打开（不要只查 shell 环境变量 `$LIBRARY_READ_ROOT`）。按两类处理，均不猜缓存路径、不提前提交付费任务：
+
+- **新会话首轮冷启动**（已返回 `available` 和 `library:assets/...`，仅首轮未挂载只读映射）：不报 `fail`、不让用户去“恢复权限”。保留已入板节点，说明首次登记已完成、点下方按钮进第 2 轮自动生效（后续复用同一会话不会再停），并输出三反引号 `cindy-ui` 一键按钮：`{"version":1,"seq":1,"op":"create","id":"resume-library-mount","kind":"button","props":{"label":"继续并开始拆层","send":"继续"}}`。第 2 轮直接复用画布原节点继续，不重传。
+- **真实读取故障**（`unavailable` / `unauthorized` / `unauth_cache` 或第 2 轮仍无映射）：停止生成并如实报告状态，保留额度。
 
 在本任务生成授权内，对原图只做一次顶层 split-layers：优先分离悬浮道具、完整武器、独立特效和人物本体。保存真实 scene/node/task、原件与 SHA，用 `scripts/canvas_handoff.py import-layers --working-image <当前任务的matted.png>` 对齐。看原图对照，确认对齐可信、主要结构未丢。若人物本体干净但仍是整层，直接在第 2 步本地切分，不重提 Canvas。
 
