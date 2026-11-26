@@ -1,6 +1,6 @@
 # 当前验收状态
 
-更新：2026-11-26。当前主链以[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)和[使用指南](usage.md)为准：启动本机 Studio → 一次顶层粗拆 → 必要时 `scripts/split_local_body.py` 边缘贴合与后层桥接补全 → 净化与 100%/150% 全身压力体检 → 实时网页工作台微调并人工签收导出。下方历史折叠块仅作追溯，不是现行规则。
+更新：2026-11-26。当前主链以[项目 Skill](../.agents/skills/portrait-spine-idle/SKILL.md)和[使用指南](usage.md)为准：**默认本机直通**（启动本机 Studio → 附件透明直用或 `scripts/local_matte.py` 本机去底 → `scripts/split_local_body.py` 边缘贴合与后层桥接补全 → `local-direct-split` 物化与 100%/150% 全身压力体检 → 实时网页工作台微调并人工签收导出）；Mivo Canvas 仅在复杂遮挡或糊特效时按需局部精修。下方历史折叠块仅作追溯，不是现行规则。
 
 | 代表样本 | 最新验收事实 | 正式交付 |
 | --- | --- | --- |

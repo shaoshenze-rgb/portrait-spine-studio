@@ -81,7 +81,7 @@ def inspect_local_layer_warnings(layers, original_rgba):
         derivation = provenance.get('local_derivation')
         if not isinstance(derivation, dict):
             continue
-        parent = derivation.get('parent_aligned_sha256') or provenance.get('result_asset_sha256')
+        parent = derivation.get('parent_aligned_sha256') or derivation.get('source_sha256') or provenance.get('source_asset_sha256') or provenance.get('result_asset_sha256')
         if not parent:
             continue
         family = siblings.setdefault(parent, [])

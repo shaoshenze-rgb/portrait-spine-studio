@@ -1,6 +1,6 @@
 # Portrait Spine Studio
 
-将一张透明立绘制作成可交付的 Spine 待机动画：**一次 Canvas 粗拆 → 净化与原图补底 → 立即出 8 秒预览 → 局部微调、人工签收导出**。身体和武器保形，软饰件轻摆；持续遮住的内容不强补。
+将一张立绘制作成可交付的 Spine 待机动画：**本机直通（按需去底 → 边缘贴合分层与后层桥接补全 → 100%/150% 压力体检 → 立即出 Studio 实时预览网页）→ 人工微调签收导出**。新会话第 1 轮零停顿直出，仅复杂遮挡武器或糊特效时按需局部补一次 Canvas。身体和武器保形，软饰件轻摆；持续遮住的内容不强补。
 
 Cindy 对话负责调用 Canvas、看图和规划图层；本地 Python 工具负责对齐、净化、骨架、渲染和导出。不是全自动语义拆分服务，也不需要安装专用 Cindy 连接插件。项目 Skill 随仓库分发：[四步 SOP](.agents/skills/portrait-spine-idle/SKILL.md)。
 
@@ -20,7 +20,7 @@ python3 bin/start-studio.py --port 8765 --no-open
 python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新输出目录> --evidence-root <任务根> --cleanup --fps 30
 ```
 
-默认一次顶层粗拆，先分开人物、独立道具、武器和特效；人物仍为干净整层时，用 `scripts/split_local_body.py`（底层 `src/pipeline/local_body_split.py`）按真实边缘贴合、前后景分层、后层遮挡桥接补全与深本色垫边切分后合并，不再递归拆子层。公共诊断自动检测同源像素串层、软层大断岛与 100%/150% 满滑块全身露底，红线禁止靠冻住幅度混过检查。仅动态真穿帮且本地处理不足时，才在有效授权内补一次局部 Canvas；作品库原件不可读时先停生成。
+默认本机直通：带背景原图先经 `scripts/local_matte.py` 去底并看三联对照图，透明原图直接经 `scripts/split_local_body.py`（底层 `src/pipeline/local_body_split.py`）按真实边缘贴合、前后景分层、后层遮挡桥接补全与深本色垫边切分，以 `local-direct-split` 来源直进 Studio 实时工作台。公共诊断自动检测同源像素串层、软层大断岛与 100%/150% 满滑块全身露底，红线禁止靠冻住幅度混过检查。仅复杂背景、大面积被挡武器或糊特效且本地补全不足时，才按需补一次 Canvas。
 
 ## 已验证与交付
 

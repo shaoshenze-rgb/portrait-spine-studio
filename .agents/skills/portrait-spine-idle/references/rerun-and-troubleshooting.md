@@ -20,9 +20,13 @@
 
 特效清理从被关闭效果的颜色及范围识别残丝；与主体同色的结构可能受影响，不能宣称对所有新图都无误删。检查清理前后和 `missing_original_regions_raw`：有意移除的效果不等于人物缺件。
 
-## 作品库暂不可读
+## 按需使用 Mivo Canvas 与作品库读取
 
-区分三种状态，优先读宿主注入到会话的只读目录根，不要只凭 shell 环境变量 `$LIBRARY_READ_ROOT` 为空误判：
+默认主链已改为本机直通（`scripts/local_matte.py` + `scripts/split_local_body.py`），新会话第 1 轮无需先经过 Canvas。仅当按需使用 Canvas 补去底或局部补拆时：
+
+0. **放图顺序防错**：调用 `canvas_place_image` 前先调 `canvas_selection` 唤醒并确认面板就绪；若返回 `REFERENCE_LIBRARY_CHANGED`，先 `canvas_selection` 确认再重试一次 `canvas_place_image`，严禁跳过放图直接读取画布上以前选中的旧节点。
+
+随后区分三种读取状态，优先读宿主注入到会话的只读目录根，不要只凭 shell 环境变量 `$LIBRARY_READ_ROOT` 为空误判：
 
 1. **新会话首轮冷启动（`read_images(original)` 已返回 `available`，仅首轮未挂载只读映射）**：不是权限故障。保留已入板节点、暂不提交付费任务，不报 `fail`，给出一键 `cindy-ui` 按钮（`label="继续并开始拆层"`、`send="继续"`）进第 2 轮即可自动生效；后续在同一会话继续做新图不会再停。
 2. **真实不可读（`unauth_cache` / `unavailable` / `unauthorized` 或第 2 轮仍无映射）**：停止新的生成，保留 scene/node/task 与精确诊断，不改账号/全局权限，不猜旧缓存路径。

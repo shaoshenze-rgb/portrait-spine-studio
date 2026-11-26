@@ -1,6 +1,6 @@
 # Portrait Spine Studio 使用指南
 
-默认主链是“启动 Studio 并准备任务 → 一次 Canvas 顶层粗拆 → 对齐到当前任务的 `matted.png` → 按需本地切分并净化补底 → Studio 交互预览、微调和人工签收”。交付必须包含可打开的任务页和单文件 HTML，不只给视频。[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
+默认主链是“启动 Studio → 本机读取/按需去底并准备任务 → `scripts/split_local_body.py` 边缘贴合与后层桥接补全 → 净化与 100%/150% 全身压力体检 → Studio 实时网页微调与人工签收”（首轮零 Canvas 依赖、零停顿）；仅复杂背景、大面积被挡武器或糊特效时按需局部补一次 Canvas。交付必须包含可打开的任务页和单文件 HTML，不只给视频。[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
 
 ## 启动和准备
 
@@ -8,12 +8,20 @@
 
 ```bash
 python3 bin/start-studio.py --port 8765
+# 带不透明背景的 JPG/PNG 先本机去底并看三联对照图：
+.venv/bin/python3 scripts/local_matte.py --input <原始立绘> --out <透明原图.png> --check-out <去底对照.jpg>
 python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agile_full
 ```
 
 服务命令保持运行，prepare 在另一终端执行并返回 job_id。浏览器地址为 http://127.0.0.1:8765/，指运行浏览器那台电脑。已有透明图直接复用；带背景图先取得获授权的真实去底原件。重启不会恢复旧内存任务，保留旧文件后重新 prepare，不伪造恢复。
 
-## Canvas交接主链
+## 按需 Canvas 交接（可选精修）与本地直分来源
+
+默认本地直分走 `scripts/split_local_body.py` 产出各层后，在 `material.json` 中使用一等本地来源 `provenance.operation = "local-direct-split"`（含 `source_asset_sha256`、`result_asset_sha256`、单位 `transform` 和 `local_derivation`，不伪造 Canvas 字段），经 `materialize_canvas_layer_parts` 直接接入 Studio `apply-canvas`。
+
+仅当需要 Canvas 补拆大面积遮挡武器、复杂背景或糊特效时，再走下方 Canvas 交接：调用 `canvas_place_image` 前先 `canvas_selection` 唤醒面板，遇 `REFERENCE_LIBRARY_CHANGED` 重试一次放图，绝不读取画布旧选中节点。
+
+### Canvas交接细节
 
 由当前 Cindy 对话调用 Canvas，脚本不代为提交付费任务。先通过 `read_images(original)` 与宿主注入的只读根路径实际打开原件（不要只查 shell 环境变量 `$LIBRARY_READ_ROOT`）。若全新会话第 1 轮已返回 `available` 但只读映射要到第 2 轮才生效，保留已入板节点、不报故障，附一键 `cindy-ui`「继续并开始拆层」按钮触发下一轮（日常复用已跑通的同一会话不会再停）；若为 `unauth_cache` / `unavailable` / `unauthorized` 或第 2 轮仍无映射，则停止生成并记录精确字段。刷新面板或重启 Cindy 不是读取已恢复的证明。
 

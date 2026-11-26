@@ -87,14 +87,28 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
         provenance = piece.get('provenance')
         if not isinstance(provenance, dict):
             raise ValueError('Canvas provenance required')
-        for key in ('scene_id', 'node_id', 'task_id'):
-            if not isinstance(provenance.get(key), str) or not provenance[key].strip():
-                raise ValueError('Canvas identity missing: ' + key)
-        if provenance.get('operation') not in ('split-layers', 'edit-image', 'remove-background'):
+        op = provenance.get('operation')
+        if op == 'local-direct-split':
+            derivation = provenance.get('local_derivation')
+            if not isinstance(derivation, dict) or not isinstance(derivation.get('method'), str) or not derivation['method'].strip():
+                raise ValueError('Local direct split requires local_derivation.method')
+            parent_sha = derivation.get('parent_aligned_sha256') or derivation.get('source_sha256')
+            if parent_sha != manifest.get('source_sha256'):
+                raise ValueError('Local direct split parent SHA mismatch')
+        elif op in ('split-layers', 'edit-image', 'remove-background'):
+            for key in ('scene_id', 'node_id', 'task_id'):
+                if not isinstance(provenance.get(key), str) or not provenance[key].strip():
+                    raise ValueError('Canvas identity missing: ' + key)
+        else:
             raise ValueError('Unsupported Canvas operation')
         for key in ('source_asset_sha256', 'result_asset_sha256'):
             if not isinstance(provenance.get(key), str) or not re.fullmatch(r'[0-9a-f]{64}', provenance[key]):
                 raise ValueError('Canvas asset SHA missing: ' + key)
+        if op == 'local-direct-split':
+            if provenance['source_asset_sha256'] != manifest.get('source_sha256'):
+                raise ValueError('Local direct split source SHA mismatch')
+            if provenance['result_asset_sha256'] != piece.get('sha256'):
+                raise ValueError('Local direct split result SHA mismatch')
         matrix = np.asarray(provenance.get('transform'), dtype=float)
         if matrix.shape != (2, 3) or not np.isfinite(matrix).all():
             raise ValueError('Invalid registered transform')
