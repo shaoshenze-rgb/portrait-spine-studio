@@ -20,7 +20,7 @@ python3 bin/start-studio.py --port 8765 --no-open
 python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新输出目录> --evidence-root <任务根> --cleanup --fps 30
 ```
 
-默认一次顶层粗拆，目标 5–10 个完整大块，不再递归拆子层；仅动态真穿帮且本地处理不足时，才在有效授权内补一次局部 Canvas。作品库原件不可读时先停生成，不浪费次数。
+默认一次顶层粗拆，先分开人物、独立道具、武器和特效；人物仍为干净整层时，在本地切成完整大块后与 Canvas 层合并，不再递归拆子层。仅动态真穿帮且本地处理不足时，才在有效授权内补一次局部 Canvas；作品库原件不可读时先停生成。
 
 ## 已验证与交付
 

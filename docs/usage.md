@@ -17,7 +17,7 @@ python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agi
 
 由当前 Cindy 对话调用 Canvas，脚本不代为提交付费任务。先实际读通作品库 original 原件及当前任务原生映射；unauth_cache / unavailable 时停止生成，记录精确字段，待读取恢复。刷新面板或重启 Cindy 不是读取已恢复的证明。
 
-每张新图默认只对原图做一次顶层 split-layers，目标 5–10 个完整大块。头、完整四肢、躯干、武器与软饰件按结构分开；特效独立，武器杆身保持完整。禁止二、三级递归拆子层。下载层原件、核 SHA，保存真实回执，再对齐：
+每张新图默认只对原图做一次顶层 split-layers，优先分开人物本体、悬浮道具、完整武器和独立特效；禁止二、三级递归拆子层。下载层原件、核 SHA，保存真实回执，再对齐：
 
 ```bash
 python3 scripts/canvas_handoff.py import-layers --receipt <回执.json> --source <本次Canvas输入.png> --working-image <工作原图.png> --assets-dir <原件目录> --out-dir <新对齐目录>
@@ -32,7 +32,9 @@ python3 scripts/canvas_handoff.py import-layers --receipt <回执.json> --source
 - 材质清单：`version=1`、`material_mode=canvas_layers`、原图路径/SHA、画布尺寸、pieces。每 piece 提供 id、module_id、kind（rigid/soft）、parent、像素 pivot、draw_order、全画布 aligned RGBA 路径/SHA 与真实 provenance（scene/node/task、源/结果资产 SHA、相似变换、operation）。
 - 骨架规划：pose_type、anatomy、modules、connections、occlusions、uncertainties。模块的 parent/pivot/type 与材质对应；连接用真实关节点。grounded 全身需两段刚体腿链及独立静态 foot 锚，airborne 采用浮空动作。规划不是根据文件名自动猜人体。
 
-字段以[材质适配器](../src/pipeline/canvas_layer_parts.py)和[绑定编译器](../src/pipeline/canvas_layer_rig.py)为准。保持完整独立 RGBA，不重新用 SAM 将它们切成互斥碎片。已有标准 parts 可跳过物化；首次从清单物化：
+字段以[材质适配器](../src/pipeline/canvas_layer_parts.py)和[绑定编译器](../src/pipeline/canvas_layer_rig.py)为准。若只拿到干净人物整层，在本地拆为 6–10 个完整语义大块，关节留少量重叠；看图复核后与原独立层合并为同坐标 RGBA。已独立的 Canvas 层不重切。
+
+本地分件的 `provenance` 复用已验证 Canvas 父层的 `scene_id`、`node_id`、`task_id`、`operation`、`source_asset_sha256`、`result_asset_sha256`、`transform`，不将本地切分冒充新操作；附 `provenance.local_derivation` 记录父层对齐图 SHA、方法和掩码。分件自身的 `image` 和 `sha256` 指向本地派生 RGBA。已有标准 parts 可跳过物化；首次从清单物化：
 
 ```python
 import json

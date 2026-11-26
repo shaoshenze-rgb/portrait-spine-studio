@@ -17,11 +17,13 @@ description: 触发词「spine动画」（用户说“spine动画”或“Spine�
 
 提交前先读通作品库原件：`read_images` 请求 original，并通过当前任务的原生读取映射实际打开。`unavailable`、`unauthorized`、`unauth_cache` 或没有映射时停止生成并报告，保留调用额度；不能猜缓存路径或重复收费。
 
-在本任务生成授权内，对原图只做一次顶层 split-layers，目标 5–10 个完整大块：头、躯干、完整四肢、武器、软饰件、独立特效。保存真实 scene/node/task、原件与 SHA，用 `scripts/canvas_handoff.py import-layers` 自动对齐。确认原件可读、对齐可靠且主要结构未丢；失败不递归。
+在本任务生成授权内，对原图只做一次顶层 split-layers（方案 A）：优先分离悬浮道具、完整武器、独立特效和人物本体。保存真实 scene/node/task、原件与 SHA，用 `scripts/canvas_handoff.py import-layers` 自动对齐。看原图对照，确认对齐可信、主要结构未丢。若人物本体干净但仍是整层，直接在第 2 步本地切分，不因层数少而停工、不重提 Canvas。
 
 ## 2. 净化、补底，立即出预览
 
-按真实层结构写材质清单与骨架规划，保留 Canvas 独立 RGBA 与层序；不要再送回 SAM 切成互斥小碎块。用 `materialize_canvas_layer_parts` 生成标准 parts，再运行：
+仅对干净人物整层在本地按语义拆成 6–10 个完整大块（头、躯干、左右臂腿、围巾、衣摆等），关节和交界留轻量遮挡垫边，不切成碎片。已拆开的 Canvas 层直接复用。全层等比保持同画布坐标，处理高度不超过 2400 px。
+
+先看分件对照，确认归属和遮挡关系；把本地人体层与原独立道具、武器和特效合并成 `canvas_layers` RGBA 清单。本地层保留 Canvas 父层的 `provenance`，另记本地派生；`image/sha256` 指向派生图，详细字段见使用指南。按真实结构绑骨，武器随握持手，悬浮道具独立。用 `materialize_canvas_layer_parts` 生成标准 parts，再运行：
 
 ```bash
 python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新输出目录> --evidence-root <共同证据根> --cleanup --fps 30 --tweaks <微调.json>
