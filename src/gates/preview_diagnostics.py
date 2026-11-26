@@ -29,7 +29,7 @@ def _material_masks(parts_dir, material, size, native_size):
         covered |= opaque
         if visible.any():
             provenance = part.get('canvasLayer', {}).get('provenance', {})
-            band = np.asarray(Image.fromarray(visible.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(5))) > 0
+            band = _dilated(visible, 2)
             masks.append((part['name'], part.get('kind') == 'soft',
                           isinstance(provenance.get('local_derivation'), dict), band, visible))
     return masks
@@ -115,8 +115,26 @@ _EXCLUDED_STRESS_ROLES = frozenset({'prop', 'weapon', 'effect_group', 'pet', 'gr
 
 
 def _dilated(mask, radius):
-    return np.asarray(Image.fromarray(mask.astype(np.uint8) * 255)
-                      .filter(ImageFilter.MaxFilter(2 * radius + 1))) > 0
+    if radius <= 0 or not mask.any():
+        return mask
+    try:
+        import cv2
+        k = 2 * int(radius) + 1
+        return cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    except Exception:
+        return np.asarray(Image.fromarray(mask.astype(np.uint8) * 255)
+                          .filter(ImageFilter.MaxFilter(2 * radius + 1))) > 0
+
+
+def _eroded_u8(arr, radius):
+    if radius <= 0:
+        return arr
+    try:
+        import cv2
+        k = 2 * int(radius) + 1
+        return cv2.erode(arr, np.ones((k, k), np.uint8))
+    except Exception:
+        return np.asarray(Image.fromarray(arr).filter(ImageFilter.MinFilter(2 * radius + 1)))
 
 
 def _rest_contacts(parts_dir, material, part_names, reference):
@@ -179,6 +197,191 @@ def _morph_close(mask, radius):
         return np.asarray(closed) > 0
 
 
+def _interior_transparency(alpha, threshold=40):
+    """Return transparent components enclosed by a frame's opaque silhouette."""
+    transparent = np.asarray(alpha) < threshold
+    labels = _components(transparent)
+    border = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
+    return transparent & ~np.isin(labels, border), labels
+
+
+def _hole_records(holes_mask, labels):
+    ids, counts = np.unique(labels[holes_mask], return_counts=True)
+    records = []
+    for cid, area in zip(ids, counts):
+        rows, cols = np.nonzero(labels == cid)
+        r0, r1 = int(rows.min()), int(rows.max()) + 1
+        c0, c1 = int(cols.min()), int(cols.max()) + 1
+        crop = (labels[r0:r1, c0:c1] == cid)
+        records.append((int(cid), int(area), r0, r1, c0, c1, float(rows.mean()), float(cols.mean()), crop))
+    return records
+
+
+def _followed_rest_holes(rest_records, current_holes, current_labels, *, max_shift):
+    """Match only high-confidence rigid copies of pre-existing enclosed alpha holes.
+
+    Requires similar area/aspect and >=88% overlap after centroid translation so any
+    new, widened, or merged crack remains visible to the stress gate.
+    """
+    if not rest_records or not current_holes.any():
+        return np.zeros_like(current_holes)
+    current_records = _hole_records(current_holes, current_labels)
+    matched = np.zeros_like(current_holes)
+    used_rest = set()
+    for cid, c_area, ct, cb, cl, cr, crow, ccol, ccrop in current_records:
+        best = None
+        for r_idx, (_rid, r_area, rt, rb, rl, rr, rrow, rcol, rcrop) in enumerate(rest_records):
+            if r_idx in used_rest:
+                continue
+            area_ratio = c_area / max(1, r_area)
+            if not 0.65 <= area_ratio <= 1.55:
+                continue
+            if not 0.55 <= (cb - ct) / max(1, rb - rt) <= 1.8:
+                continue
+            if not 0.55 <= (cr - cl) / max(1, rr - rl) <= 1.8:
+                continue
+            dy = int(round(crow - rrow))
+            dx = int(round(ccol - rcol))
+            if abs(dy) > max_shift or abs(dx) > max_shift:
+                continue
+            sr0, sr1 = rt + dy, rb + dy
+            sc0, sc1 = rl + dx, rr + dx
+            iy0, iy1 = max(ct, sr0), min(cb, sr1)
+            ix0, ix1 = max(cl, sc0), min(cr, sc1)
+            if iy1 <= iy0 or ix1 <= ix0:
+                continue
+            sub_c = ccrop[iy0 - ct : iy1 - ct, ix0 - cl : ix1 - cl]
+            sub_r = rcrop[iy0 - sr0 : iy1 - sr0, ix0 - sc0 : ix1 - sc0]
+            overlap = int((sub_c & sub_r).sum())
+            if overlap / max(1, c_area) < 0.88 or overlap / max(1, r_area) < 0.88:
+                continue
+            score = overlap / max(c_area, r_area)
+            if best is None or score > best[0]:
+                best = (score, r_idx)
+        if best is not None:
+            used_rest.add(best[1])
+            # Exempt only the predicted old-hole pixels that are still present in
+            # the current component. Any expansion or newly attached crack pixels
+            # must remain in the stress mask.
+            predicted = np.zeros_like(ccrop)
+            predicted[iy0 - ct : iy1 - ct, ix0 - cl : ix1 - cl] = sub_r
+            matched[ct:cb, cl:cr] |= predicted & ccrop
+    return matched
+
+
+def _build_anchor_unwarper(renderer, modules):
+    """Return ``(anchor_bone, unwarp_fn)`` registering pose alpha back to rest anchor frame.
+
+    Eliminates false positives caused by rigid whole-body breathing/floating translation
+    of pre-existing artwork holes and concave silhouettes, while preserving 100% of
+    relative seam tears between moving child parts.
+    """
+    sk = getattr(renderer, 'sk', None)
+    if (
+        sk is None
+        or not hasattr(sk, 'by_name')
+        or not hasattr(renderer, 'pose')
+        or not hasattr(renderer, 'origin_x')
+        or not hasattr(renderer, 'origin_y')
+        or not hasattr(renderer, '_canvas_sx')
+        or not hasattr(renderer, '_canvas_sy')
+    ):
+        return None, lambda alpha, _t, _g: alpha
+
+    anchor_mod = next(
+        (m for m in modules if m.get('parent') is None and m.get('bone') in sk.by_name),
+        None,
+    )
+    if anchor_mod is None:
+        anchor_mod = next(
+            (m for m in modules if m.get('role') in ('torso', 'body') and m.get('bone') in sk.by_name),
+            None,
+        )
+    if anchor_mod is None:
+        return None, lambda alpha, _t, _g: alpha
+
+    anchor_bone = anchor_mod['bone']
+    ox, oy = float(renderer.origin_x), float(renderer.origin_y)
+    sx, sy = float(renderer._canvas_sx), float(renderer._canvas_sy)
+    F = np.array([[sx, 0.0, ox * sx], [0.0, -sy, oy * sy], [0.0, 0.0, 1.0]], dtype=np.float64)
+    F_inv = np.linalg.inv(F)
+
+    def _bone_mat(t, g):
+        renderer.pose(t, gain=g)
+        b = sk.by_name[anchor_bone]
+        return np.array([[b.a, b.b, b.worldX], [b.c, b.d, b.worldY], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    M0 = _bone_mat(0.0, 1.0)
+
+    def _unwarp(alpha_2d, t, g):
+        Mt = _bone_mat(t, g)
+        try:
+            P_inv = F @ M0 @ np.linalg.inv(Mt) @ F_inv
+        except np.linalg.LinAlgError:
+            return alpha_2d
+        if np.allclose(P_inv, np.eye(3), atol=1e-3):
+            return alpha_2d
+        h, w = alpha_2d.shape[:2]
+        try:
+            import cv2
+            return cv2.warpAffine(
+                alpha_2d,
+                P_inv[:2, :],
+                (w, h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+        except Exception:
+            try:
+                P_fwd = np.linalg.inv(P_inv)
+            except np.linalg.LinAlgError:
+                return alpha_2d
+            coeffs = (
+                float(P_fwd[0, 0]), float(P_fwd[0, 1]), float(P_fwd[0, 2]),
+                float(P_fwd[1, 0]), float(P_fwd[1, 1]), float(P_fwd[1, 2]),
+            )
+            return np.asarray(
+                Image.fromarray(alpha_2d).transform((w, h), Image.Transform.AFFINE, coeffs, resample=Image.Resampling.BILINEAR)
+            )
+
+    return anchor_bone, _unwarp
+
+
+def _is_two_sided_exterior_notch(renderer, unwarp_fn, region, time, gain, border_px, enclosed_mask):
+    """Verify that an exterior notch > threshold actually borders >=2 layers in the moved pose.
+
+    Enclosed holes are always real and never filtered. For exterior open notches on a real
+    SpineRenderer, if <=1 of the matched contact layers borders the region in the moved pose
+    (e.g., two free-hanging ribbons swaying the same way leaving vacated exterior air),
+    it is vacated outer air rather than a torn seam between two layers.
+    """
+    x0, y0, x1, y1 = region['bbox']
+    if enclosed_mask[y0:y1, x0:x1].any():
+        return True
+    if getattr(renderer, 'sk', None) is None:
+        return True
+    layers = region.get('layers') or []
+    if len(layers) < 2:
+        return True
+    h, w = enclosed_mask.shape[:2]
+    pad = 12
+    rx0, ry0 = max(0, x0 - pad), max(0, y0 - pad)
+    rx1, ry1 = min(w, x1 + pad), min(h, y1 + pad)
+    touching = 0
+    for lname in layers:
+        try:
+            layer_frame = renderer.frame(time, gain=gain, slot_names={lname})
+        except Exception:
+            return True
+        layer_alpha = unwarp_fn(layer_frame[..., 3], time, gain)
+        if int((layer_alpha[ry0:ry1, rx0:rx1] >= 120).sum()) >= 16:
+            touching += 1
+            if touching >= 2:
+                return True
+    return False
+
+
 def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, threshold=None):
     """Measure missing opaque interior and open seams near material contacts at both gains."""
     roles = {m['id']:m.get('role') for m in modules}
@@ -194,8 +397,12 @@ def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, th
         threshold = int(round(120 * scale * scale))
     edge_guard = max(2, round(min(rest_alpha.shape)*.006))
     close_radius = max(12, round(min(rest_alpha.shape)*.02))
-    interior = np.asarray(Image.fromarray(rest_alpha).filter(ImageFilter.MinFilter(edge_guard*2+1))) >= 180
+    interior = _eroded_u8(rest_alpha, edge_guard) >= 180
+    max_hole_shift = max(12, round(min(rest_alpha.shape) * .18))
+    rest_holes_mask, rest_holes_labels = _interior_transparency(rest_alpha)
+    rest_hole_records = _hole_records(rest_holes_mask, rest_holes_labels)
     contacts, sweep = _rest_contacts(parts_dir, material, body, interior)
+    anchor_bone, unwarp_fn = _build_anchor_unwarper(renderer, modules)
     levels, warnings, worst = {}, [], None
     extreme = None
     largest_motion = -1
@@ -205,17 +412,25 @@ def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, th
             if time == 0:
                 continue
             pose = renderer.frame(time, gain=gain, slot_names=body)
-            transparent = pose[...,3] < 40
+            aligned_alpha = unwarp_fn(pose[...,3], time, gain)
+            transparent = aligned_alpha < 40
             spans = _components(transparent)
             exterior = np.unique(np.concatenate((spans[0], spans[-1], spans[:,0], spans[:,-1])))
             enclosed = transparent & ~np.isin(spans, exterior)
             # Only flag exterior transparent pixels inside sweep when they form a genuine seam notch/gap
             # between moving body parts (filled by closing the moved silhouette), not normal outer drift.
             closed_pose = _morph_close(~transparent, close_radius)
-            missing = (transparent & sweep & closed_pose) | (enclosed & interior)
-            regions = _exposure_regions(missing, contacts)
-            for region in regions:
+            followed_holes = _followed_rest_holes(rest_hole_records, enclosed, spans, max_shift=max_hole_shift)
+            missing = ((transparent & sweep & closed_pose) | (enclosed & interior)) & ~followed_holes
+            raw_regions = _exposure_regions(missing, contacts)
+            regions = []
+            for region in raw_regions:
+                if region['area_px'] > threshold and not _is_two_sided_exterior_notch(
+                    renderer, unwarp_fn, region, time, gain, edge_guard, enclosed & interior
+                ):
+                    continue
                 region['time'] = time
+                regions.append(region)
             area = sum(region['area_px'] for region in regions)
             if gain == 1.5:
                 motion = int(((pose[...,3] >= 120) != (rest_alpha >= 120)).sum())
@@ -234,10 +449,10 @@ def inspect_exposure_stress(renderer, parts_dir, material, modules, times, *, th
             warnings.append({'code':'max_slider_exposure','gain':gain,'peak_exposure_px':peak,'largest_region_px':largest})
     return {'status':'fail' if warnings else 'pass','threshold_px':threshold,'sample_times':list(times),
             'levels':levels,'warnings':warnings,'contact_pairs':[pair for pair, _, _ in contacts],
-            'edge_guard_px':edge_guard,'body_layer_count':len(body)}, worst or (
+            'edge_guard_px':edge_guard,'body_layer_count':len(body),
+            'anchor_registered':anchor_bone is not None,'anchor_bone':anchor_bone}, worst or (
                 ({'time':extreme[0], 'area_px':0, 'bbox':[0,0,rest.shape[1],rest.shape[0]], 'layers':[]},extreme[1])
                 if extreme else None)
-
 
 def render_layer_sheet(parts_dir, material, out_dir):
     parts = sorted(material['parts'], key=lambda part: part['drawOrder'])

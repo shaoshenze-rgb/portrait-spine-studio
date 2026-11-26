@@ -17,7 +17,7 @@ python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agi
 
 ## 按需 Canvas 交接（可选精修）与本地直分来源
 
-默认本地直分走 `scripts/split_local_body.py` 产出各层后，在 `material.json` 中使用一等本地来源 `provenance.operation = "local-direct-split"`（含 `source_asset_sha256`、`result_asset_sha256`、单位 `transform` 和 `local_derivation`，不伪造 Canvas 字段），经 `materialize_canvas_layer_parts` 直接接入 Studio `apply-canvas`。
+若同目录存在多图层 `.psd` 原画源文件，优先走通用工具 `scripts/psd_split_parts.py inspect`（导出索引表与图层面检总览）+ `scripts/psd_split_parts.py split`（结构层归属、跨件高光自动归原部件、保留遮挡原绘+自动垫边与 4K 去灰白毛边）直接生成 `material.json`；无可用多图层 PSD 时走 `scripts/split_local_body.py` 产出各层后，在 `material.json` 中使用一等本地来源 `provenance.operation = "local-direct-split"`（含 `source_asset_sha256`、`result_asset_sha256`、单位 `transform` 和 `local_derivation`，不伪造 Canvas 字段），经 `materialize_canvas_layer_parts` 直接接入 Studio `apply-canvas`。
 
 仅当需要 Canvas 补拆大面积遮挡武器、复杂背景或糊特效时，再走下方 Canvas 交接：调用 `canvas_place_image` 前先 `canvas_selection` 唤醒面板，遇 `REFERENCE_LIBRARY_CHANGED` 重试一次放图，绝不读取画布旧选中节点。
 

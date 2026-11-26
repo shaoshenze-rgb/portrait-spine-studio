@@ -13,7 +13,112 @@ from .local_body_split import separated_soft_islands
 
 
 def dilate(mask, radius=1):
-    return np.asarray(Image.fromarray(mask.astype('uint8')*255).filter(ImageFilter.MaxFilter(radius*2+1))) > 0
+    try:
+        import cv2
+        k = int(radius) * 2 + 1
+        return cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    except Exception:
+        return np.asarray(Image.fromarray(mask.astype('uint8')*255).filter(ImageFilter.MaxFilter(radius*2+1))) > 0
+
+
+def defringe_rgba(rgba, *, max_radius=None):
+    """Decontaminate white or desaturated mid-gray halo on semi-transparent edges.
+
+    Scales search radius with resolution (3px at <=1600px up to 10px at 4K),
+    preserves opaque pixels (alpha >= 245), preserves alpha smoothness, and
+    leaves saturated glowing VFX edges untouched.
+    """
+    layer = np.asarray(rgba, dtype=np.uint8).copy()
+    if layer.ndim != 3 or layer.shape[2] != 4 or not layer.size:
+        return layer, 0
+    h, w = layer.shape[:2]
+    alpha = layer[..., 3]
+    solid = alpha >= 245
+    semi = (alpha > 3) & (alpha < 245)
+    if not solid.any() or not semi.any():
+        return layer, 0
+
+    steps = (
+        max(3, min(10, int(round(3.0 * max(h, w) / 1600.0))))
+        if max_radius is None
+        else max(1, int(max_radius))
+    )
+
+    # Restrict work to the tight ROI around semi-transparent pixels for 4K speed
+    ys, xs = np.nonzero(semi)
+    margin = steps + 2
+    y0, y1 = max(0, int(ys.min()) - margin), min(h, int(ys.max()) + margin + 1)
+    x0, x1 = max(0, int(xs.min()) - margin), min(w, int(xs.max()) + margin + 1)
+
+    sub_rgb = layer[y0:y1, x0:x1, :3].astype(np.float32)
+    sub_solid = solid[y0:y1, x0:x1]
+    sub_semi = semi[y0:y1, x0:x1]
+    if not sub_solid.any():
+        return layer, 0
+
+    colors = None
+    reachable = None
+    try:
+        import cv2
+
+        dist, labels = cv2.distanceTransformWithLabels(
+            (~sub_solid).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL
+        )
+        s_rows, s_cols = np.nonzero(sub_solid)
+        sr = s_rows[labels - 1]
+        sc = s_cols[labels - 1]
+        colors = sub_rgb[sr, sc]
+        reachable = dist <= float(steps) + 0.5
+    except Exception:
+        known = sub_solid.copy()
+        colors = sub_rgb.copy()
+        sh, sw = sub_solid.shape
+        for _ in range(steps):
+            sums = np.zeros_like(colors)
+            counts = np.zeros((sh, sw), np.float32)
+            pad = np.pad(known, 1)
+            cp = np.pad(colors, ((1, 1), (1, 1), (0, 0)))
+            for dy, dx in ((0, 1), (2, 1), (1, 0), (1, 2)):
+                k = pad[dy : dy + sh, dx : dx + sw]
+                sums += cp[dy : dy + sh, dx : dx + sw] * k[..., None]
+                counts += k
+            take_step = (~known) & (counts > 0)
+            if not take_step.any():
+                break
+            colors[take_step] = sums[take_step] / counts[take_step, None]
+            known |= take_step
+        reachable = known
+
+    edge = sub_semi & reachable
+    if not edge.any():
+        return layer, 0
+
+    px_rgb = sub_rgb
+    px_max = px_rgb.max(axis=2)
+    px_min = px_rgb.min(axis=2)
+    px_chroma = px_max - px_min
+    px_sat = px_chroma / np.maximum(px_max, 1.0)
+    px_lum = 0.299 * px_rgb[..., 0] + 0.587 * px_rgb[..., 1] + 0.114 * px_rgb[..., 2]
+
+    in_max = colors.max(axis=2)
+    in_min = colors.min(axis=2)
+    in_sat = (in_max - in_min) / np.maximum(in_max, 1.0)
+    in_lum = 0.299 * colors[..., 0] + 0.587 * colors[..., 1] + 0.114 * colors[..., 2]
+
+    # 1) White/bright backdrop spill (preserving saturated glowing VFX edges)
+    white_halo = ((px_rgb - colors).mean(axis=2) > 12.0) & (px_sat <= in_sat + 0.08)
+    # 2) Desaturated neutral mid-gray backdrop spill on colored/dark armor & cloth
+    gray_halo = (
+        (in_sat >= 0.18)
+        & (px_sat <= in_sat - 0.14)
+        & ((px_lum - in_lum) > 12.0)
+        & (px_chroma <= 28.0)
+    )
+    take = edge & (white_halo | gray_halo)
+    count = int(take.sum())
+    if count:
+        layer[y0:y1, x0:x1, :3][take] = np.rint(colors[take]).clip(0, 255).astype(np.uint8)
+    return layer, count
 
 
 def clean_layer(layer_rgba, original_rgba, *, effect_mode='keep'):
@@ -29,21 +134,8 @@ def clean_layer(layer_rgba, original_rgba, *, effect_mode='keep'):
              'effect_mode':effect_mode}
     layer[~fg] = 0
     layer[layer[...,3] <= 3] = 0
-    alpha = layer[...,3]
-    # Propagate nearby opaque interior colors into white-contaminated fringes.
-    known = alpha >= 245; colors = layer[...,:3].astype(np.float32)
-    for _ in range(3):
-        sums=np.zeros_like(colors); counts=np.zeros(alpha.shape,np.float32)
-        pad=np.pad(known,1); cp=np.pad(colors,((1,1),(1,1),(0,0)))
-        for dy,dx in ((0,1),(2,1),(1,0),(1,2)):
-            k=pad[dy:dy+alpha.shape[0],dx:dx+alpha.shape[1]]
-            sums += cp[dy:dy+alpha.shape[0],dx:dx+alpha.shape[1]]*k[...,None];counts+=k
-        take=(~known)&(counts>0);colors[take]=sums[take]/counts[take,None];known |= take
-    edge=(alpha>3)&(alpha<245)&known
-    white_bias=(layer[...,:3].astype(float)-colors).mean(axis=2)>12
-    take=edge&white_bias
-    layer[...,:3][take]=np.rint(colors[take]).astype('uint8')
-    stats['defringed_pixels']=int(take.sum())
+    layer, defringed_px = defringe_rgba(layer)
+    stats['defringed_pixels'] = int(defringed_px)
     if effect_mode == 'original_extract':
         rgb=original_rgba[...,:3].astype(float)
         warm=(rgb[...,0]>150)&(rgb[...,0]>rgb[...,1]*1.15)&(rgb[...,1]>rgb[...,2]*1.1)
