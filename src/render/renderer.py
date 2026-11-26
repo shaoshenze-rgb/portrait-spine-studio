@@ -218,6 +218,7 @@ class SpineRenderer:
         kernel: str = "cubic",
         ss: int = 1,
         anim: str = "idle",
+        render_scale: float = 1.0,
     ):
         self.rig_dir = Path(rig_dir).resolve()
         self.spine_path = _resolve_spine_json(self.rig_dir, spine_json_path)
@@ -241,6 +242,18 @@ class SpineRenderer:
             if "canvas" in rep:
                 self.width, self.height = int(rep["canvas"][0]), int(rep["canvas"][1])
 
+        self.source_width = self.width
+        self.source_height = self.height
+        scale = float(render_scale)
+        if not (0.0 < scale <= 1.0):
+            raise ValueError(f"render_scale must be in (0, 1], got {render_scale}")
+        self.render_scale = scale
+        if scale < 1.0:
+            self.width = max(2, int(round(self.source_width * scale)) // 2 * 2)
+            self.height = max(2, int(round(self.source_height * scale)) // 2 * 2)
+        self._canvas_sx = self.width / float(self.source_width)
+        self._canvas_sy = self.height / float(self.source_height)
+
         img_rel = sk_meta.get("images", "./images/")
         self.tex: Dict[str, np.ndarray] = {}
         for slot in self.sk.slots:
@@ -252,7 +265,11 @@ class SpineRenderer:
             self.tex[slot["name"]] = pm
 
     def to_canvas(self, world: np.ndarray) -> np.ndarray:
-        return np.stack([world[:, 0] + self.origin_x, self.origin_y - world[:, 1]], axis=1)
+        cx = world[:, 0] + self.origin_x
+        cy = self.origin_y - world[:, 1]
+        if self.render_scale < 1.0:
+            return np.stack([cx * self._canvas_sx, cy * self._canvas_sy], axis=1)
+        return np.stack([cx, cy], axis=1)
 
     def pose(self, t: Optional[float] = None, gain: float = 1.0) -> None:
         if t is None:

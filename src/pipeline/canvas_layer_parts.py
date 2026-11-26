@@ -51,7 +51,7 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
     pieces = manifest.get('pieces')
     if not isinstance(pieces, list) or not 2 <= len(pieces) <= 128:
         raise ValueError('Expected multiple declared layer pieces')
-    if len(pieces) * size[0] * size[1] > 128_000_000:
+    if len(pieces) * size[0] * size[1] > 1_024_000_000:
         raise ValueError('Layer canvas batch exceeds materialization budget')
     out = Path(out_dir).absolute()
     try:

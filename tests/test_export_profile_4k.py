@@ -306,5 +306,59 @@ class TestExportProfile4K(unittest.TestCase):
                 self.assertTrue((right_a > 200).any())
 
 
+    def test_renderer_render_scale_and_4k_layer_materialization_budget(self):
+        from src.pipeline.canvas_layer_parts import materialize_canvas_layer_parts
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rig_dir = _make_minimal_rig(root / "work", width=160, height=220, character="scale_hero")
+            ren_half = SpineRenderer(rig_dir, render_scale=0.5)
+            self.assertEqual((ren_half.width, ren_half.height), (80, 110))
+            f0 = ren_half.frame(0.0)
+            self.assertEqual(f0.shape, (110, 80, 4))
+            self.assertTrue((f0[..., 3] > 200).any())
+
+            # Verify 4K multi-layer manifest (>128M total pixels) passes budget check
+            src_path = root / "src_4k.png"
+            layer_path = root / "layer_4k.png"
+            img = Image.new("RGBA", (4096, 4096), (0, 0, 0, 0))
+            px = np.zeros((4096, 4096, 4), dtype=np.uint8)
+            px[100:200, 100:200] = (200, 120, 60, 255)
+            Image.fromarray(px).save(src_path)
+            Image.fromarray(px).save(layer_path)
+            sha = hashlib.sha256(src_path.read_bytes()).hexdigest()
+            pieces = []
+            for idx in range(10):  # 10 * 4096 * 4096 = 167.7M > old 128M cap
+                pieces.append({
+                    "id": f"part_{idx}",
+                    "module_id": f"part_{idx}",
+                    "parent": None if idx == 0 else "part_0",
+                    "kind": "rigid",
+                    "pivot": [150, 150],
+                    "draw_order": idx,
+                    "image": str(layer_path),
+                    "sha256": sha,
+                    "provenance": {
+                        "operation": "local-direct-split",
+                        "source_asset_sha256": sha,
+                        "result_asset_sha256": sha,
+                        "transform": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "local_derivation": {"method": "edge_refined_seed_mask", "parent_aligned_sha256": sha},
+                    },
+                })
+            out = materialize_canvas_layer_parts(
+                {
+                    "version": 1,
+                    "material_mode": "canvas_layers",
+                    "source_image": str(src_path),
+                    "source_sha256": sha,
+                    "image_size": [4096, 4096],
+                    "pieces": pieces,
+                },
+                root / "parts_4k",
+                evidence_root=root,
+            )
+            self.assertEqual(len(out["parts"]), 10)
+
+
 if __name__ == "__main__":
     unittest.main()

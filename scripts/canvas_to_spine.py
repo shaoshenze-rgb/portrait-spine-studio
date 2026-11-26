@@ -6,9 +6,13 @@ No Canvas requests, service process, ownership slicing or automatic signoff.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 import json
+import multiprocessing
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -21,6 +25,132 @@ from src.pipeline.canvas_layer_rig import compile_canvas_layer_bindings
 from src.pipeline.build_rig import build_rig
 from src.render.renderer import SpineRenderer, find_ffmpeg, write_preview_mp4, over_bg
 from src.export.exporter import export_standalone_html
+
+
+
+_C2S_RENDERER = None
+
+
+def _c2s_ensure_pythonpath() -> None:
+    root_str = str(ROOT)
+    cur = os.environ.get('PYTHONPATH', '')
+    parts = [x for x in cur.split(os.pathsep) if x]
+    if root_str not in parts:
+        os.environ['PYTHONPATH'] = os.pathsep.join([root_str] + parts)
+
+
+def _c2s_worker_count(total_frames: int, long_edge: int) -> int:
+    if total_frames <= 12 or long_edge <= 360 or multiprocessing.current_process().name != 'MainProcess':
+        return 1
+    cpus = os.cpu_count() or 4
+    return max(1, min(12, cpus - 2, total_frames))
+
+
+def _c2s_init_worker(rig_dir_str: str, render_scale: float) -> None:
+    global _C2S_RENDERER
+    _C2S_RENDERER = SpineRenderer(rig_dir_str, render_scale=render_scale)
+
+
+def _c2s_render_time_worker(t: float):
+    assert _C2S_RENDERER is not None
+    return t, _C2S_RENDERER.frame(t)
+
+
+def _c2s_render_dual_rgb_worker(task):
+    idx, t = task
+    assert _C2S_RENDERER is not None
+    pm = _C2S_RENDERER.frame(t)
+    dark = over_bg(pm, (17, 17, 17))
+    light = over_bg(pm, (221, 221, 221))
+    h, w = dark.shape[:2]
+    ew, eh = w + (w % 2), h + (h % 2)
+    if ew != w or eh != h:
+        d_pad = np.full((eh, ew, 3), (17, 17, 17), dtype=np.uint8)
+        l_pad = np.full((eh, ew, 3), (221, 221, 221), dtype=np.uint8)
+        d_pad[:h, :w] = dark
+        l_pad[:h, :w] = light
+        dark, light = d_pad, l_pad
+    return idx, np.ascontiguousarray(dark).tobytes(), np.ascontiguousarray(light).tobytes()
+
+
+def _render_times_parallel(rig_dir: Path, times, *, render_scale: float, workers: int):
+    if workers <= 1:
+        ren = SpineRenderer(rig_dir, render_scale=render_scale)
+        return {t: ren.frame(t) for t in times}
+    _c2s_ensure_pythonpath()
+    out = {}
+    with ProcessPoolExecutor(max_workers=workers, initializer=_c2s_init_worker, initargs=(str(rig_dir), render_scale)) as pool:
+        for t, frame in pool.map(_c2s_render_time_worker, times):
+            out[t] = frame
+    return out
+
+
+def _preview_ffmpeg_cmd(ffmpeg_bin: str, out_path: Path, ew: int, eh: int, fps: int):
+    return [
+        ffmpeg_bin, '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{ew}x{eh}', '-r', str(fps), '-i', '-',
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an',
+        str(out_path),
+    ]
+
+
+def _stream_dual_preview_mp4s(rig_dir: Path, dark_path: Path, light_path: Path, *, total: int, fps: int, render_scale: float, ffmpeg_bin: str, workers: int) -> None:
+    probe = SpineRenderer(rig_dir, render_scale=render_scale)
+    ew = probe.width + (probe.width % 2)
+    eh = probe.height + (probe.height % 2)
+    p_dark = subprocess.Popen(_preview_ffmpeg_cmd(ffmpeg_bin, dark_path, ew, eh, fps), stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    p_light = subprocess.Popen(_preview_ffmpeg_cmd(ffmpeg_bin, light_path, ew, eh, fps), stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    tasks = [(i, i / float(fps)) for i in range(total)]
+    try:
+        assert p_dark.stdin is not None and p_light.stdin is not None
+        if workers <= 1:
+            for idx, t in tasks:
+                pm = probe.frame(t)
+                dark = over_bg(pm, (17, 17, 17))
+                light = over_bg(pm, (221, 221, 221))
+                if ew != probe.width or eh != probe.height:
+                    d_pad = np.full((eh, ew, 3), (17, 17, 17), dtype=np.uint8)
+                    l_pad = np.full((eh, ew, 3), (221, 221, 221), dtype=np.uint8)
+                    d_pad[:probe.height, :probe.width] = dark
+                    l_pad[:probe.height, :probe.width] = light
+                    dark, light = d_pad, l_pad
+                p_dark.stdin.write(np.ascontiguousarray(dark).tobytes())
+                p_light.stdin.write(np.ascontiguousarray(light).tobytes())
+                if idx % max(1, fps) == 0:
+                    print(f'render {idx}/{total}', flush=True)
+        else:
+            _c2s_ensure_pythonpath()
+            in_flight = max(workers * 2, 16)
+            pending = deque()
+            it = iter(tasks)
+            with ProcessPoolExecutor(max_workers=workers, initializer=_c2s_init_worker, initargs=(str(rig_dir), render_scale)) as pool:
+                for _ in range(min(in_flight, total)):
+                    pending.append(pool.submit(_c2s_render_dual_rgb_worker, next(it)))
+                while pending:
+                    idx, d_bytes, l_bytes = pending.popleft().result()
+                    nxt = next(it, None)
+                    if nxt is not None:
+                        pending.append(pool.submit(_c2s_render_dual_rgb_worker, nxt))
+                    p_dark.stdin.write(d_bytes)
+                    p_light.stdin.write(l_bytes)
+                    if idx % max(1, fps) == 0:
+                        print(f'render {idx}/{total}', flush=True)
+        p_dark.stdin.close()
+        p_light.stdin.close()
+        err_d = p_dark.stderr.read().decode('utf-8', errors='replace') if p_dark.stderr else ''
+        err_l = p_light.stderr.read().decode('utf-8', errors='replace') if p_light.stderr else ''
+        if p_dark.wait() != 0:
+            raise RuntimeError(f'preview-dark encode failed: {err_d}')
+        if p_light.wait() != 0:
+            raise RuntimeError(f'preview-light encode failed: {err_l}')
+    finally:
+        for proc in (p_dark, p_light):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if proc.stderr is not None:
+                proc.stderr.close()
 
 
 def _pm(image):
@@ -95,21 +225,46 @@ def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_p
     total = round(duration * fps)
     key_times = [0., 1.5, 3., 4.5, 6.]
     frames_at = {}
-    # Keep full native resolution without retaining gigabytes of frames in RAM.
-    with tempfile.TemporaryDirectory(prefix='render-spool-', dir=out) as tmp:
-        frames = np.memmap(Path(tmp) / 'frames.rgba', mode='w+', dtype='uint8',
-                           shape=(total, renderer.height, renderer.width, 4))
-        for i in range(total):
-            frames[i] = renderer.frame(i / fps)
-            if i % max(1, fps) == 0: print(f'render {i}/{total}', flush=True)
-        dynamic_frames = {i*.5: frames[round(i*.5*fps)].copy() for i in range(16)}
+    long_edge = max(renderer.width, renderer.height)
+    preview_scale = min(1.0, 1280.0 / float(long_edge)) if long_edge > 1600 else 1.0
+    use_workers = _c2s_worker_count(total, long_edge)
+
+    if preview_scale < 1.0 or use_workers > 1:
+        # 1. Full native resolution (4K exact) for the 16 diagnostic/keyframe poses
+        diag_times = sorted({round(i * 0.5, 6) for i in range(16)} | {round(t, 6) for t in key_times})
+        diag_map = _render_times_parallel(rig_dir, diag_times, render_scale=1.0, workers=min(use_workers, len(diag_times)))
+        dynamic_frames = {i * 0.5: diag_map[round(i * 0.5, 6)] for i in range(16)}
         for t in key_times:
-            frames_at[t] = (frames[round(t*fps)].copy() if round(t*fps) < total else renderer.frame(t))
-        frame_zero = frames[0].copy()
-        for theme, bg in [('dark', (17, 17, 17)), ('light', (221, 221, 221))]:
-            write_preview_mp4(FrameSequence(frames), out / f'{character}-preview-{theme}.mp4',
-                              bg=bg, fps=fps, ffmpeg_bin=ffmpeg)
-        del frames
+            frames_at[t] = diag_map[round(t, 6)]
+        frame_zero = diag_map[0.0]
+
+        # 2. Stream preview-dark & preview-light MP4 directly into ffmpeg (zero 16GB temp memmap)
+        _stream_dual_preview_mp4s(
+            rig_dir,
+            out / f'{character}-preview-dark.mp4',
+            out / f'{character}-preview-light.mp4',
+            total=total,
+            fps=fps,
+            render_scale=preview_scale,
+            ffmpeg_bin=ffmpeg,
+            workers=use_workers,
+        )
+    else:
+        # Lightweight native path for small test canvases
+        with tempfile.TemporaryDirectory(prefix='render-spool-', dir=out) as tmp:
+            frames = np.memmap(Path(tmp) / 'frames.rgba', mode='w+', dtype='uint8',
+                               shape=(total, renderer.height, renderer.width, 4))
+            for i in range(total):
+                frames[i] = renderer.frame(i / fps)
+                if i % max(1, fps) == 0: print(f'render {i}/{total}', flush=True)
+            dynamic_frames = {i*.5: frames[round(i*.5*fps)].copy() for i in range(16)}
+            for t in key_times:
+                frames_at[t] = (frames[round(t*fps)].copy() if round(t*fps) < total else renderer.frame(t))
+            frame_zero = frames[0].copy()
+            for theme, bg in [('dark', (17, 17, 17)), ('light', (221, 221, 221))]:
+                write_preview_mp4(FrameSequence(frames), out / f'{character}-preview-{theme}.mp4',
+                                  bg=bg, fps=fps, ffmpeg_bin=ffmpeg)
+            del frames
     html = out / f'{character}-standalone-preview.html'
     export_standalone_html(out / 'rig', html, require_approved=False)
     snapshots = out / 'keyframes'; snapshots.mkdir()
