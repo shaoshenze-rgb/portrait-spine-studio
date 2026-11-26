@@ -17,12 +17,12 @@ from src.studio.vision_schema import VisionValidationError, VisionReviewRequired
 
 # Shared engineering profiles. They are not per-character correction tables.
 ROLE_SWAY_DEG = {
-    "head": 2.1, "face": 1.6, "torso": 1.3, "body": 1.3, "pelvis": 0.8,
-    "upper_arm": 2.2, "forearm": 2.0, "arm": 2.2, "hand": 1.2,
-    "upper_leg": 1.8, "lower_leg": 1.6, "leg": 1.8, "foot": 0.5,
-    "lower_body": 1.4, "weapon": 0.0, "armor": 1.5, "hair": 1.8,
-    "cloth": 1.6, "cape": 1.6, "tail": 1.8, "fish_tail": 1.5, "fin": 1.5,
-    "effect_group": 0.4, "pet": 0.8, "prop": 1.2, "soft_accessory": 1.8,
+    "head": 2.8, "face": 2.1, "torso": 2.4, "body": 2.4, "pelvis": 1.3,
+    "upper_arm": 2.0, "forearm": 2.0, "arm": 2.0, "hand": 1.6,
+    "upper_leg": 2.3, "lower_leg": 2.1, "leg": 2.3, "foot": 0.6,
+    "lower_body": 1.9, "weapon": 0.0, "armor": 1.8, "hair": 2.4,
+    "cloth": 2.2, "cape": 2.4, "tail": 2.4, "fish_tail": 2.0, "fin": 2.0,
+    "effect_group": 2.4, "pet": 2.4, "prop": 2.8, "soft_accessory": 2.2,
 }
 # Tiny synthetic canvases keep the previous engineering floor so 1.5x stress
 # hole checks stay compatible; 1080px portraits use the full table above.
@@ -39,13 +39,15 @@ ROLE_LAG_S = {"pelvis": .0, "body": .10, "torso": .15, "head": .45,
               "upper_leg": .20, "lower_leg": .40, "leg": .30, "lower_body": .25}
 LOCKED_ROOT_DEG = 0.25
 MAX_MODULE_GAIN = 1.5
+AIRBORNE_BREATH_TX = (9.5, 4.5)
+AIRBORNE_BREATH_TY = (17.0, 4.2)
 
 
 def soft_bend_deg_for_link(index: int, *, locked_root: bool = False, scale: float = 1.0) -> float:
     """Progressive chain bend; locked_root keeps the palmar/blade root at 0.25deg."""
     if locked_root and index == 0:
         return LOCKED_ROOT_DEG
-    target = min(3.4, 1.6 + 0.45 * index)
+    target = min(4.6, 2.0 + 0.65 * index)
     scaled = target * min(1.0, max(float(scale), 0.0))
     return max(scaled, 0.50)
 
@@ -821,14 +823,30 @@ def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dic
             amp = max(target * min(1.0, scale), ROLE_SWAY_FLOOR_DEG.get(role, .30))
         if bn in anchored_ancestors:
             if m.get("parent") is None:
-                ty_amp = min(1.8 * factor, 0.012 * body_h)
+                ty_amp = min(1.85 * factor, 0.012 * body_h)
                 motion[bn] = {"ty": [(-ty_amp, 3, math.pi / 2)]}
             continue
         if family == "torso" and profile == "breath" and m.get("parent") is None:
             motion[bn] = {
                 "rotate": terms((amp * 0.95, 2, 0.15), (amp * 0.40, 3, 0.15)),
-                "tx": terms((4.8, 2, 0.15), (2.2, 1, 0.15)),
-                "ty": terms((8.5, 3, 0.0), (1.8, 2, 0.0)),
+                "tx": terms((AIRBORNE_BREATH_TX[0], 2, 0.15), (AIRBORNE_BREATH_TX[1], 1, 0.15)),
+                "ty": terms((AIRBORNE_BREATH_TY[0], 3, 0.0), (AIRBORNE_BREATH_TY[1], 2, 0.0)),
+            }
+            continue
+        if m.get("parent") is None and not locked and role in ("prop", "pet") and profile != "soft_bend":
+            lag = 0.22 + (0.35 if sign > 0 else 0.0) + 0.14 * slot_idx
+            motion[bn] = {
+                "rotate": terms((sign * amp * 1.05, 2, lag), (-sign * amp * 0.45, 3, lag + 0.18)),
+                "tx": terms((sign * 6.5, 1, lag + 0.15), (sign * 3.0, 2, lag + 0.30)),
+                "ty": terms((14.5, 2, lag + 0.08), (5.0, 3, lag + 0.22)),
+            }
+            continue
+        if m.get("parent") is None and not locked and role == "effect_group" and profile != "soft_bend":
+            lag = 0.18 + (0.40 if sign > 0 else 0.0) + 0.16 * slot_idx
+            motion[bn] = {
+                "rotate": terms((sign * amp * 1.15, 2, lag), (sign * amp * 0.50, 3, lag + 0.20)),
+                "tx": terms((sign * 6.5, 1, lag + 0.12), (-sign * 3.0, 3, lag + 0.25)),
+                "ty": terms((9.5, 2, lag + 0.10), (4.0, 3, lag + 0.28)),
             }
             continue
         if family == "head":

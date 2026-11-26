@@ -315,8 +315,10 @@ class TestMaskContractAndStandalone(unittest.TestCase):
         body_h = float(rs["body_height_px"])
         height_scale = max(0.35, min(1.35, body_h / 1080.0))
         peak = max(max(abs(v) for v in xs), max(abs(v) for v in ys))
-        self.assertGreater(peak, 8.5 * height_scale * 0.45)
-        self.assertLess(peak, (8.5 + 1.8) * height_scale * 1.2 + 0.05)
+        from src.pipeline.module_rig import AIRBORNE_BREATH_TY
+        ty_primary, ty_secondary = AIRBORNE_BREATH_TY
+        self.assertGreater(peak, ty_primary * height_scale * 0.45)
+        self.assertLess(peak, (ty_primary + ty_secondary) * height_scale * 1.2 + 0.05)
         squared = 1.8 * (body_h / 1080.0) * height_scale
         self.assertGreater(peak, squared * 3)
 
@@ -502,6 +504,85 @@ class TestMaskContractAndStandalone(unittest.TestCase):
             qc_wrong.observe(t, 1.0, setup)
         self.assertEqual(qc_wrong.finish()["bindingMotion"]["checks"]["lockedRoot"]["status"], "fail")
 
+
+    def test_lively_idle_floating_prop_and_counterphase_vfx_and_grounded_ik(self):
+        from src.pipeline.module_rig import resolve_module_motion, LOCKED_ROOT_DEG
+        from src.pipeline.build_rig import harmonic
+
+        def mod(mid, role, profile, shape, parent, pivot, extra=None):
+            item = {
+                "id": mid, "bone": "module_" + mid, "role": role, "motionProfile": profile,
+                "motion": "required", "shape": shape, "parent": parent, "pivot": pivot,
+                "pieces": ["piece_" + mid],
+            }
+            if extra:
+                item.update(extra)
+            return item
+
+        modules = [
+            mod("body", "body", "breath", "rigid", None, [500.0, 520.0]),
+            mod("thigh", "upper_leg", "sway", "rigid", "body", [460.0, 620.0]),
+            mod("shin", "lower_leg", "sway", "rigid", "thigh", [440.0, 820.0]),
+            mod("foot", "foot", "static", "rigid", None, [450.0, 1020.0], {"motion": "static"}),
+            mod("head", "head", "sway", "rigid", "body", [500.0, 320.0]),
+            mod("book", "prop", "sway", "rigid", None, [260.0, 420.0]),
+            mod("held_orb", "prop", "sway", "rigid", "body", [640.0, 460.0]),
+            mod("vortex_back", "effect_group", "sway", "rigid", None, [420.0, 400.0]),
+            mod("vortex_front", "effect_group", "sway", "rigid", None, [580.0, 400.0]),
+            mod("palm_flame", "effect_group", "soft_bend", "soft", "body", [660.0, 450.0],
+                {"lockedRoot": True, "centerline": [[660.0, 450.0], [660.0, 390.0]], "softBones": ["bend_palm_flame1"]}),
+        ]
+        bones = [
+            {"name": "root", "parent": None, "pos": [500.0, 1020.0]},
+            {"name": "module_body", "parent": "root", "pos": [500.0, 520.0]},
+            {"name": "module_thigh", "parent": "module_body", "pos": [460.0, 620.0], "aim": [440.0, 820.0]},
+            {"name": "module_shin", "parent": "module_thigh", "pos": [440.0, 820.0], "aim": [450.0, 1020.0]},
+            {"name": "module_foot", "parent": "root", "pos": [450.0, 1020.0]},
+            {"name": "module_head", "parent": "module_body", "pos": [500.0, 320.0]},
+            {"name": "module_book", "parent": "root", "pos": [260.0, 420.0]},
+            {"name": "module_held_orb", "parent": "module_body", "pos": [640.0, 460.0]},
+            {"name": "module_vortex_back", "parent": "root", "pos": [420.0, 400.0]},
+            {"name": "module_vortex_front", "parent": "root", "pos": [580.0, 400.0]},
+            {"name": "module_palm_flame", "parent": "module_body", "pos": [660.0, 450.0]},
+            {"name": "bend_palm_flame1", "parent": "module_palm_flame", "pos": [660.0, 420.0]},
+        ]
+        skin = {}
+        chains = {}
+        for m in modules:
+            if m["shape"] == "soft":
+                cname = "bend_" + m["id"]
+                chains[cname] = {"parent": m["bone"], "count": 1, "pts": m["centerline"]}
+                skin[m["pieces"][0]] = {"type": "mesh", "recipe": "chain", "chain": cname, "module_id": m["id"]}
+            else:
+                skin[m["pieces"][0]] = {"type": "region", "bone": m["bone"], "module_id": m["id"]}
+        rig = {
+            "duration": 8.0, "body_height_px": 1080.0, "bones": bones,
+            "ik": [{"name": "contact_anchor_foot", "bones": ["module_thigh", "module_shin"], "target": "module_foot"}],
+            "skin": skin, "chains": chains,
+            "moduleContract": {"sourceVersion": 2, "modules": modules},
+        }
+        mot = resolve_module_motion(rig, "agile_full", duration=8.0)
+        # 1. Grounded root breathes deeper than old 1.8 cap while keeping pure vertical IK crouch
+        self.assertGreaterEqual(abs(mot["module_body"]["ty"][0][0]), 1.85)
+        self.assertNotIn("rotate", mot["module_body"])
+        # 2. Independent floating prop levitates (tx + ty + rotate); parented prop stays rotate-only
+        self.assertIn("ty", mot["module_book"])
+        self.assertIn("tx", mot["module_book"])
+        self.assertNotIn("ty", mot["module_held_orb"])
+        self.assertNotIn("tx", mot["module_held_orb"])
+        # 3. Independent front/back VFX float & swirl in opposite directions; lockedRoot stays <= LOCKED_ROOT_DEG
+        self.assertIn("ty", mot["module_vortex_back"])
+        self.assertIn("ty", mot["module_vortex_front"])
+        self.assertLess(mot["module_vortex_back"]["rotate"][0][0] * mot["module_vortex_front"]["rotate"][0][0], 0.0)
+        self.assertAlmostEqual(abs(mot["module_palm_flame"]["rotate"][0][0]), LOCKED_ROOT_DEG, places=6)
+        # 4. Seamless 8s zero loop across all channels
+        for bname, ch in mot.items():
+            for key in ("rotate", "tx", "ty"):
+                spec = ch.get(key)
+                if not spec:
+                    continue
+                self.assertAlmostEqual(harmonic(spec, 0.0, 8.0), 0.0, places=9, msg=f"{bname} {key} t=0")
+                self.assertAlmostEqual(harmonic(spec, 8.0, 8.0), 0.0, places=9, msg=f"{bname} {key} t=8")
 
 if __name__ == "__main__":
     unittest.main()
