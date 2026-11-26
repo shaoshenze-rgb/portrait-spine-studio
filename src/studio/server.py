@@ -39,7 +39,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from src.export.export_profile import export_job_with_profile, normalize_export_profile
 from src.export.exporter import export_default_package, export_transparent_web, export_standalone_html
+from src.studio.batch_manager import (
+    BatchItemLockedError,
+    BatchItemNotFoundError,
+    BatchManager,
+    BatchNotFoundError,
+    export_catalog_metadata,
+)
 from src.gates.audit import GateFailureError, run_audit
 from src.mivo.adapter import (
     FileBackedMivoAdapter,
@@ -49,7 +57,7 @@ from src.mivo.adapter import (
     TransparentInputAdapter,
 )
 from src.pipeline.build_rig import build_rig
-from src.pipeline.preprocess import MAX_LONG_EDGE, preprocess_portrait
+from src.pipeline.preprocess import MAX_LONG_EDGE, MAX_LONG_EDGE_4K, preprocess_portrait
 from src.pipeline.presets import list_presets
 from src.pipeline.split_parts import split_parts
 
@@ -142,9 +150,10 @@ class JobNotFoundError(KeyError):
 class InvalidJobStateError(ValueError):
     """Raised when an action is invalid for the job's current state."""
 
-    def __init__(self, message: str, http_status: int = 400):
+    def __init__(self, message: str, http_status: int = 400, code: Optional[str] = None):
         super().__init__(message)
         self.http_status = http_status
+        self.code = code
 
 
 def _now_iso() -> str:
@@ -275,6 +284,10 @@ class StudioJobManager:
         self._state_lock = threading.Lock()
         self._active_job_id: Optional[str] = None
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self.batch_manager = BatchManager(self.work_dir)
+        self._batch_export_lock = threading.Lock()
+        self._batch_export_states: Dict[str, Dict[str, Any]] = {}
+        self._restore_persisted_jobs()
 
     def health(self) -> Dict[str, Any]:
         from src.gates.module_quality import RULES_VERSION
@@ -342,6 +355,12 @@ class StudioJobManager:
             "canvas_global_motion_scale": job.get("canvas_global_motion_scale", 1.),
             "canvas_diagnostics_url": job.get("canvas_diagnostics_url"),
             "canvas_all_layers_url": job.get("canvas_all_layers_url"),
+            "locked": bool(job.get("locked", False)),
+            "locked_at": job.get("locked_at"),
+            "locked_revision": job.get("locked_revision"),
+            "locked_rig_version": job.get("locked_rig_version"),
+            "max_long_edge": int(job.get("max_long_edge") or MAX_LONG_EDGE),
+            "batch_id": job.get("batch_id"),
             "job_id": job["job_id"],
             "character": job["character"],
             "filename": job["filename"],
@@ -409,8 +428,63 @@ class StudioJobManager:
             return FileBackedMivoAdapter(self.mivo_handoff_dir)
         return TransparentInputAdapter()
 
-    def _acquire_serial(self, job_id: str) -> None:
-        if not self._exec_lock.acquire(blocking=False):
+    def _assert_unlocked(self, job: Dict[str, Any]) -> None:
+        if job.get("locked"):
+            raise InvalidJobStateError(
+                "该角色已确认锁定，禁止修改；如需返修请先在界面点击「解锁」。",
+                409,
+                code="JOB_LOCKED",
+            )
+
+    def _restore_persisted_jobs(self) -> None:
+        if not self.work_dir.is_dir():
+            return
+        for child in sorted(self.work_dir.iterdir()):
+            if not child.is_dir() or child.name in ("batches", "models"):
+                continue
+            state_file = child / "job-state.json"
+            status_file = child / "job-status.json"
+            try:
+                if state_file.is_file():
+                    data = json.loads(state_file.read_text(encoding="utf-8"))
+                    jid = str(data.get("job_id") or child.name)
+                    data["job_id"] = jid
+                    data["job_dir"] = str(child)
+                    data.setdefault("locked", False)
+                    data.setdefault("rig_build_count", 0)
+                    data.setdefault("split_run_count", 0)
+                    data.setdefault("adjustment_log", [])
+                    data.setdefault("exports", {})
+                    data.setdefault("warnings", [])
+                    data.setdefault("stages", _initial_stages())
+                    data.setdefault("preserved_intermediates", {})
+                    self._jobs[jid] = data
+                elif status_file.is_file():
+                    pub = json.loads(status_file.read_text(encoding="utf-8"))
+                    jid = str(pub.get("job_id") or child.name)
+                    pub["job_id"] = jid
+                    pub["job_dir"] = str(child)
+                    pub.setdefault("input_path", str(child / "input" / str(pub.get("filename") or "portrait.png")))
+                    pub.setdefault("locked", False)
+                    pub.setdefault("rig_build_count", 0)
+                    pub.setdefault("split_run_count", 0)
+                    pub.setdefault("adjustment_log", [])
+                    pub.setdefault("exports", {})
+                    pub.setdefault("warnings", [])
+                    pub.setdefault("stages", _initial_stages())
+                    pub.setdefault("preserved_intermediates", {})
+                    if pub.get("canvas_mode") and not pub.get("canvas_output"):
+                        revs = sorted(child.glob("canvas-r*"), key=lambda p: int(p.name.split("-r")[-1]) if p.name.split("-r")[-1].isdigit() else 0)
+                        if revs:
+                            pub["canvas_output"] = str(revs[-1])
+                            pub.setdefault("canvas_revision", len(revs))
+                    self._jobs[jid] = pub
+            except Exception:
+                continue
+
+    def _acquire_serial(self, job_id: str, *, wait: bool = False, timeout: float = 180.0) -> None:
+        acquired = self._exec_lock.acquire(blocking=True, timeout=timeout) if wait else self._exec_lock.acquire(blocking=False)
+        if not acquired:
             with self._state_lock:
                 active = self._active_job_id
             raise StudioBusyError(active)
@@ -425,10 +499,18 @@ class StudioJobManager:
 
     def _persist_job_meta(self, job: Dict[str, Any]) -> None:
         job_dir = Path(job["job_dir"])
+        pub = self._public_view(job)
         (job_dir / "job-status.json").write_text(
-            json.dumps(self._public_view(job), indent=2, ensure_ascii=False) + "\n",
+            json.dumps(pub, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        state = {
+            k: v for k, v in job.items()
+            if not k.startswith("_")
+        }
+        tmp_state = job_dir / "job-state.json.tmp"
+        tmp_state.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp_state, job_dir / "job-state.json")
 
     def _review_binding(self, job: Dict[str, Any]) -> Dict[str, Any]:
         """Bind a visual decision to the exact accepted plan and generated image/rig files."""
@@ -510,7 +592,7 @@ class StudioJobManager:
 
         def stage_preprocess() -> Dict[str, Any]:
             self._set_stage(job, "preprocess", "running")
-            res = preprocess_portrait(input_path, preprocessed_path, max_long_edge=MAX_LONG_EDGE)
+            res = preprocess_portrait(input_path, preprocessed_path, max_long_edge=int(job.get("max_long_edge") or MAX_LONG_EDGE))
             with self._state_lock:
                 job["preprocess"] = res
                 job["resize_notice"] = res.get("notice")
@@ -802,9 +884,15 @@ class StudioJobManager:
         pause_before_animation = bool(payload.get("pause_before_animation", True))
         simulate_mivo_error = bool(payload.get("simulate_mivo_error", False))
         simulate_delay_ms = int(payload.get("simulate_delay_ms", 0))
+        raw_edge = payload.get("max_long_edge")
+        max_long_edge = MAX_LONG_EDGE if raw_edge is None else int(raw_edge)
+        if not (64 <= max_long_edge <= 8192):
+            raise ValueError("max_long_edge 必须在 64..8192 像素之间。")
+        wait_if_busy = bool(payload.get("wait_if_busy", False))
+        batch_id = str(payload.get("batch_id")).strip() if payload.get("batch_id") else None
 
         job_id = uuid.uuid4().hex[:12]
-        self._acquire_serial(job_id)
+        self._acquire_serial(job_id, wait=wait_if_busy)
         try:
             job_dir = self.work_dir / job_id
             input_dir = job_dir / "input"
@@ -825,6 +913,12 @@ class StudioJobManager:
                 "status": "running",
                 "preset": preset,
                 "gain": gain,
+                "max_long_edge": max_long_edge,
+                "batch_id": batch_id,
+                "locked": False,
+                "locked_at": None,
+                "locked_revision": None,
+                "locked_rig_version": None,
                 "pause_after_split": pause_after_split,
                 "pause_before_animation": pause_before_animation,
                 "created_at": now,
@@ -925,6 +1019,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if job["status"] not in ("awaiting_rig_confirm", "awaiting_split_confirm", "ready", "failed", "needs_review", "awaiting_visual_review"):
                 raise InvalidJobStateError(f"当前状态 {job['status']} 不支持重新绑定。")
             if job.get("rig_spec") is None:
@@ -1040,6 +1135,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if job["status"] not in ("awaiting_analysis", "awaiting_rig_confirm"):
                 raise InvalidJobStateError(
                     "当前状态 %s 不支持分件点选修正。" % job["status"], http_status=409)
@@ -1134,6 +1230,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if job["status"] not in ("awaiting_analysis", "awaiting_rig_confirm", "failed", "needs_review", "awaiting_visual_review", "ready"):
                 raise InvalidJobStateError(f"当前状态 {job['status']} 不支持提交分析。")
             if not job.get("analysis_request"):
@@ -1231,6 +1328,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if job["status"] != "failed" or not job["stage_error"]:
                 raise InvalidJobStateError(f"任务当前状态为 {job['status']}，仅失败任务可重试当前阶段。")
             failed_stage = str(job["stage_error"].get("failedStage") or "preprocess")
@@ -1256,6 +1354,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             job_dir = Path(job["job_dir"])
             err_file = job_dir / "stage-error.json"
             if err_file.exists():
@@ -1271,6 +1370,7 @@ class StudioJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if job["status"] not in ("ready", "failed", "needs_review", "awaiting_visual_review"):
                 raise InvalidJobStateError(f"任务当前状态为 {job['status']}，无法执行微调。")
 
@@ -1385,7 +1485,8 @@ class StudioJobManager:
         with self._state_lock:
             job = self._jobs.get(job_id)
             if job is None: raise JobNotFoundError(job_id)
-        self._acquire_serial(job_id)
+            self._assert_unlocked(job)
+        self._acquire_serial(job_id, wait=bool(payload.get('wait_if_busy', False)))
         previous = copy.deepcopy(job)
         try:
             config = copy.deepcopy(payload)
@@ -1440,6 +1541,11 @@ class StudioJobManager:
                 canvas_all_layers_url=self._job_url(job_id,destination.name+'/all-layers-sheet.jpg'),
                 rig_build_count=job['rig_build_count']+1, updated_at=_now_iso())
             self._persist_job_meta(job)
+            linked = self.batch_manager.find_item_by_job_id(job_id)
+            if linked is not None:
+                bid, bit = linked
+                if not bit.get('locked'):
+                    self.batch_manager.update_item(bid, bit['item_id'], {'status': 'preview_ready', 'error': None})
             return self._public_view(job)
         except Exception:
             if job.get('status')=='running':
@@ -1455,6 +1561,7 @@ class StudioJobManager:
         with self._state_lock:
             job=self._jobs.get(job_id)
             if job is None: raise JobNotFoundError(job_id)
+            self._assert_unlocked(job)
             if not job.get('canvas_mode'): raise InvalidJobStateError('先接入Canvas图层。')
             config=copy.deepcopy(job['canvas_config'])
         tweaks=config.setdefault('tweaks',{})
@@ -1646,6 +1753,372 @@ class StudioJobManager:
         finally:
             self._release_serial()
 
+    def lock_job(self, job_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobNotFoundError(job_id)
+            is_canvas = bool(job.get("canvas_mode"))
+            if is_canvas:
+                if job["status"] not in ("canvas_preview", "ready"):
+                    raise InvalidJobStateError("当前没有可确认锁定的动画预览。")
+                checks = job.get("canvas_checks") or {}
+                if not checks or not all(checks.values()):
+                    raise InvalidJobStateError("四项基础检查全部通过后才能确认锁定。")
+                stress = (job.get("canvas_diagnostics") or {}).get("exposure_stress") or {}
+                if stress.get("status") != "pass":
+                    raise InvalidJobStateError("请先通过 100%/150% 满滑块露底压力体检再确认锁定。")
+            else:
+                if job["status"] != "ready":
+                    raise InvalidJobStateError("任务未就绪，无法确认锁定。")
+
+        self._acquire_serial(job_id, wait=True)
+        try:
+            with self._state_lock:
+                job = self._jobs[job_id]
+                expected = payload.get("expected_rig_version")
+                if expected is not None and expected != job.get("rig_build_count"):
+                    raise InvalidJobStateError("预览版本已经变化，请刷新后再锁定。", 409)
+                now = _now_iso()
+                if job.get("canvas_mode"):
+                    out = Path(job["canvas_output"])
+                    signoff = out / "user-signoff.json"
+                    signoff.write_text(
+                        json.dumps(
+                            {
+                                "decision": "pass",
+                                "reviewer": str(payload.get("reviewer") or "批量验收使用者"),
+                                "user_quote": "人工过目确认锁定",
+                                "revision": job.get("canvas_revision"),
+                                "date": now,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    job["canvas_signoff"] = str(signoff)
+                    job["status"] = "ready"
+                job["locked"] = True
+                job["locked_at"] = now
+                job["locked_revision"] = job.get("canvas_revision")
+                job["locked_rig_version"] = job.get("rig_build_count")
+                job["updated_at"] = now
+                self._persist_job_meta(job)
+                return self._public_view(job)
+        finally:
+            self._release_serial()
+
+    def unlock_job(self, job_id: str) -> Dict[str, Any]:
+        with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobNotFoundError(job_id)
+            job["locked"] = False
+            job["locked_at"] = None
+            job["updated_at"] = _now_iso()
+            self._persist_job_meta(job)
+            return self._public_view(job)
+
+    def _compute_item_traffic_light(self, item: Dict[str, Any], job: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+        if item.get("status") == "failed" or (job and job.get("status") == "failed"):
+            return "red", item.get("error") or "处理失败"
+        if item.get("status") == "needs_fix":
+            return "yellow", f"待修改：{item.get('fix_note') or ''}"
+        if job is None or job.get("status") in ("running", "awaiting_analysis", "awaiting_rig_confirmation"):
+            return "pending", "等待分层预览"
+        if job.get("canvas_mode"):
+            checks = job.get("canvas_checks") or {}
+            diag = job.get("canvas_diagnostics") or {}
+            stress = diag.get("exposure_stress") or {}
+            warnings = diag.get("cleanup_warnings") or []
+            severe = [w for w in warnings if w.get("code") in ("local_layer_pixel_bleed", "separated_soft_islands")]
+            if not all(checks.values()) or stress.get("status") == "fail":
+                return "red", "基础或压力体检未通过"
+            if severe or stress.get("status") != "pass":
+                return "yellow", "存在串层/软层或边缘告警"
+            return "green", "体检全绿（0露底）"
+        if job.get("status") == "ready":
+            return "green", "就绪"
+        return "yellow", str(job.get("status"))
+
+    def list_batches(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "batches": self.batch_manager.list_batches(),
+            "export_catalog": export_catalog_metadata(),
+        }
+
+    def create_or_rescan_batch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        source_dir = payload.get("source_dir")
+        if not source_dir or not str(source_dir).strip():
+            raise ValueError("请提供本地文件夹路径 source_dir。")
+        batch = self.batch_manager.create_or_rescan_batch(
+            str(source_dir),
+            name=payload.get("name"),
+            batch_id=payload.get("batch_id"),
+            export_profile=payload.get("export_profile"),
+        )
+        return self.get_batch_view(batch["batch_id"])
+
+    def get_batch_view(self, batch_id: str) -> Dict[str, Any]:
+        batch = self.batch_manager.reload_batch(batch_id)
+        enriched_items: List[Dict[str, Any]] = []
+        counts = {
+            "total": 0, "pending": 0, "matted": 0, "prepared": 0,
+            "preview_ready": 0, "needs_fix": 0, "approved_locked": 0,
+            "exported": 0, "failed": 0, "locked": 0,
+            "green": 0, "yellow": 0, "red": 0,
+        }
+        for item in batch.get("items") or []:
+            jid = item.get("job_id")
+            with self._state_lock:
+                job = self._jobs.get(jid) if jid else None
+            if job is None and jid and (self.work_dir / jid / "job-status.json").is_file():
+                self._restore_persisted_jobs()
+                with self._state_lock:
+                    job = self._jobs.get(jid)
+            pub_job = self._public_view(job) if job else None
+            light, summary_text = self._compute_item_traffic_light(item, job)
+
+            thumb_url = None
+            if job and job.get("matted_url"):
+                thumb_url = job["matted_url"]
+            elif item.get("matted_path"):
+                mp = Path(item["matted_path"]).resolve()
+                try:
+                    rel = mp.relative_to(self.work_dir / "batches" / batch_id)
+                    thumb_url = f"/batches/{batch_id}/{rel.as_posix()}"
+                except ValueError:
+                    pass
+
+            enriched = copy.deepcopy(item)
+            enriched["traffic_light"] = light
+            enriched["traffic_summary"] = summary_text
+            enriched["thumb_url"] = thumb_url
+            enriched["job_status"] = pub_job["status"] if pub_job else None
+            enriched["canvas_checks"] = pub_job.get("canvas_checks") if pub_job else None
+            enriched["exposure_stress"] = ((pub_job.get("canvas_diagnostics") or {}).get("exposure_stress") if pub_job else None)
+            enriched["canvas_revision"] = pub_job.get("canvas_revision") if pub_job else None
+            enriched["rig_build_count"] = pub_job.get("rig_build_count") if pub_job else None
+            enriched["source_size"] = ((pub_job.get("preprocess") or {}).get("new_size") if pub_job else None)
+            enriched_items.append(enriched)
+
+            counts["total"] += 1
+            st = str(item.get("status") or "pending")
+            if st in counts:
+                counts[st] += 1
+            if item.get("locked"):
+                counts["locked"] += 1
+            if light in ("green", "yellow", "red"):
+                counts[light] += 1
+
+        overview_url = None
+        if batch.get("matte_overview_path") and Path(batch["matte_overview_path"]).is_file():
+            overview_url = f"/batches/{batch_id}/matte-overview.jpg"
+
+        with self._batch_export_lock:
+            exp_progress = copy.deepcopy(self._batch_export_states.get(batch_id))
+
+        return {
+            "ok": True,
+            "batch_id": batch["batch_id"],
+            "name": batch.get("name"),
+            "source_dir": batch.get("source_dir"),
+            "created_at": batch.get("created_at"),
+            "updated_at": batch.get("updated_at"),
+            "export_profile": batch.get("export_profile"),
+            "export_catalog": export_catalog_metadata(),
+            "matte_overview_url": overview_url,
+            "last_batch_export": batch.get("last_batch_export"),
+            "export_progress": exp_progress,
+            "counts": counts,
+            "items": enriched_items,
+            "batch_url": f"/?batch={batch['batch_id']}",
+        }
+
+    def update_batch_profile(self, batch_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self.batch_manager.update_profile(batch_id, payload)
+        return self.get_batch_view(batch_id)
+
+    def lock_batch_item(self, batch_id: str, item_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        item = self.batch_manager.get_item(batch_id, item_id)
+        jid = item.get("job_id")
+        if not jid:
+            raise InvalidJobStateError("该角色尚未生成预览，无法确认锁定。")
+        job_view = self.lock_job(jid, payload)
+        self.batch_manager.lock_item(
+            batch_id,
+            item["item_id"],
+            revision=job_view.get("canvas_revision"),
+            rig_version=job_view.get("rig_build_count"),
+        )
+        return self.get_batch_view(batch_id)
+
+    def unlock_batch_item(self, batch_id: str, item_id: str) -> Dict[str, Any]:
+        item = self.batch_manager.get_item(batch_id, item_id)
+        jid = item.get("job_id")
+        if jid:
+            with self._state_lock:
+                has_job = jid in self._jobs
+            if has_job:
+                self.unlock_job(jid)
+        self.batch_manager.unlock_item(batch_id, item["item_id"])
+        return self.get_batch_view(batch_id)
+
+    def reject_batch_item(self, batch_id: str, item_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        note = str((payload or {}).get("fix_note") or (payload or {}).get("note") or "").strip()
+        self.batch_manager.reject_item(batch_id, item_id, note)
+        return self.get_batch_view(batch_id)
+
+    def get_batch_fix_list(self, batch_id: str) -> Dict[str, Any]:
+        items = self.batch_manager.get_fix_list(batch_id)
+        return {"ok": True, "batch_id": batch_id, "count": len(items), "items": items}
+
+    def _run_batch_export_worker(
+        self,
+        batch_id: str,
+        targets: List[Dict[str, Any]],
+        profile: Dict[str, Any],
+        out_root: Path,
+        max_frames: Optional[int],
+    ) -> Dict[str, Any]:
+        out_root.mkdir(parents=True, exist_ok=True)
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        total = len(targets)
+
+        for idx, item in enumerate(targets):
+            char_name = str(item.get("character") or item["item_id"])
+            with self._batch_export_lock:
+                self._batch_export_states[batch_id] = {
+                    "running": True,
+                    "completed": idx,
+                    "total": total,
+                    "current_character": char_name,
+                    "errors": list(errors),
+                    "started_at": self._batch_export_states.get(batch_id, {}).get("started_at") or _now_iso(),
+                }
+            jid = item.get("job_id")
+            try:
+                with self._state_lock:
+                    job = self._jobs.get(jid) if jid else None
+                if job is None:
+                    raise JobNotFoundError(str(jid))
+                if job.get("canvas_mode"):
+                    rig_dir = Path(job["canvas_output"]) / "rig"
+                    signoff_path = Path(job["canvas_signoff"]) if job.get("canvas_signoff") else (Path(job["canvas_output"]) / "user-signoff.json")
+                else:
+                    rig_dir = Path(job["job_dir"]) / "rig"
+                    signoff_path = None
+                char_out = out_root / char_name
+                res = export_job_with_profile(
+                    rig_dir,
+                    char_out,
+                    profile,
+                    character=char_name,
+                    user_signoff_path=signoff_path if signoff_path and signoff_path.is_file() else None,
+                    max_frames=max_frames,
+                    require_approved=True,
+                )
+                results.append({"item_id": item["item_id"], "job_id": jid, **res})
+                self.batch_manager.update_item(
+                    batch_id,
+                    item["item_id"],
+                    {"status": "exported", "last_export": res},
+                    allow_locked=True,
+                )
+            except Exception as exc:
+                errors.append({"item_id": item["item_id"], "character": char_name, "error": str(exc)})
+
+        manifest = {
+            "version": 1,
+            "batch_id": batch_id,
+            "exported_at": _now_iso(),
+            "output_dir": str(out_root),
+            "profile": profile,
+            "exported_count": len(results),
+            "error_count": len(errors),
+            "items": results,
+            "errors": errors,
+        }
+        manifest_path = out_root / "batch-export-manifest.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary = {
+            "exported_at": manifest["exported_at"],
+            "output_dir": str(out_root),
+            "manifest_path": str(manifest_path),
+            "profile": profile,
+            "exported_count": len(results),
+            "error_count": len(errors),
+            "errors": errors,
+        }
+        self.batch_manager.record_batch_export(batch_id, summary)
+        with self._batch_export_lock:
+            self._batch_export_states[batch_id] = {
+                "running": False,
+                "completed": total,
+                "total": total,
+                "current_character": None,
+                "errors": errors,
+                "finished_at": manifest["exported_at"],
+                "output_dir": str(out_root),
+                "manifest_path": str(manifest_path),
+            }
+        return manifest
+
+    def export_batch(self, batch_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        if payload.get("export_profile"):
+            self.batch_manager.update_profile(batch_id, payload["export_profile"])
+        batch = self.batch_manager.get_batch(batch_id)
+        profile = normalize_export_profile(batch.get("export_profile"))
+        out_dir_raw = payload.get("output_dir") or profile.get("output_dir")
+        out_root = Path(out_dir_raw).expanduser().resolve() if out_dir_raw else (self.work_dir / "batches" / batch_id / "exports")
+
+        wanted_ids = set(payload.get("item_ids") or [])
+        targets = [
+            it for it in batch.get("items") or []
+            if it.get("locked") and (not wanted_ids or it["item_id"] in wanted_ids)
+        ]
+        if not targets:
+            raise InvalidJobStateError("当前没有已确认锁定的角色可导出；请先过目并锁定至少 1 个角色。")
+
+        with self._batch_export_lock:
+            cur = self._batch_export_states.get(batch_id)
+            if cur and cur.get("running"):
+                raise StudioBusyError(batch_id)
+            self._batch_export_states[batch_id] = {
+                "running": True,
+                "completed": 0,
+                "total": len(targets),
+                "current_character": targets[0].get("character"),
+                "errors": [],
+                "started_at": _now_iso(),
+            }
+
+        max_frames = int(payload["max_frames"]) if payload.get("max_frames") is not None else None
+        async_mode = bool(payload.get("async", False))
+        if async_mode:
+            t = threading.Thread(
+                target=self._run_batch_export_worker,
+                args=(batch_id, targets, profile, out_root, max_frames),
+                daemon=True,
+            )
+            t.start()
+            return {
+                "ok": True,
+                "batch_id": batch_id,
+                "started": True,
+                "total": len(targets),
+                "output_dir": str(out_root),
+                "profile": profile,
+            }
+
+        manifest = self._run_batch_export_worker(batch_id, targets, profile, out_root, max_frames)
+        return {"ok": True, "started": False, **manifest}
+
 
 def _standalone_html_download(job_id: str, html_path: Optional[str], job_url) -> Optional[Dict[str, str]]:
     if not html_path:
@@ -1673,6 +2146,8 @@ def _safe_resolve_under(base_dir: Path, rel_path: str) -> Optional[Path]:
     except (ValueError, OSError):
         return None
     return target
+
+
 
 
 def create_studio_server(
@@ -1752,6 +2227,23 @@ def create_studio_server(
                 self._send_json(HTTPStatus.OK, job_manager.health())
                 return
 
+            if path == "/api/batches":
+                self._send_json(HTTPStatus.OK, job_manager.list_batches())
+                return
+
+            if path.startswith("/api/batches/"):
+                parts = [p for p in path.split("/") if p]
+                try:
+                    if len(parts) == 3:
+                        self._send_json(HTTPStatus.OK, job_manager.get_batch_view(parts[2]))
+                        return
+                    if len(parts) == 4 and parts[3] == "fix-list":
+                        self._send_json(HTTPStatus.OK, job_manager.get_batch_fix_list(parts[2]))
+                        return
+                except BatchNotFoundError as exc:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "errorCode": "BATCH_NOT_FOUND", "message": str(exc)})
+                    return
+
             if path.startswith("/api/jobs/"):
                 parts = [p for p in path.split("/") if p]
                 if len(parts) == 3 and parts[0] == "api" and parts[1] == "jobs":
@@ -1786,6 +2278,15 @@ def create_studio_server(
                 self._send_file(target)
                 return
 
+            if path.startswith("/batches/"):
+                rel = path[len("/batches/") :]
+                target = _safe_resolve_under(job_manager.work_dir / "batches", rel)
+                if target is None:
+                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "errorCode": "FORBIDDEN", "message": "非法路径"})
+                    return
+                self._send_file(target)
+                return
+
             if path.startswith("/jobs/"):
                 rel = path[len("/jobs/") :]
                 target = _safe_resolve_under(job_manager.work_dir, rel)
@@ -1810,6 +2311,10 @@ def create_studio_server(
                 if path == "/api/jobs":
                     res = job_manager.create_job(body)
                     self._send_json(HTTPStatus.OK, res)
+                    return
+
+                if path == "/api/batches":
+                    self._send_json(HTTPStatus.OK, job_manager.create_or_rescan_batch(body))
                     return
 
                 parts = [p for p in path.split("/") if p]
@@ -1850,6 +2355,28 @@ def create_studio_server(
                     if action == "export":
                         self._send_json(HTTPStatus.OK, job_manager.export_job(job_id, body))
                         return
+                    if action == "lock":
+                        self._send_json(HTTPStatus.OK, job_manager.lock_job(job_id, body))
+                        return
+                    if action == "unlock":
+                        self._send_json(HTTPStatus.OK, job_manager.unlock_job(job_id))
+                        return
+
+                if len(parts) == 4 and parts[0] == "api" and parts[1] == "batches":
+                    batch_id, action = parts[2], parts[3]
+                    if action == "profile":
+                        self._send_json(HTTPStatus.OK, job_manager.update_batch_profile(batch_id, body)); return
+                    if action == "export":
+                        self._send_json(HTTPStatus.OK, job_manager.export_batch(batch_id, body)); return
+
+                if len(parts) == 6 and parts[0] == "api" and parts[1] == "batches" and parts[3] == "items":
+                    batch_id, item_id, action = parts[2], parts[4], parts[5]
+                    if action == "lock":
+                        self._send_json(HTTPStatus.OK, job_manager.lock_batch_item(batch_id, item_id, body)); return
+                    if action == "unlock":
+                        self._send_json(HTTPStatus.OK, job_manager.unlock_batch_item(batch_id, item_id)); return
+                    if action == "reject":
+                        self._send_json(HTTPStatus.OK, job_manager.reject_batch_item(batch_id, item_id, body)); return
 
                 self._send_json(
                     HTTPStatus.NOT_FOUND,
@@ -1865,16 +2392,22 @@ def create_studio_server(
                         "active_job_id": exc.active_job_id,
                     },
                 )
-            except JobNotFoundError as exc:
+            except (JobNotFoundError, BatchNotFoundError, BatchItemNotFoundError) as exc:
                 self._send_json(
                     HTTPStatus.NOT_FOUND,
-                    {"ok": False, "errorCode": "JOB_NOT_FOUND", "message": f"未找到任务：{exc.args[0]}"},
+                    {"ok": False, "errorCode": "NOT_FOUND" if isinstance(exc, (BatchNotFoundError, BatchItemNotFoundError)) else "JOB_NOT_FOUND", "message": str(exc)},
+                )
+            except BatchItemLockedError as exc:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "errorCode": "JOB_LOCKED", "message": str(exc)},
                 )
             except InvalidJobStateError as exc:
                 status = HTTPStatus.CONFLICT if getattr(exc, "http_status", 400) == 409 else HTTPStatus.BAD_REQUEST
+                err_code = getattr(exc, "code", None) or ("INVALID_STATE" if status == 409 else "INVALID_REQUEST")
                 self._send_json(
                     status,
-                    {"ok": False, "errorCode": "INVALID_STATE" if status == 409 else getattr(exc, "code", None) or "INVALID_REQUEST", "message": str(exc)},
+                    {"ok": False, "errorCode": err_code, "message": str(exc)},
                 )
             except ValueError as exc:
                 self._send_json(

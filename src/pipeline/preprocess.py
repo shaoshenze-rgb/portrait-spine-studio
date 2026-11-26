@@ -9,6 +9,7 @@ from PIL import Image
 import numpy as np
 
 MAX_LONG_EDGE = 2400
+MAX_LONG_EDGE_4K = 4096
 
 
 def _sha256_file(path: Path) -> str:

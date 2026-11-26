@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Portrait Spine Studio — 本机离线工具台</title>
 <link rel="stylesheet" href="/canvas-workbench.css" />
+<link rel="stylesheet" href="/batch-workbench.css" />
 <style>
   :root {
     --bg-0: #0b0d12;
@@ -589,6 +590,7 @@
       <div id="stepPill3" class="step-pill"><span class="num">3</span><span>动画预览与导出</span></div>
     </nav>
     <div class="topbar-actions">
+      <select id="topbarBatchSelect" class="topbar-batch-select" hidden aria-label="切换批量任务"></select>
       <span id="serverStatusPill" class="status-pill">空闲就绪</span>
       <button id="btnNewTask" type="button" class="btn btn-sm">新建任务</button>
     </div>
@@ -960,6 +962,110 @@
   </details>
   <p id="canvasMessage" role="status"></p>
 </section>
+<section id="batchWorkbench" class="batch-shell" hidden aria-label="批量验收与统一导出工作台">
+  <header class="bw-header">
+    <div class="bw-title-wrap">
+      <p class="bw-kicker">批量验收台 · 默认真 4K + 透明网页视频</p>
+      <h1 class="bw-title"><span id="bwBatchTitle">批量任务</span><span id="bwBatchIdBadge" class="bw-stat-pill"></span></h1>
+      <p id="bwSourceDir" class="bw-path"></p>
+    </div>
+    <div id="bwStats" class="bw-stats"></div>
+    <div class="bw-header-actions">
+      <a id="bwOverviewLink" class="bw-btn" target="_blank" rel="noopener" hidden>去底总览图</a>
+      <button id="bwBtnRefresh" type="button" class="bw-btn">刷新进度</button>
+      <button id="bwToggleExportPanel" type="button" class="bw-btn bw-btn-primary">统一导出规格 / 批量导出</button>
+    </div>
+  </header>
+
+  <section id="bwExportPanel" class="bw-export-panel" aria-label="统一导出尺寸与格式">
+    <div class="bw-export-grid">
+      <div class="bw-field">
+        <label for="bwSizePreset">统一导出尺寸</label>
+        <select id="bwSizePreset" class="bw-select"></select>
+      </div>
+      <div id="bwCustomSizeWrap" class="bw-field" hidden>
+        <label>自定义宽 × 高 (px)</label>
+        <div style="display:flex;gap:6px;">
+          <input id="bwCustomW" type="number" min="64" max="8192" step="2" class="bw-input" style="width:96px;" />
+          <input id="bwCustomH" type="number" min="64" max="8192" step="2" class="bw-input" style="width:96px;" />
+        </div>
+      </div>
+      <div class="bw-field">
+        <label for="bwAlign">固定画布对齐方式</label>
+        <select id="bwAlign" class="bw-select">
+          <option value="bottom_center">底边居中（脚底齐平）</option>
+          <option value="center">整体居中</option>
+        </select>
+      </div>
+      <div class="bw-field">
+        <label for="bwUpscalePolicy">小图缩放策略</label>
+        <select id="bwUpscalePolicy" class="bw-select">
+          <option value="allow_upscale">允许高质量等比缩放对齐画布</option>
+          <option value="no_upscale">保持原清晰度不强行放大</option>
+        </select>
+      </div>
+      <div class="bw-field">
+        <label for="bwFps">帧率 (FPS)</label>
+        <select id="bwFps" class="bw-select">
+          <option value="30">30 fps（推荐）</option>
+          <option value="60">60 fps</option>
+          <option value="24">24 fps</option>
+          <option value="15">15 fps</option>
+        </select>
+      </div>
+      <div class="bw-field" style="grid-column: span 2;">
+        <label for="bwOutputDir">统一输出目录（留空则输出到本批次 exports 目录）</label>
+        <input id="bwOutputDir" type="text" class="bw-input" placeholder="/Users/.../output_batch" />
+      </div>
+    </div>
+
+    <div class="bw-formats-row">
+      <span style="color:#a9a79d;font-weight:600;font-size:12px;">统一导出格式：</span>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="transparent_web" checked /> 透明网页视频 (VP9 WebM + Safari H.264 + poster.webp)</label>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="spine_package" /> Spine 4.2 工程包 (.zip)</label>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="preview_mp4" /> 深浅底预览视频 (.mp4)</label>
+      <label class="bw-chk"><input type="checkbox" name="bwFormat" value="standalone_html" /> 单文件交互 HTML</label>
+    </div>
+
+    <div class="bw-export-footer">
+      <div id="bwExportStatus" class="bw-export-status">默认规格：4K 竖屏 (2160×3840) + 透明网页视频。</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="bwSaveProfile" type="button" class="bw-btn">保存规格</button>
+        <button id="bwRunExport" type="button" class="bw-btn bw-btn-primary" disabled>一键批量导出已锁定角色 (0 张)</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="bw-workspace">
+    <aside class="bw-sidebar" aria-label="批次角色列表">
+      <div class="bw-filters">
+        <button type="button" class="bw-filter-btn active" data-filter="all">全部</button>
+        <button type="button" class="bw-filter-btn" data-filter="unreviewed">未审</button>
+        <button type="button" class="bw-filter-btn" data-filter="locked">已锁定</button>
+        <button type="button" class="bw-filter-btn" data-filter="needs_fix">待修改</button>
+        <button type="button" class="bw-filter-btn" data-filter="issues">异常</button>
+      </div>
+      <div id="bwItemList" class="bw-list"></div>
+    </aside>
+
+    <div id="batchMainSlot" class="bw-main">
+      <div id="bwReviewBar" class="bw-review-bar" hidden>
+        <div class="bw-review-info">
+          <strong id="bwActiveTitle">角色</strong>
+          <span id="bwActiveSummary" style="font-size:12px;color:#b4b1a7;"></span>
+        </div>
+        <div class="bw-review-controls">
+          <button id="bwBtnLock" type="button" class="bw-btn bw-btn-lock">确认锁定 ✓</button>
+          <button id="bwBtnUnlock" type="button" class="bw-btn" hidden>解锁以修改</button>
+          <input id="bwFixNoteInput" type="text" class="bw-input bw-fix-input" placeholder="不符合标准？写一句备注（如：右脚有灰边 / 后摆露底）" />
+          <button id="bwBtnReject" type="button" class="bw-btn bw-btn-warn">打回待修</button>
+          <button id="bwBtnNext" type="button" class="bw-btn">下一个未审 →</button>
+        </div>
+      </div>
+      <div id="bwEmptyStage" class="bw-empty-stage" hidden>请从左侧列表选择一个角色查看实时预览。</div>
+    </div>
+  </div>
+</section>
 <section id="canvasWorkbench" class="canvas-workbench" hidden aria-label="角色动画实时工作台">
   <section class="cw-stage" aria-labelledby="canvasJobTitle">
     <header class="cw-stage-header">
@@ -1024,6 +1130,7 @@
 <script type="module">
   import { PortraitSpinePlayer, normalizeHealthReport } from '/player/player-widget.js';
   import { createCanvasWorkbench } from '/canvas-workbench.js';
+  import { createBatchWorkbench } from '/batch-workbench.js';
 
   const $ = (id) => document.getElementById(id);
 
@@ -1407,6 +1514,11 @@
   }
 
   const canvasWorkbench = createCanvasWorkbench({request:apiJson, onJob:applyJobState, onStatus:renderCanvasStatus});
+  const batchWorkbench = createBatchWorkbench({
+    request: apiJson,
+    onSelectJob: async (job) => { await applyJobState(job); },
+    onClearJob: () => { canvasWorkbench.hide(); },
+  });
   $('btnApplyCanvas').onclick = async () => {
     if (!state.currentJob) { $('canvasMessage').textContent='请先上传原图创建任务。'; return; }
     const button = $('btnApplyCanvas'); button.disabled = true;
@@ -2470,8 +2582,25 @@
       $('analysisCopyNotice').textContent = err.message;
     }
   });
+  const initialBatchId = new URLSearchParams(window.location.search).get('batch');
   const initialJobId = new URLSearchParams(window.location.search).get('job');
-  if (initialJobId && /^[A-Za-z0-9_-]{1,64}$/.test(initialJobId)) {
+  apiJson('/api/batches').then((res) => {
+    const sel = $('topbarBatchSelect');
+    const list = res.batches || [];
+    if (!sel || !list.length) return;
+    sel.hidden = false;
+    sel.innerHTML = '<option value="">单张任务模式</option>' + list.map((b) =>
+      `<option value="${b.batch_id}">批量：${b.name} (${b.counts?.locked || 0}/${b.counts?.total || 0} 锁)</option>`
+    ).join('');
+    if (initialBatchId) sel.value = initialBatchId;
+    sel.onchange = () => {
+      if (!sel.value) { batchWorkbench.closeBatch(); window.history.replaceState({}, '', '/'); return; }
+      batchWorkbench.openBatch(sel.value).catch((err) => showBanner($('step1Error'), err.message));
+    };
+  }).catch(() => {});
+  if (initialBatchId && /^[A-Za-z0-9_-]{1,64}$/.test(initialBatchId)) {
+    batchWorkbench.openBatch(initialBatchId, initialJobId).catch((err) => showBanner($('step1Error'), err.message));
+  } else if (initialJobId && /^[A-Za-z0-9_-]{1,64}$/.test(initialJobId)) {
     state.requestedJobId = initialJobId;
     apiJson(`/api/jobs/${encodeURIComponent(initialJobId)}`).then((job) => {
       if (state.requestedJobId === initialJobId) return applyJobState(job);

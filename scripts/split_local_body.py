@@ -53,7 +53,8 @@ def main(argv=None):
                                      radius=contour.get('radius', 10))
             methods[name] = 'perceptual_contour_band'
         definitions.append(BodyLayer(name, mask, order, layer['kind'] == 'soft'))
-    split = split_local_body(body, definitions, padding_px=spec.get('padding_px', 56),
+    default_pad = max(56, min(120, int(round(56 * max(body.shape[:2]) / 1800.0))))
+    split = split_local_body(body, definitions, padding_px=spec.get('padding_px', default_pad),
                              min_island_px=spec.get('min_island_px', 12))
     if any(not owned.any() for owned in split.ownership.values()):
         parser.error('At least one layer has no visible pixels; review its seed and depth')

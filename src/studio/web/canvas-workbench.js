@@ -38,7 +38,7 @@ export function createCanvasWorkbench({ request, onJob, onStatus }) {
 
   const serialize = () => JSON.stringify([rows.map(row => [row.name, row.enabled]), [...scales], overall]);
   const isDirty = () => serialize() !== reference;
-  const isLocked = () => busy || !ready || job?.status === 'running';
+  const isLocked = () => busy || !ready || job?.status === 'running' || Boolean(job?.locked);
   const requiresActivation = () => [...scales].some(([driver, value]) => baked.get(driver) === 0 && effectiveCanvasMotionRatio(value,overall) > 0);
   const message = text => { editingMessage = text; get('canvasWorkbenchMessage').textContent = text; };
 
@@ -61,7 +61,8 @@ export function createCanvasWorkbench({ request, onJob, onStatus }) {
     for (const control of get('canvasControlScroll').querySelectorAll('[data-local-control]')) {
       control.disabled = locked || control.dataset.inactive === 'true';
     }
-    get('canvasLiveBadge').textContent = busy || job?.status === 'running' ? '保存烘焙中' : ready ? '实时预览' : '载入中';
+    get('canvasLiveBadge').textContent = job?.locked ? '已锁定 🔒' : busy || job?.status === 'running' ? '保存烘焙中' : ready ? '实时预览' : '载入中';
+    if (job?.locked && !editingMessage) get('canvasWorkbenchMessage').textContent = '该角色已确认锁定防误改；如需继续调参请先点上方「解锁」。';
     onStatus({ busy: busy || job?.status === 'running', ready });
   }
 

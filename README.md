@@ -22,6 +22,10 @@ python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> 
 
 默认本机直通：带背景原图先经 `scripts/local_matte.py` 去底并看三联对照图，透明原图直接经 `scripts/split_local_body.py`（底层 `src/pipeline/local_body_split.py`）按真实边缘贴合、前后景分层、后层遮挡桥接补全与深本色垫边切分，以 `local-direct-split` 来源直进 Studio 实时工作台。公共诊断自动检测同源像素串层、软层大断岛与 100%/150% 满滑块全身露底，红线禁止靠冻住幅度混过检查。仅复杂背景、大面积被挡武器或糊特效且本地补全不足时，才按需补一次 Canvas。
 
+## 文件夹批量处理与真 4K 统一导出
+
+面向 20–30 张立绘的批量生产，提供 `scripts/batch_portrait.py` 与批量验收工作台 `http://127.0.0.1:8765/?batch=<batch_id>`：支持直接扫描本地文件夹并行去底并输出 `matte-overview.jpg` 总览图，输入上限放开至 `4096px` 保留真 4K 清晰度；每个角色支持网页内一键「确认锁定」（服务端 `409 JOB_LOCKED` 写保护 + 重启持久化，重扫目录与返修绝不覆盖已确认项）或填备注「打回待修」集中返修；全部过目后可按统一导出规格（默认勾选 **4K 竖屏 2160×3840 + 底边居中对齐 + 透明网页视频**，并支持 4K 横屏/长边 4096/2K/1080p/自定义及多选 Spine 4.2 ZIP / MP4 / HTML）一键批量导出并生成 `batch-export-manifest.json`。
+
 ## 已验证与交付
 
 逐星暗影第 2 版、爆破新星完整手臂且无火焰残丝版均已获用户视觉签收并导出四件套（Spine 4.2 ZIP、深浅底 30fps MP4、单文件 HTML）。时空幻象（遮挡武器 + 站立 `grounded` 双足锚链）已打通作品库读取、单次 Canvas 三层粗拆、17 层后层桥接补全、自然待机幅度及 100%/150% 满滑块全身压力门禁，Studio 实时预览就绪，待人工签收导出正式包。

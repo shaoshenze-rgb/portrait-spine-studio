@@ -128,6 +128,26 @@ export_default_package(".studio-work/task/preview/rig", ".studio-work/task/final
 
 交付 ZIP（骨架、贴图、构建报告和签收）、深浅底 MP4、自包含 HTML。核 ZIP 完整与所有启用贴图齐备，解码视频为 240 帧／8 秒。ZIP 可能也保留禁用层的图片文件；绘制以骨架 slots 为准。透明网页视频仅按需调用 `export_transparent_web(..., user_signoff_path=...)`。
 
+## 文件夹批量处理与真 4K 统一导出
+
+支持直接传入包含 20–30 张立绘的本地文件夹路径，默认输入保留 `4096px` 4K 原图清晰度（`portrait_task.py prepare` 与 `batch_portrait.py init` 均默认 `--max-long-edge 4096`），`build_rig` 与 `split_local_body.py` 同步按 4K 分辨率等比缩放动作幅度和垫边宽度。
+
+```bash
+# 1. 扫描文件夹、并行本机去底、生成去底总览图并创建 Studio 任务（重扫时自动跳过已锁定角色）
+.venv/bin/python3 scripts/batch_portrait.py init --input-dir <立绘文件夹> --workers 3
+
+# 2. 各角色分层灌入 Studio（带 --wait-if-busy 排队防 409 busy）
+python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts目录> --plan <plan.json> --cleanup --wait-if-busy
+
+# 3. 仅拉取用户在批量网页标记「打回待修」的角色与修改备注（绝不含已锁定角色）
+python3 scripts/batch_portrait.py fix-list --batch <batch_id>
+
+# 4. 统一规格批量导出全部已锁定角色（默认 4K 竖屏 2160x3840 + 透明网页视频）
+python3 scripts/batch_portrait.py export --batch <batch_id> --output-dir <输出目录>
+```
+
+打开 `http://127.0.0.1:8765/?batch=<batch_id>` 即可进入批量验收台：左侧按红/黄/绿体检灯浏览全部角色，满意点「确认锁定」（服务端返回 `409 JOB_LOCKED` 拒绝任何覆盖修改，重启 Studio 后自动恢复锁定状态），有问题填备注点「打回待修」，全部过目后在顶部面板调整统一导出尺寸（4K 竖/横/长边 4096、2K、1080p、自定义、对齐方式）与格式（默认勾选 `透明网页视频`，可多选 `Spine 4.2 ZIP`、`深浅底 MP4`、`单文件 HTML`）并一键批量导出。
+
 ## 连接诊断与返修编排（历史遗留／当前主链停用）
 
 `canvas_repair_workflow.py`、`connection_diagnostics.py` 冻结保留；`canvas_handoff.py workflow`、SAM 分割、旧 apply-analysis/逐模块审计路径仅供历史维护，不作为当前 Canvas 预览与签收的前置条件。不要为旧机器 pending 重启多轮审查。

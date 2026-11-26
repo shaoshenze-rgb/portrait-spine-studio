@@ -32,6 +32,9 @@ def main(argv=None) -> int:
     prepare.add_argument('--image', required=True, type=Path)
     prepare.add_argument('--character', help='Studio 任务和输出文件使用的角色标识')
     prepare.add_argument('--preset', choices=['agile_full', 'heavy_weapon_full', 'bust_half'], default='agile_full')
+    prepare.add_argument('--max-long-edge', type=int, default=4096, help='输入长边上限（默认 4096 保留 4K 清晰度）')
+    prepare.add_argument('--wait-if-busy', action='store_true', help='若 Studio 正忙则排队等待而不立即报 busy')
+    prepare.add_argument('--batch', help='可选所属批次 ID')
     apply = sub.add_parser('apply-analysis', help='应用当前对话读图产出的同任务视觉JSON，停在绑定预览')
     apply.add_argument('--job', required=True)
     apply.add_argument('--analysis', required=True, type=Path, help='完整模块 V2 JSON 文件，额外含 job_id')
@@ -40,6 +43,7 @@ def main(argv=None) -> int:
     canvas.add_argument('--parts-dir', required=True, type=Path)
     canvas.add_argument('--plan', required=True, type=Path)
     canvas.add_argument('--cleanup', action='store_true')
+    canvas.add_argument('--wait-if-busy', action='store_true', help='若 Studio 正忙则排队等待而不立即报 busy')
     generate = sub.add_parser('generate', help='确认已有绑定后生成动画；仅在本次任务已授权验收时使用')
     generate.add_argument('--job', required=True)
     generate.add_argument('--module-review', required=True, type=Path, help='实际查看当前原图及每个完整模块后的观察JSON，绑定确认与语义复核一次提交')
@@ -79,17 +83,22 @@ def main(argv=None) -> int:
         if health.get('module_qc_rules_version') != RULES_VERSION:
             raise ValueError('当前服务仍加载旧QC规则，请启动已审核的当前版本后再继续；未提交请求。')
         if args.command == 'prepare':
-            output = request('/api/jobs', {
+            payload = {
                 'filename': args.image.name,
                 'image_base64': base64.b64encode(args.image.read_bytes()).decode('ascii'),
                 'preset': args.preset, 'character': args.character, 'pause_before_animation': True,
-            })
+                'max_long_edge': args.max_long_edge, 'wait_if_busy': args.wait_if_busy,
+            }
+            if args.batch:
+                payload['batch_id'] = args.batch
+            output = request('/api/jobs', payload)
         elif args.command == 'apply-analysis':
             analysis = json.loads(args.analysis.read_text(encoding='utf-8'))
             output = request('/api/jobs/' + args.job + '/apply-analysis', {'job_id': args.job, 'analysis': analysis})
         elif args.command == 'apply-canvas':
             output = request('/api/jobs/' + args.job + '/apply-canvas-layers', {
-                'parts_dir': str(args.parts_dir.resolve()), 'plan': str(args.plan.resolve()), 'cleanup': args.cleanup})
+                'parts_dir': str(args.parts_dir.resolve()), 'plan': str(args.plan.resolve()),
+                'cleanup': args.cleanup, 'wait_if_busy': args.wait_if_busy})
         elif args.command == 'generate':
             output = request('/api/jobs/' + args.job + '/confirm-rig',
                              {'module_review': json.loads(args.module_review.read_text(encoding='utf-8'))})

@@ -680,7 +680,7 @@ def build_rig(
         ys_min = min((float(p["bbox"][1]) for p in parts), default=0.0)
         ys_max = max((float(p["bbox"][1] + p["bbox"][3]) for p in parts), default=float(H))
         body_h_px = max(64.0, ys_max - ys_min)
-    height_scale = max(0.35, min(1.35, body_h_px / 1080.0))
+    height_scale = max(0.35, min(4.0, body_h_px / 1080.0))
 
     bone_roles = {b["name"]: str(b.get("role")) for b in rig_spec.get("bones", []) if b.get("role")}
     ik_driven = {bn for c in ik_json for bn in c.get("bones", [])}
