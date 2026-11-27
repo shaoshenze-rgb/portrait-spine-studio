@@ -165,3 +165,51 @@ class OriginalBodyRecoveryTests(unittest.TestCase):
         self.assertEqual(report['recovered_pixel_count'],600)
         self.assertTrue((composite[62:78,40:70,3]==0).all())
         np.testing.assert_array_equal(composite[30:60,40:60],original[30:60,40:60])
+
+
+class CanvasQualityDefenseTests(unittest.TestCase):
+    def test_duplicate_canvas_silhouette_and_rgb_drift_are_detected(self):
+        from src.pipeline.canvas_layer_cleanup import check_original_fidelity, inspect_local_layer_warnings
+        orig = np.full((80, 80, 4), [40, 90, 180, 255], np.uint8)
+        dup_a = {'id': 'body_a', 'rgba': orig.copy(), 'draw_order': 0, 'kind': 'rigid', 'role': 'torso',
+                 'provenance': {'operation': 'split-layers'}}
+        dup_b = {'id': 'body_b', 'rgba': orig.copy(), 'draw_order': 1, 'kind': 'rigid', 'role': 'torso',
+                 'provenance': {'operation': 'split-layers'}}
+        warnings = inspect_local_layer_warnings([dup_a, dup_b], orig)
+        self.assertTrue(any(w['code'] == 'duplicate_layer_silhouette' for w in warnings), warnings)
+
+        drifted = np.full((80, 80, 4), [230, 30, 30, 255], np.uint8)
+        fid = check_original_fidelity(orig, drifted, layers=[{'rgba': drifted, 'enabled': True}])
+        self.assertTrue(fid['drifted'], fid)
+
+        clean_fid = check_original_fidelity(orig, orig.copy(), layers=[{'rgba': orig.copy(), 'enabled': True}])
+        self.assertFalse(clean_fid['drifted'], clean_fid)
+
+    def test_studio_traffic_light_blocks_rgb_drift_and_duplicate_silhouette(self):
+        from pathlib import Path
+        import tempfile
+        from src.studio.server import StudioJobManager
+        root_dir = Path(__file__).resolve().parents[2] / '.studio-work'
+        with tempfile.TemporaryDirectory(dir=root_dir) as tmp:
+            mgr = StudioJobManager(Path(tmp))
+            base_job = {
+                'status': 'canvas_preview',
+                'canvas_mode': True,
+                'canvas_checks': {'files_complete': True, 'loop_seam': True,
+                                  'original_coverage': True, 'rigid_no_stretch': True},
+                'canvas_diagnostics': {
+                    'exposure_stress': {'status': 'pass'},
+                    'cleanup': {'recovered_pixel_count': 0, 'recovered_region_count': 0},
+                    'cleanup_warnings': [],
+                },
+            }
+            light, _ = mgr._compute_item_traffic_light({'status': 'done'}, base_job)
+            self.assertEqual(light, 'green')
+            for code in ('canvas_original_rgb_drift', 'duplicate_layer_silhouette'):
+                bad_job = dict(base_job)
+                bad_job['canvas_diagnostics'] = {
+                    **base_job['canvas_diagnostics'],
+                    'cleanup_warnings': [{'code': code}],
+                }
+                light, msg = mgr._compute_item_traffic_light({'status': 'done'}, bad_job)
+                self.assertEqual(light, 'red', (code, msg))

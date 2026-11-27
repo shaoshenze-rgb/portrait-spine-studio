@@ -1833,12 +1833,15 @@ class StudioJobManager:
             diag = job.get("canvas_diagnostics") or {}
             stress = diag.get("exposure_stress") or {}
             warnings = diag.get("cleanup_warnings") or []
+            fatal = [w for w in warnings if w.get("code") in ("canvas_original_rgb_drift", "duplicate_layer_silhouette")]
             severe = [w for w in warnings if w.get("code") in ("local_layer_pixel_bleed", "separated_soft_islands")]
             cleanup_rep = diag.get("cleanup") or {}
             rec_px = int(cleanup_rep.get("recovered_pixel_count") or 0)
             rec_cnt = int(cleanup_rep.get("recovered_region_count") or 0)
             if not all(checks.values()) or stress.get("status") == "fail":
                 return "red", "基础或压力体检未通过"
+            if fatal:
+                return "red", "拆层与原图严重失真或存在重影层，禁止采用（须回画布重拆或本机兜底）"
             if rec_px > 12_000 or rec_cnt > 12:
                 return "red", f"漏认补缺过多（{rec_cnt}块/{rec_px}px），存在碎渣错粘风险"
             if severe or stress.get("status") != "pass":

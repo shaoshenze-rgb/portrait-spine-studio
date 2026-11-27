@@ -84,6 +84,159 @@ def gray(rgba):
     return Image.fromarray(np.clip(rgba[...,:3]*a+145*(1-a),0,255).astype('uint8'))
 
 
+def _downsample_rgba(rgba, max_edge=1024):
+    h, w = rgba.shape[:2]
+    if max(h, w) <= max_edge:
+        return rgba
+    scale = max_edge / float(max(h, w))
+    nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+    try:
+        import cv2
+        return cv2.resize(rgba, (nw, nh), interpolation=cv2.INTER_AREA)
+    except Exception:
+        return np.asarray(Image.fromarray(rgba).resize((nw, nh), Image.Resampling.BILINEAR))
+
+
+def assess_canvas_split_quality(results, aligned_layers, source, *, is_subsplit=False):
+    """Hard intake quality gate for Canvas split-layers outputs."""
+    total_layers = len(results)
+    aligned_count = len(aligned_layers)
+    failed_count = total_layers - aligned_count
+    reg_fail_ratio = float(failed_count / max(1, total_layers))
+
+    src_s = _downsample_rgba(source)
+    orig_fg = src_s[..., 3] >= 180
+    fg_area = int(orig_fg.sum())
+    layers_s = [(nid, _downsample_rgba(rgba)) for nid, rgba in aligned_layers]
+
+    reasons = []
+    if aligned_count < 2:
+        reasons.append('insufficient_aligned_layers')
+    if total_layers > 0 and reg_fail_ratio > 0.35:
+        reasons.append('high_registration_failure_rate')
+
+    uncovered_ratio = 0.0
+    min_rgb_mae = 0.0
+    high_rgb_diff_ratio = 0.0
+    if not is_subsplit and fg_area > 0:
+        union_cov = np.zeros(orig_fg.shape, dtype=bool)
+        best_diff = np.full(orig_fg.shape, np.inf, dtype=np.float32)
+        src_rgb = src_s[..., :3].astype(np.int16)
+        for _, rgba in layers_s:
+            union_cov |= rgba[..., 3] >= 80
+            solid = orig_fg & (rgba[..., 3] >= 160)
+            if solid.any():
+                diff = np.abs(rgba[..., :3].astype(np.int16) - src_rgb).mean(axis=2)
+                best_diff = np.minimum(best_diff, np.where(solid, diff, np.inf))
+        uncovered_ratio = float((orig_fg & ~union_cov).sum() / fg_area)
+        if uncovered_ratio > 0.08:
+            reasons.append('missing_original_coverage')
+        covered_solid = orig_fg & np.isfinite(best_diff)
+        if covered_solid.any():
+            vals = best_diff[covered_solid]
+            min_rgb_mae = float(vals.mean())
+            high_rgb_diff_ratio = float((vals > 40.0).mean())
+        elif aligned_count > 0:
+            min_rgb_mae = 255.0
+            high_rgb_diff_ratio = 1.0
+        if aligned_count > 0 and (min_rgb_mae > 26.0 or high_rgb_diff_ratio > 0.16):
+            reasons.append('original_rgb_fidelity_drift')
+
+    duplicate_pairs = []
+    max_pair_iou = 0.0
+    min_dup_area = max(64, int(0.005 * max(1, fg_area)))
+    masks = []
+    for nid, rgba in layers_s:
+        m = rgba[..., 3] >= 160
+        if not is_subsplit and fg_area > 0:
+            m = m & orig_fg
+        if int(m.sum()) >= min_dup_area:
+            masks.append((nid, m))
+    for i in range(len(masks)):
+        id_a, m_a = masks[i]
+        for j in range(i + 1, len(masks)):
+            id_b, m_b = masks[j]
+            inter = int((m_a & m_b).sum())
+            if not inter:
+                continue
+            union = int((m_a | m_b).sum())
+            iou = float(inter / max(1, union))
+            if iou > max_pair_iou:
+                max_pair_iou = iou
+            if iou >= 0.70:
+                duplicate_pairs.append([id_a, id_b, round(iou, 3)])
+    if duplicate_pairs:
+        reasons.append('duplicate_clone_layers')
+
+    sliver_thresh = max(32, int(0.002 * max(1, fg_area)))
+    tiny_sliver_count = sum(1 for _, rgba in layers_s if int((rgba[..., 3] >= 120).sum()) < sliver_thresh)
+    tiny_sliver_ratio = float(tiny_sliver_count / max(1, aligned_count))
+    if aligned_count > 20:
+        reasons.append('excessive_layer_fragmentation')
+    if aligned_count >= 2 and tiny_sliver_ratio > 0.50:
+        reasons.append('excessive_tiny_slivers')
+
+    passed = len(reasons) == 0
+    return {
+        'passed': passed,
+        'verdict': 'pass' if passed else 'reject_fallback_local',
+        'reasons': reasons,
+        'duplicate_pairs': duplicate_pairs,
+        'metrics': {
+            'total_layers': total_layers,
+            'aligned_count': aligned_count,
+            'failed_registration_count': failed_count,
+            'registration_fail_ratio': round(reg_fail_ratio, 4),
+            'uncovered_original_ratio': round(uncovered_ratio, 4),
+            'min_rgb_mae': round(min_rgb_mae, 2),
+            'high_rgb_diff_ratio': round(high_rgb_diff_ratio, 4),
+            'max_pair_iou': round(max_pair_iou, 4),
+            'tiny_sliver_count': tiny_sliver_count,
+            'tiny_sliver_ratio': round(tiny_sliver_ratio, 4),
+        },
+    }
+
+
+def _render_split_composite_comparison(aligned_layers, source, out_path):
+    src_s = _downsample_rgba(source, max_edge=768)
+    h, w = src_s.shape[:2]
+    layers_s = [_downsample_rgba(rgba, max_edge=768) for _, rgba in aligned_layers]
+
+    def _compose(seq):
+        canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        for arr in seq:
+            canvas.alpha_composite(Image.fromarray(arr))
+        return np.asarray(canvas)
+
+    fwd = _compose(layers_s)
+    rev = _compose(list(reversed(layers_s))) if len(layers_s) > 1 else fwd
+    fg = src_s[..., 3] >= 180
+    if fg.any():
+        err_fwd = float(np.abs(fwd[..., :3].astype(np.int16) - src_s[..., :3].astype(np.int16))[fg].mean())
+        err_rev = float(np.abs(rev[..., :3].astype(np.int16) - src_s[..., :3].astype(np.int16))[fg].mean())
+        comp = fwd if err_fwd <= err_rev else rev
+    else:
+        comp = fwd
+
+    diff_rgb = np.clip(np.abs(comp[..., :3].astype(np.int16) - src_s[..., :3].astype(np.int16)) * 4, 0, 255).astype(np.uint8)
+    missing = fg & (comp[..., 3] < 80)
+    diff_rgb[missing] = [255, 30, 30]
+    diff_rgb[~fg & (comp[..., 3] < 20)] = [145, 145, 145]
+
+    p1, p2, p3 = gray(src_s), gray(comp), Image.fromarray(diff_rgb)
+    for im in (p1, p2, p3):
+        im.thumbnail((520, 700))
+    pw, ph = p1.size
+    sheet = Image.new('RGB', (pw * 3, ph + 32), (145, 145, 145))
+    sheet.paste(p1, (0, 32)); sheet.paste(p2, (pw, 32)); sheet.paste(p3, (pw * 2, 32))
+    d = ImageDraw.Draw(sheet)
+    d.text((6, 7), 'ORIGINAL', fill='black')
+    d.text((pw + 6, 7), 'CANVAS COMPOSITE', fill='black')
+    d.text((pw * 2 + 6, 7), 'DIFF x4 (RED=MISSING)', fill='black')
+    sheet.save(out_path, quality=92)
+    return out_path
+
+
 def import_layers(receipt_path,source_path,working_path,assets_dir,out_dir,*,parent_report=None):
     out=Path(out_dir).resolve();out.mkdir(parents=True,exist_ok=True)
     pending=out/'CANVAS_IMPORT_PENDING';failed=out/'CANVAS_IMPORT_FAILED'
@@ -137,6 +290,7 @@ def _import_layers(receipt_path,source_path,working_path,assets_dir,out_dir,*,pa
         raise ValueError('工作图比例与Canvas源图不一致；子层须携带父交接记录。')
     shutil.copy2(receipt_path,out/'canvas-receipt.json')
     results=[]
+    aligned_for_gate=[]
     for node in nodes:
         path=checked_asset(assets_dir,node)
         if node['node_id']==receipt.get('base_node_id'):continue
@@ -163,6 +317,7 @@ def _import_layers(receipt_path,source_path,working_path,assets_dir,out_dir,*,pa
         from src.pipeline.canvas_layer_cleanup import clean_layer
         cleaned,cleanup_stats=clean_layer(aligned,source)
         clean_path=out/(node['node_id']+'-cleaned.png');Image.fromarray(cleaned).save(clean_path)
+        aligned_for_gate.append((node['node_id'],cleaned))
         entry['cleanup']={**cleanup_stats,'image':str(clean_path),'sha256':sha(clean_path)}
         entry.update(status='aligned_pending_review',image=str(dest),sha256=sha(dest),transform=matrix.tolist())
         ys,xs=np.nonzero(aligned[...,3]>0)
@@ -178,6 +333,15 @@ def _import_layers(receipt_path,source_path,working_path,assets_dir,out_dir,*,pa
             'image_size':list(working_size),'canvas_scene_id':receipt['scene_id'],'source_node_id':receipt['source_node_id'],
             'operation':operation,'layers':results,'status':'needs_layer_review',
             'next':'Review important module semantics; incorrect grouping returns to Canvas, never becomes a per-character code patch.'}
+    if operation=='split-layers':
+        qg=assess_canvas_split_quality(results,aligned_for_gate,source,is_subsplit=bool(parent_report))
+        report['quality_gate']=qg
+        if not parent_report and aligned_for_gate:
+            comp_path=_render_split_composite_comparison(aligned_for_gate,source,out/'canvas-composite-comparison.jpg')
+            report['composite_comparison']=str(comp_path)
+        if not qg['passed']:
+            report['next']=('Canvas split quality gate REJECTED ('+','.join(qg['reasons'])+
+                            '); do NOT adopt messy layers — retry Canvas once or fall back to local split.')
     if lineage:report['lineage']=lineage;report['root_source_asset_sha256']=lineage['root_source_asset_sha256']
     (out/'import-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
     return report

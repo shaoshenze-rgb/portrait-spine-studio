@@ -21,7 +21,11 @@ description: 触发词「spine动画」（用户说“spine动画”/“Spine动
 2. **Mivo Canvas 默认优先拆补 + PSD 4K 无损层直取 + 本机兜底（禁止粗多边形盲切）**：
    - **无多层原画的扁平图（含单层 PNG/JPG 与扁平 PSD）**：默认**必须优先调用 Mivo Canvas**（`ghost_id="xd-mivo-canvas", namespace="xd"`：`canvas_selection` 验面板就绪 → 经 `ghost_call.attachments` 送入工作目录 `matted.png` 调一次顶层 `canvas_split_layers` 做 AI 拆层与遮挡补全 → `read_images(original)` 读回层原件 → `scripts/canvas_handoff.py import-layers` 真实回执与 SIFT 对齐入库；若关键大面积被挡武器/披风/手臂仍缺真实纹理，按需对目标节点补一次 `canvas_edit_image` 局部遮挡补全）；
    - **多层原画 `.psd`（≥3 个可见非背景结构层）**：画师已无损画好的 4K/8K 独立结构层（前后景特效、披风后摆、发束、独立手臂/武器）优先用 `scripts/psd_split_parts.py inspect` + `split` 无损提取（保留画师遮挡下原绘像素，不降清到 2K）；**若 PSD 把人物「头+躯干+手臂+腿脚」合画在单个合并身体层，先剥离原画附件层，再优先把该合并身体层送 Mivo Canvas `canvas_split_layers` 做 AI 拆层与遮挡补全**（若只需轻量切头/足且无复杂遮挡，也可直接无损补拆）；
-   - **仅当 Mivo Canvas 不可用或出错时才降级本机兜底**：遇到 `PANEL_CLOSED`、`PANEL_NOT_READY`、`KEY_REQUIRED`、`MIVO_AUTH_INVALID`、超时、原件不可读、SIFT 对齐失败（`needs_canvas_registration`）或 Canvas 拆层严重糊边残缺时，自动降级走本机 `scripts/split_local_body.py` 兜底，并如实记录降级原因与 `local-direct-split` 来源（绝不伪造 Canvas 回执，绝不因 Canvas 异常卡死整批）；
+   - **Canvas 拆层入库硬门槛（拆乱即拒，绝不带病采用）**：走 Mivo Canvas 拆回的图层**绝不是无条件直接采用**，必须先过 `scripts/canvas_handoff.py import-layers` 的自动质检门（`import-report.json["quality_gate"]`）+ 人工目检 `canvas-composite-comparison.jpg` 与各层 `*-comparison.jpg`：
+     - **机判拒用红线**（任一触发即判 `verdict == "reject_fallback_local"`）：对齐可用层 `< 2`、SIFT 对齐失败率 `> 35%`、原图前景漏件 `> 8%`、原图外观/色彩严重失真（`min_rgb_mae > 26` 或高差异像素 `> 16%`）、出现重影克隆层（两层前景 `IoU >= 0.70`）、拆成 `> 20` 层或超半数 `< 0.2%` 碎渣；
+     - **目检拒用红线**：脸部/五官变形、盔甲武器被 AI 改绘糊件、边缘脏边溢色、主体和部件错切粘连；
+     - **拒用后动作**：至多调整指令回 Canvas 重拆 1 次，若仍不达标**立刻拒用并自动降级走本机/PSD 兜底**；即便入库放行，后续也**一视同仁**过全套 Studio 硬门（含新增的 `canvas_original_rgb_drift` / `duplicate_layer_silhouette` 红灯拦截、四项基础检查、100%/150% 露底压测与满幅动感验收），不达标绝不亮绿灯；
+   - **仅当 Mivo Canvas 不可用、报错或未通过入库硬门槛时降级本机兜底**：遇到 `PANEL_CLOSED`、`PANEL_NOT_READY`、`KEY_REQUIRED`、`MIVO_AUTH_INVALID`、超时、原件不可读、SIFT 对齐失败（`needs_canvas_registration`）或 `quality_gate.passed == false` / 目检不合格时，自动降级走本机 `scripts/split_local_body.py` 兜底，并如实记录降级原因与 `local-direct-split` 来源（绝不伪造 Canvas 回执，绝不因 Canvas 异常卡死整批）；
    - **高良率精简大模块原则**：官网 8 秒微动待机默认按 **6–9 个清晰大模块** 组织（躯干主体、头/发、完整手臂+武器、独立披风/飘带/悬浮特效），不硬拆 12–14 块互相交叉的碎件；走本机兜底遇到无底图的扁平死交叉遮挡区时，并回主体随呼吸整体微动，绝不硬切死遮挡制造假裂缝；
    - 无论哪种拆件路径，**漏认像素占比 `unclaimed_ratio` 必须 `< 1.5%`**（绝不允许留数万至数百万像素给自动补缺把刀刃、衣摆、火焰碎渣胡乱粘到头/手臂等错位部件上）；半透明火焰/光效/漩涡必须整组完整归属，不得切碎；后层垫边不得在摆动空隙中露出纯色涂抹糊块。
 3. **单张绿灯闸门（红灯必停，不绿灯不准开下一张）**：
@@ -100,7 +104,7 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 
 ## 红线
 
-- 默认品质优先：扁平图与合并主体层优先调 Mivo Canvas（`canvas_split_layers` / `canvas_edit_image` / `canvas_remove_background`），画师 4K/8K 原画 PSD 已独立分好的层无损直取；仅当 Canvas 不可用、报错或对齐失败时自动降级本机兜底，不因单次 Canvas 故障卡死整批。
+- 默认品质优先 + 拆乱即拒：扁平图与合并主体层优先调 Mivo Canvas（`canvas_split_layers` / `canvas_edit_image` / `canvas_remove_background`），画师 4K/8K 原画 PSD 已独立分好的层无损直取；**Canvas 拆回的每一套层都必须先过 `import-report.json["quality_gate"]` + `canvas-composite-comparison.jpg` 入库硬门，再过全套 Studio 绿灯验收门**，拆乱、变脸、漏件、重影一律拒用，重拆 1 次仍不达标或 Canvas 不可用/报错时自动降级本机兜底，绝不带病采用。
 - 不把软布摆动或呼吸压到近乎静止来过压力检查；保持自然可见的默认动作，用后层桥接和深垫边修露底。
 - 不做二、三级递归拆子层；绝不伪造 Canvas 回执字段，纯本地直分必须如实标记 `local-direct-split`。
 - 不用静态 6 px 距离或零星半透明边缘锁死预览与已签收导出。

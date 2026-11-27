@@ -207,4 +207,82 @@ class CanvasHandoffTests(unittest.TestCase):
         self.assertFalse(out.exists())
 
 
+    def _run_multi_split(self, layers_rgba, *, fail_nodes=()):
+        """Helper to run import_layers with multiple synthetic aligned RGBA layers."""
+        src_arr = np.zeros((100, 100, 4), np.uint8)
+        src_arr[10:90, 10:90] = [40, 90, 160, 255]
+        src_arr[10:90, 50:90] = [200, 120, 50, 255]
+        Image.fromarray(src_arr).save(self.source)
+        base_p = self.assets / 'base.png'
+        Image.fromarray(src_arr).save(base_p)
+        nodes = [{'node_id': 'base', 'asset_sha256': handoff.sha(base_p)}]
+        by_id = {}
+        for nid, arr in layers_rgba:
+            p = self.assets / (nid + '.png')
+            Image.fromarray(arr).save(p)
+            nodes.append({'node_id': nid, 'title': nid, 'asset_sha256': handoff.sha(p)})
+            by_id[nid] = arr
+        data = {
+            'version': 1, 'operation': 'split-layers', 'scene_id': 'synthetic',
+            'source_node_id': 'root-node', 'source_sha256': handoff.sha(self.source),
+            'task_id': 'synthetic-multi', 'base_node_id': 'base', 'nodes': nodes,
+        }
+        self.receipt.write_text(json.dumps(data))
+        identity = np.array([[1., 0., 0.], [0., 1., 0.]])
+        fail_set = set(fail_nodes)
+        call_idx = {'i': 0}
+
+        def fake_register(layer, src):
+            nid = layers_rgba[call_idx['i']][0]
+            call_idx['i'] += 1
+            if nid in fail_set:
+                return None, {'reason': 'mock registration fail'}
+            return identity, {'inliers': 25}
+
+        with patch.object(handoff, 'register_layer', side_effect=fake_register),              patch.object(handoff, 'warp_rgba', side_effect=lambda layer, matrix, size: layer):
+            return handoff.import_layers(self.receipt, self.source, self.source, self.assets, self.out)
+
+    def test_split_quality_gate_passes_clean_two_part_split_and_writes_composite(self):
+        left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:55] = [40, 90, 160, 255]
+        right = np.zeros((100, 100, 4), np.uint8); right[10:90, 50:90] = [200, 120, 50, 255]
+        report = self._run_multi_split([('left', left), ('right', right)])
+        self.assertTrue(report['quality_gate']['passed'], report['quality_gate'])
+        self.assertEqual(report['quality_gate']['verdict'], 'pass')
+        self.assertTrue(Path(report['composite_comparison']).exists())
+
+    def test_split_quality_gate_rejects_missing_coverage(self):
+        left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:50] = [40, 90, 160, 255]
+        # Missing 35% of right side
+        right = np.zeros((100, 100, 4), np.uint8); right[10:40, 50:90] = [200, 120, 50, 255]
+        report = self._run_multi_split([('left', left), ('right', right)])
+        self.assertFalse(report['quality_gate']['passed'])
+        self.assertEqual(report['quality_gate']['verdict'], 'reject_fallback_local')
+        self.assertIn('missing_original_coverage', report['quality_gate']['reasons'])
+
+    def test_split_quality_gate_rejects_severe_rgb_hallucination(self):
+        left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:50] = [240, 10, 10, 255]
+        right = np.zeros((100, 100, 4), np.uint8); right[10:90, 50:90] = [10, 240, 240, 255]
+        report = self._run_multi_split([('left', left), ('right', right)])
+        self.assertFalse(report['quality_gate']['passed'])
+        self.assertIn('original_rgb_fidelity_drift', report['quality_gate']['reasons'])
+
+    def test_split_quality_gate_rejects_duplicate_clone_layers(self):
+        full = np.zeros((100, 100, 4), np.uint8)
+        full[10:90, 10:50] = [40, 90, 160, 255]; full[10:90, 50:90] = [200, 120, 50, 255]
+        clone = full.copy()
+        report = self._run_multi_split([('body_a', full), ('body_b', clone)])
+        self.assertFalse(report['quality_gate']['passed'])
+        self.assertIn('duplicate_clone_layers', report['quality_gate']['reasons'])
+        self.assertTrue(report['quality_gate']['duplicate_pairs'])
+
+    def test_split_quality_gate_rejects_high_registration_failure_rate(self):
+        left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:50] = [40, 90, 160, 255]
+        right = np.zeros((100, 100, 4), np.uint8); right[10:90, 50:90] = [200, 120, 50, 255]
+        report = self._run_multi_split(
+            [('left', left), ('right', right), ('bad1', left), ('bad2', right)],
+            fail_nodes=('bad1', 'bad2'),
+        )
+        self.assertFalse(report['quality_gate']['passed'])
+        self.assertIn('high_registration_failure_rate', report['quality_gate']['reasons'])
+
 if __name__=='__main__':unittest.main()

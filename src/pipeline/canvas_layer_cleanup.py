@@ -156,6 +156,98 @@ def check_missing_original_regions(original_rgba, composite_rgba, min_area=400):
     return sorted(regions,key=lambda r:r['area_px'],reverse=True)
 
 
+
+def _downsample_rgba(rgba, max_edge=1024):
+    h, w = rgba.shape[:2]
+    if max(h, w) <= max_edge:
+        return rgba
+    scale = max_edge / float(max(h, w))
+    nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+    try:
+        import cv2
+        return cv2.resize(rgba, (nw, nh), interpolation=cv2.INTER_AREA)
+    except Exception:
+        return np.asarray(Image.fromarray(rgba).resize((nw, nh), Image.Resampling.BILINEAR))
+
+
+def check_original_fidelity(original_rgba, composite_rgba, layers=None):
+    """Measure visible RGB fidelity of assembled layers against original portrait."""
+    orig = _downsample_rgba(original_rgba)
+    comp = _downsample_rgba(composite_rgba)
+    both = (orig[..., 3] >= 180) & (comp[..., 3] >= 180)
+    compared = int(both.sum())
+    if compared == 0:
+        return {'rgb_mae': 0.0, 'high_diff_ratio': 0.0, 'min_layer_rgb_mae': 0.0,
+                'min_layer_high_diff_ratio': 0.0, 'compared_pixels': 0, 'drifted': False}
+    orig_rgb = orig[..., :3].astype(np.int16)
+    comp_vals = np.abs(comp[..., :3].astype(np.int16) - orig_rgb).mean(axis=2)[both]
+    rgb_mae = float(comp_vals.mean())
+    high_ratio = float((comp_vals > 40.0).mean())
+
+    min_mae, min_high = rgb_mae, high_ratio
+    if layers:
+        best = np.full(both.shape, np.inf, dtype=np.float32)
+        for layer in layers:
+            if not layer.get('enabled', True) or layer.get('effect_mode') == 'omit':
+                continue
+            la = _downsample_rgba(layer['rgba'])
+            solid = both & (la[..., 3] >= 160)
+            if solid.any():
+                d = np.abs(la[..., :3].astype(np.int16) - orig_rgb).mean(axis=2)
+                best = np.minimum(best, np.where(solid, d, np.inf))
+        cov = both & np.isfinite(best)
+        if cov.any():
+            bvals = best[cov]
+            min_mae = float(bvals.mean())
+            min_high = float((bvals > 40.0).mean())
+
+    drifted = compared >= 200 and (min_mae > 26.0 or min_high > 0.16)
+    return {
+        'rgb_mae': round(rgb_mae, 2),
+        'high_diff_ratio': round(high_ratio, 4),
+        'min_layer_rgb_mae': round(min_mae, 2),
+        'min_layer_high_diff_ratio': round(min_high, 4),
+        'compared_pixels': compared,
+        'drifted': bool(drifted),
+    }
+
+
+def _check_duplicate_silhouettes(layers, original_rgba):
+    orig = _downsample_rgba(original_rgba)
+    orig_fg = orig[..., 3] >= 180
+    fg_area = int(orig_fg.sum())
+    min_area = max(250, int(0.005 * max(1, fg_area)))
+    entries = []
+    for layer in sorted(layers, key=lambda item: item['draw_order']):
+        if not layer.get('enabled', True) or layer.get('effect_mode') == 'omit':
+            continue
+        if layer.get('role') == 'effect_group':
+            continue
+        la = _downsample_rgba(layer['rgba'])
+        mask = la[..., 3] >= 160
+        if fg_area > 0:
+            mask = mask & orig_fg
+        if int(mask.sum()) >= min_area:
+            entries.append((layer['id'], mask))
+    warnings = []
+    for i in range(len(entries)):
+        id_a, m_a = entries[i]
+        for j in range(i + 1, len(entries)):
+            id_b, m_b = entries[j]
+            inter = int((m_a & m_b).sum())
+            if not inter:
+                continue
+            iou = float(inter / max(1, int((m_a | m_b).sum())))
+            if iou >= 0.70:
+                warnings.append({
+                    'code': 'duplicate_layer_silhouette',
+                    'layers': [id_a, id_b],
+                    'iou': round(iou, 3),
+                    'suggestion': '两层轮廓高度重叠（重影/重复整图），禁止采用，须剔除重影或回 Canvas 重拆',
+                })
+    return warnings
+
+
 def inspect_local_layer_warnings(layers, original_rgba):
     """Check actual textures, not an upstream splitter's self-reported warnings."""
     warnings = []
@@ -195,6 +287,7 @@ def inspect_local_layer_warnings(layers, original_rgba):
                                  'duplicate_pixels': duplicate, 'overlap_pixels': area,
                                  'duplicate_ratio': ratio, 'suggestion': 'replace copied colors with lower-layer underlap'})
         family.append((layer, opaque, from_source))
+    warnings.extend(_check_duplicate_silhouettes(layers, original_rgba))
     return warnings
 
 
@@ -380,7 +473,16 @@ def inspect_canvas_parts_warnings(parts_dir, *, evidence_root):
     parts = json.loads(manifest.read_text())
     original = _read_canvas_source(parts, evidence_root)
     layers = [_read_cleanup_layer(part, parts['canvas'], evidence_root) for part in parts['parts']]
-    return {'layers': {}, 'warnings': inspect_local_layer_warnings(layers, original)}
+    warnings = inspect_local_layer_warnings(layers, original)
+    canvas = Image.new('RGBA', tuple(parts['canvas']))
+    for layer in sorted(layers, key=lambda item: item['draw_order']):
+        if layer.get('enabled', True) and layer.get('effect_mode', 'keep') != 'omit':
+            canvas.alpha_composite(Image.fromarray(layer['rgba']))
+    fidelity = check_original_fidelity(original, np.asarray(canvas), layers=layers)
+    if fidelity['drifted']:
+        warnings.append({'code': 'canvas_original_rgb_drift', **fidelity,
+                         'suggestion': 'Canvas 拆层合成与原图外观偏差过大，回 Canvas 重拆或降级本机拆分'})
+    return {'layers': {}, 'warnings': warnings, 'original_fidelity': fidelity}
 
 
 def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None, recover_missing=True):
@@ -437,6 +539,11 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
     composite=np.asarray(Image.open(result['source']).convert('RGBA'))
     reference=original.copy();reference[recovery_ignore]=0
     report['missing_original_regions']=check_missing_original_regions(reference,composite)
+    fidelity=check_original_fidelity(reference,composite,layers=layers)
+    report['original_fidelity']=fidelity
+    if fidelity['drifted'] and not any(w.get('code')=='canvas_original_rgb_drift' for w in report.get('warnings',[])):
+        report.setdefault('warnings',[]).append({'code':'canvas_original_rgb_drift',**fidelity,
+            'suggestion':'Canvas 拆层合成与原图外观偏差过大，回 Canvas 重拆或降级本机拆分'})
     marked=Image.fromarray(composite);background=Image.new('RGBA',marked.size,(125,125,125,255));background.alpha_composite(marked)
     draw=ImageDraw.Draw(background)
     for r in report['missing_original_regions']:draw.rectangle(r['bbox'],outline='red',width=4)
