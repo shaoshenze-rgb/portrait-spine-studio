@@ -586,3 +586,23 @@ class TestMaskContractAndStandalone(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoftCenterlineGuardrailTests(unittest.TestCase):
+    def test_smooth_curve_untouched_and_hairpin_kink_relaxed(self):
+        from src.pipeline.module_rig import _centerline_max_turn_deg, smooth_sharp_centerline
+
+        smooth = [[100.0, 100.0], [160.0, 115.0], [220.0, 140.0]]
+        out_s, warn_s = smooth_sharp_centerline(smooth)
+        self.assertIsNone(warn_s)
+        self.assertEqual(out_s, smooth)
+
+        # Real 04/cape_r ~83-deg hairpin V-bend
+        hairpin = [[1095.0, 2831.0], [698.0, 2596.0], [546.0, 2790.0]]
+        self.assertGreater(_centerline_max_turn_deg(hairpin), 75.0)
+        out_h, warn_h = smooth_sharp_centerline(hairpin)
+        self.assertIsNotNone(warn_h)
+        self.assertEqual(warn_h["code"], "soft_centerline_sharp_kink_smoothed")
+        self.assertEqual(out_h[0], hairpin[0])
+        self.assertEqual(out_h[-1], hairpin[-1])
+        self.assertLessEqual(_centerline_max_turn_deg(out_h), 42.0)

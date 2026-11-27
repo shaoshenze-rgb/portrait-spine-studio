@@ -52,6 +52,59 @@ def soft_bend_deg_for_link(index: int, *, locked_root: bool = False, scale: floa
     return max(scaled, 0.50)
 
 
+
+SOFT_CENTERLINE_MAX_TURN_DEG = 45.0
+
+
+def _centerline_max_turn_deg(pts):
+    if len(pts) < 3:
+        return 0.0
+    worst = 0.0
+    for i in range(1, len(pts) - 1):
+        ax, ay = float(pts[i][0]) - float(pts[i - 1][0]), float(pts[i][1]) - float(pts[i - 1][1])
+        bx, by = float(pts[i + 1][0]) - float(pts[i][0]), float(pts[i + 1][1]) - float(pts[i][1])
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        if la < 1e-6 or lb < 1e-6:
+            continue
+        cos_t = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+        deg = math.degrees(math.acos(cos_t))
+        if deg > worst:
+            worst = deg
+    return worst
+
+
+def smooth_sharp_centerline(pts, *, max_turn_deg=SOFT_CENTERLINE_MAX_TURN_DEG, target_turn_deg=42.0):
+    """Auto-relax sharp hairpin kinks (>45 deg) in soft-cloth centerlines.
+
+    Acute kinks in a soft_bend bone chain cause LBS mesh self-folding / striped
+    tears inside solid cloth. Smooth curves (<= max_turn_deg) are returned
+    unchanged; sharp kinks relax interior joints while preserving exact start
+    pivot and end tip.
+    """
+    orig_deg = _centerline_max_turn_deg(pts)
+    if len(pts) < 3 or orig_deg <= max_turn_deg:
+        return pts, None
+    cur = [[float(p[0]), float(p[1])] for p in pts]
+    for _ in range(32):
+        if _centerline_max_turn_deg(cur) <= target_turn_deg:
+            break
+        nxt = [cur[0]]
+        for i in range(1, len(cur) - 1):
+            nxt.append([
+                0.5 * cur[i][0] + 0.25 * cur[i - 1][0] + 0.25 * cur[i + 1][0],
+                0.5 * cur[i][1] + 0.25 * cur[i - 1][1] + 0.25 * cur[i + 1][1],
+            ])
+        nxt.append(cur[-1])
+        cur = nxt
+    final_deg = _centerline_max_turn_deg(cur)
+    return cur, {
+        "code": "soft_centerline_sharp_kink_smoothed",
+        "original_max_turn_deg": round(orig_deg, 1),
+        "smoothed_max_turn_deg": round(final_deg, 1),
+    }
+
+
 def _bone(mid: str) -> str:
     return "module_" + mid
 
@@ -406,7 +459,7 @@ def build_module_specs(image_path: Union[str, Path], *, character: str,
     _validate_rig_mask_placement(modules, contract.get("connections") or [], mod_masks, w, h, body_h,
                                  hidden_joint_support=hidden_joint_support)
     bones = [{"name":"root", "parent":None, "pos":[w/2.0,float(h)], "role":"root"}]
-    chains, skin, parts, projection_modules, ik = {}, {}, [], [], []
+    chains, skin, parts, projection_modules, ik, centerline_warnings = {}, {}, [], [], [], []
     for m in modules:
         mid, driver = m["id"], _bone(m["id"])
         pos = point(m["pivot"])
@@ -416,6 +469,9 @@ def build_module_specs(image_path: Union[str, Path], *, character: str,
         if m["motion_type"] == "soft":
             cname = "bend_" + mid
             pts = [point(q) for q in m["centerline"]]
+            pts, kink_warn = smooth_sharp_centerline(pts)
+            if kink_warn is not None:
+                centerline_warnings.append({"module": mid, **kink_warn})
             count = len(pts)-1
             chains[cname] = {"parent":driver, "pts":pts, "count":count}
             soft_bones = [cname + str(i+1) for i in range(count)]
@@ -547,7 +603,7 @@ def build_module_specs(image_path: Union[str, Path], *, character: str,
     rig = {"character":character,"duration":8.0,"fps":30,"key_step":.125,
            "origin":[w/2.0,float(h)],"body_height_px":body_h,"pose_type":contract["pose_type"],
            "bones":bones,"chains":chains,"ik":ik,"skin":skin,
-           "moduleContract":module_projection,"preserve_visual_joints":True}
+           "centerlineWarnings":centerline_warnings,"moduleContract":module_projection,"preserve_visual_joints":True}
     return {"parts":parts,"min_island_px":0,"feather_px":0,"pose_type":contract["pose_type"],
             "module_contract":module_projection}, rig
 
