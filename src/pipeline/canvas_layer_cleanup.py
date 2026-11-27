@@ -170,6 +170,25 @@ def _downsample_rgba(rgba, max_edge=1024):
         return np.asarray(Image.fromarray(rgba).resize((nw, nh), Image.Resampling.BILINEAR))
 
 
+def _max_connected_area(mask, open_px=0):
+    u8 = mask.astype(np.uint8)
+    if not u8.any():
+        return 0
+    try:
+        import cv2
+        if open_px > 0:
+            k = np.ones((open_px * 2 + 1, open_px * 2 + 1), np.uint8)
+            u8 = cv2.morphologyEx(u8, cv2.MORPH_OPEN, k)
+            if not u8.any():
+                return 0
+        n, _, stats, _ = cv2.connectedComponentsWithStats(u8, connectivity=8)
+        return int(stats[1:, cv2.CC_STAT_AREA].max()) if n > 1 else 0
+    except Exception:
+        labels = _components(np.pad(u8 > 0, 1))[1:-1, 1:-1]
+        counts = np.bincount(labels.ravel())
+        return int(counts[1:].max()) if len(counts) > 1 else 0
+
+
 def check_original_fidelity(original_rgba, composite_rgba, layers=None):
     """Measure visible RGB fidelity of assembled layers against original portrait."""
     orig = _downsample_rgba(original_rgba)
@@ -178,13 +197,16 @@ def check_original_fidelity(original_rgba, composite_rgba, layers=None):
     compared = int(both.sum())
     if compared == 0:
         return {'rgb_mae': 0.0, 'high_diff_ratio': 0.0, 'min_layer_rgb_mae': 0.0,
-                'min_layer_high_diff_ratio': 0.0, 'compared_pixels': 0, 'drifted': False}
+                'min_layer_high_diff_ratio': 0.0, 'max_drift_patch_ratio': 0.0,
+                'compared_pixels': 0, 'drifted': False}
     orig_rgb = orig[..., :3].astype(np.int16)
-    comp_vals = np.abs(comp[..., :3].astype(np.int16) - orig_rgb).mean(axis=2)[both]
+    comp_diff = np.abs(comp[..., :3].astype(np.int16) - orig_rgb).mean(axis=2)
+    comp_vals = comp_diff[both]
     rgb_mae = float(comp_vals.mean())
     high_ratio = float((comp_vals > 40.0).mean())
 
     min_mae, min_high = rgb_mae, high_ratio
+    best_map = np.where(both, comp_diff, np.inf)
     if layers:
         best = np.full(both.shape, np.inf, dtype=np.float32)
         for layer in layers:
@@ -200,13 +222,17 @@ def check_original_fidelity(original_rgba, composite_rgba, layers=None):
             bvals = best[cov]
             min_mae = float(bvals.mean())
             min_high = float((bvals > 40.0).mean())
+            best_map = best
 
-    drifted = compared >= 200 and (min_mae > 26.0 or min_high > 0.16)
+    drift_mask = both & np.isfinite(best_map) & (best_map > 45.0)
+    max_patch = float(_max_connected_area(drift_mask, open_px=1) / max(1, compared))
+    drifted = compared >= 200 and (min_mae > 18.0 or min_high > 0.10 or max_patch > 0.03)
     return {
         'rgb_mae': round(rgb_mae, 2),
         'high_diff_ratio': round(high_ratio, 4),
         'min_layer_rgb_mae': round(min_mae, 2),
         'min_layer_high_diff_ratio': round(min_high, 4),
+        'max_drift_patch_ratio': round(max_patch, 4),
         'compared_pixels': compared,
         'drifted': bool(drifted),
     }
@@ -228,23 +254,29 @@ def _check_duplicate_silhouettes(layers, original_rgba):
         if fg_area > 0:
             mask = mask & orig_fg
         if int(mask.sum()) >= min_area:
-            entries.append((layer['id'], mask))
+            entries.append((layer['id'], mask, la[..., :3].astype(np.int16)))
     warnings = []
     for i in range(len(entries)):
-        id_a, m_a = entries[i]
+        id_a, m_a, rgb_a = entries[i]
         for j in range(i + 1, len(entries)):
-            id_b, m_b = entries[j]
-            inter = int((m_a & m_b).sum())
+            id_b, m_b, rgb_b = entries[j]
+            inter_mask = m_a & m_b
+            inter = int(inter_mask.sum())
             if not inter:
                 continue
             iou = float(inter / max(1, int((m_a | m_b).sum())))
-            if iou >= 0.70:
-                warnings.append({
-                    'code': 'duplicate_layer_silhouette',
-                    'layers': [id_a, id_b],
-                    'iou': round(iou, 3),
-                    'suggestion': '两层轮廓高度重叠（重影/重复整图），禁止采用，须剔除重影或回 Canvas 重拆',
-                })
+            if iou >= 0.72:
+                odiff = np.abs(rgb_a - rgb_b).mean(axis=2)[inter_mask]
+                overlap_mae = float(odiff.mean())
+                same_ratio = float((odiff <= 20.0).mean())
+                if iou >= 0.88 or overlap_mae <= 22.0 or same_ratio >= 0.65:
+                    warnings.append({
+                        'code': 'duplicate_layer_silhouette',
+                        'layers': [id_a, id_b],
+                        'iou': round(iou, 3),
+                        'overlap_rgb_mae': round(overlap_mae, 1),
+                        'suggestion': '两层轮廓高度重叠且像素雷同（重影/重复整图），禁止采用，须剔除重影或回 Canvas 重拆',
+                    })
     return warnings
 
 

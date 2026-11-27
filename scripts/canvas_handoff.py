@@ -97,8 +97,34 @@ def _downsample_rgba(rgba, max_edge=1024):
         return np.asarray(Image.fromarray(rgba).resize((nw, nh), Image.Resampling.BILINEAR))
 
 
+def _max_connected_area(mask, open_px=0):
+    u8 = mask.astype(np.uint8)
+    if not u8.any():
+        return 0
+    try:
+        import cv2
+        if open_px > 0:
+            k = np.ones((open_px * 2 + 1, open_px * 2 + 1), np.uint8)
+            u8 = cv2.morphologyEx(u8, cv2.MORPH_OPEN, k)
+            if not u8.any():
+                return 0
+        n, _, stats, _ = cv2.connectedComponentsWithStats(u8, connectivity=8)
+        return int(stats[1:, cv2.CC_STAT_AREA].max()) if n > 1 else 0
+    except Exception:
+        from src.pipeline.split_parts import _components
+        labels = _components(np.pad(u8 > 0, 1))[1:-1, 1:-1]
+        counts = np.bincount(labels.ravel())
+        return int(counts[1:].max()) if len(counts) > 1 else 0
+
+
 def assess_canvas_split_quality(results, aligned_layers, source, *, is_subsplit=False):
-    """Hard intake quality gate for Canvas split-layers outputs."""
+    """Balanced intake quality gate for Canvas split-layers outputs.
+
+    Calibrated on real Mivo Canvas 2K splits vs 4K portraits to avoid both
+    false rejects (e.g., translucent glow SIFT misses, valid different-RGB
+    occluded coat underlap, 1-3 ignorable tiny sparks) and false passes
+    (e.g., localized AI face repaint, dropped weapon/limb, ghost clones).
+    """
     total_layers = len(results)
     aligned_count = len(aligned_layers)
     failed_count = total_layers - aligned_count
@@ -110,14 +136,22 @@ def assess_canvas_split_quality(results, aligned_layers, source, *, is_subsplit=
     layers_s = [(nid, _downsample_rgba(rgba)) for nid, rgba in aligned_layers]
 
     reasons = []
-    if aligned_count < 2:
+    warnings = []
+
+    usable_thresh = max(64, int(0.005 * max(1, fg_area)))
+    sliver_thresh = max(32, int(0.002 * max(1, fg_area)))
+    usable_layer_count = sum(1 for _, rgba in layers_s if int((rgba[..., 3] >= 120).sum()) >= usable_thresh)
+    tiny_sliver_count = sum(1 for _, rgba in layers_s if int((rgba[..., 3] >= 120).sum()) < sliver_thresh)
+    tiny_sliver_ratio = float(tiny_sliver_count / max(1, aligned_count))
+
+    if aligned_count < 2 or usable_layer_count < 2:
         reasons.append('insufficient_aligned_layers')
-    if total_layers > 0 and reg_fail_ratio > 0.35:
-        reasons.append('high_registration_failure_rate')
 
     uncovered_ratio = 0.0
+    max_missing_hole_ratio = 0.0
     min_rgb_mae = 0.0
     high_rgb_diff_ratio = 0.0
+    max_drift_patch_ratio = 0.0
     if not is_subsplit and fg_area > 0:
         union_cov = np.zeros(orig_fg.shape, dtype=bool)
         best_diff = np.full(orig_fg.shape, np.inf, dtype=np.float32)
@@ -128,68 +162,91 @@ def assess_canvas_split_quality(results, aligned_layers, source, *, is_subsplit=
             if solid.any():
                 diff = np.abs(rgba[..., :3].astype(np.int16) - src_rgb).mean(axis=2)
                 best_diff = np.minimum(best_diff, np.where(solid, diff, np.inf))
-        uncovered_ratio = float((orig_fg & ~union_cov).sum() / fg_area)
-        if uncovered_ratio > 0.08:
+        missing_mask = orig_fg & ~union_cov
+        uncovered_ratio = float(missing_mask.sum() / fg_area)
+        max_missing_hole_ratio = float(_max_connected_area(missing_mask, open_px=1) / fg_area)
+        if uncovered_ratio > 0.12 or max_missing_hole_ratio > 0.035:
             reasons.append('missing_original_coverage')
+        elif uncovered_ratio > 0.06:
+            warnings.append('minor_coverage_gap')
+
         covered_solid = orig_fg & np.isfinite(best_diff)
         if covered_solid.any():
             vals = best_diff[covered_solid]
             min_rgb_mae = float(vals.mean())
             high_rgb_diff_ratio = float((vals > 40.0).mean())
+            drift_mask = covered_solid & (best_diff > 45.0)
+            max_drift_patch_ratio = float(_max_connected_area(drift_mask, open_px=1) / fg_area)
         elif aligned_count > 0:
             min_rgb_mae = 255.0
             high_rgb_diff_ratio = 1.0
-        if aligned_count > 0 and (min_rgb_mae > 26.0 or high_rgb_diff_ratio > 0.16):
+            max_drift_patch_ratio = 1.0
+        if aligned_count > 0 and (min_rgb_mae > 18.0 or high_rgb_diff_ratio > 0.10 or max_drift_patch_ratio > 0.03):
             reasons.append('original_rgb_fidelity_drift')
+
+    if total_layers > 0:
+        if reg_fail_ratio > 0.50 or (reg_fail_ratio > 0.35 and (is_subsplit or uncovered_ratio > 0.06)):
+            reasons.append('high_registration_failure_rate')
+        elif reg_fail_ratio > 0.25:
+            warnings.append('partial_registration_warning')
 
     duplicate_pairs = []
     max_pair_iou = 0.0
-    min_dup_area = max(64, int(0.005 * max(1, fg_area)))
     masks = []
     for nid, rgba in layers_s:
         m = rgba[..., 3] >= 160
         if not is_subsplit and fg_area > 0:
             m = m & orig_fg
-        if int(m.sum()) >= min_dup_area:
-            masks.append((nid, m))
+        if int(m.sum()) >= usable_thresh:
+            masks.append((nid, m, rgba[..., :3].astype(np.int16)))
     for i in range(len(masks)):
-        id_a, m_a = masks[i]
+        id_a, m_a, rgb_a = masks[i]
         for j in range(i + 1, len(masks)):
-            id_b, m_b = masks[j]
-            inter = int((m_a & m_b).sum())
+            id_b, m_b, rgb_b = masks[j]
+            inter_mask = m_a & m_b
+            inter = int(inter_mask.sum())
             if not inter:
                 continue
             union = int((m_a | m_b).sum())
             iou = float(inter / max(1, union))
             if iou > max_pair_iou:
                 max_pair_iou = iou
-            if iou >= 0.70:
-                duplicate_pairs.append([id_a, id_b, round(iou, 3)])
+            if iou >= 0.72:
+                odiff = np.abs(rgb_a - rgb_b).mean(axis=2)[inter_mask]
+                overlap_mae = float(odiff.mean())
+                same_ratio = float((odiff <= 20.0).mean())
+                # Genuine different-color occlusion completion (e.g., dark coat behind bright torso)
+                # is allowed up to IoU < 0.88; near-identical clones or same-RGB ghosts are rejected.
+                if iou >= 0.88 or overlap_mae <= 22.0 or same_ratio >= 0.65:
+                    duplicate_pairs.append([id_a, id_b, round(iou, 3), round(overlap_mae, 1)])
     if duplicate_pairs:
         reasons.append('duplicate_clone_layers')
 
-    sliver_thresh = max(32, int(0.002 * max(1, fg_area)))
-    tiny_sliver_count = sum(1 for _, rgba in layers_s if int((rgba[..., 3] >= 120).sum()) < sliver_thresh)
-    tiny_sliver_ratio = float(tiny_sliver_count / max(1, aligned_count))
-    if aligned_count > 20:
+    if aligned_count > 24:
         reasons.append('excessive_layer_fragmentation')
-    if aligned_count >= 2 and tiny_sliver_ratio > 0.50:
+    if tiny_sliver_count >= 5 and tiny_sliver_ratio > 0.60:
         reasons.append('excessive_tiny_slivers')
+    elif tiny_sliver_count >= 2:
+        warnings.append('minor_tiny_slivers')
 
     passed = len(reasons) == 0
     return {
         'passed': passed,
         'verdict': 'pass' if passed else 'reject_fallback_local',
         'reasons': reasons,
+        'warnings': warnings,
         'duplicate_pairs': duplicate_pairs,
         'metrics': {
             'total_layers': total_layers,
             'aligned_count': aligned_count,
+            'usable_layer_count': usable_layer_count,
             'failed_registration_count': failed_count,
             'registration_fail_ratio': round(reg_fail_ratio, 4),
             'uncovered_original_ratio': round(uncovered_ratio, 4),
+            'max_missing_hole_ratio': round(max_missing_hole_ratio, 4),
             'min_rgb_mae': round(min_rgb_mae, 2),
             'high_rgb_diff_ratio': round(high_rgb_diff_ratio, 4),
+            'max_drift_patch_ratio': round(max_drift_patch_ratio, 4),
             'max_pair_iou': round(max_pair_iou, 4),
             'tiny_sliver_count': tiny_sliver_count,
             'tiny_sliver_ratio': round(tiny_sliver_ratio, 4),

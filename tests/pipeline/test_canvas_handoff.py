@@ -278,11 +278,61 @@ class CanvasHandoffTests(unittest.TestCase):
     def test_split_quality_gate_rejects_high_registration_failure_rate(self):
         left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:50] = [40, 90, 160, 255]
         right = np.zeros((100, 100, 4), np.uint8); right[10:90, 50:90] = [200, 120, 50, 255]
+        # >50% registration failures -> hard reject
         report = self._run_multi_split(
-            [('left', left), ('right', right), ('bad1', left), ('bad2', right)],
-            fail_nodes=('bad1', 'bad2'),
+            [('left', left), ('right', right), ('b1', left), ('b2', right), ('b3', left)],
+            fail_nodes=('b1', 'b2', 'b3'),
         )
         self.assertFalse(report['quality_gate']['passed'])
         self.assertIn('high_registration_failure_rate', report['quality_gate']['reasons'])
+
+    def test_split_quality_gate_allows_partial_glow_sift_misses_when_body_covered(self):
+        # 2/5 failed (40%) but 3 aligned layers cover 100% -> pass with warning, not false reject
+        p1 = np.zeros((100, 100, 4), np.uint8); p1[10:90, 10:40] = [40, 90, 160, 255]
+        p2 = np.zeros((100, 100, 4), np.uint8); p2[10:90, 40:50] = [40, 90, 160, 255]; p2[10:90, 50:65] = [200, 120, 50, 255]
+        p3 = np.zeros((100, 100, 4), np.uint8); p3[10:90, 65:90] = [200, 120, 50, 255]
+        report = self._run_multi_split(
+            [('p1', p1), ('p2', p2), ('p3', p3), ('glow1', p1), ('glow2', p3)],
+            fail_nodes=('glow1', 'glow2'),
+        )
+        self.assertTrue(report['quality_gate']['passed'], report['quality_gate'])
+        self.assertIn('partial_registration_warning', report['quality_gate']['warnings'])
+
+    def test_split_quality_gate_allows_different_color_occluded_back_cloak(self):
+        # Back cloak completed in dark color behind front torso (IoU ~0.78) must NOT be falsely rejected as clone
+        cloak = np.zeros((100, 100, 4), np.uint8)
+        cloak[10:90, 10:90] = [20, 20, 35, 255]
+        cloak[10:90, 10:22] = [40, 90, 160, 255]   # visible left cloak hem matching original
+        cloak[10:90, 82:90] = [200, 120, 50, 255]  # visible right cloak hem matching original
+        torso = np.zeros((100, 100, 4), np.uint8)
+        torso[10:90, 22:50] = [40, 90, 160, 255]
+        torso[10:90, 50:82] = [200, 120, 50, 255]
+        report = self._run_multi_split([('cloak', cloak), ('torso', torso)])
+        self.assertTrue(report['quality_gate']['passed'], report['quality_gate'])
+        self.assertGreater(report['quality_gate']['metrics']['max_pair_iou'], 0.72)
+
+    def test_split_quality_gate_catches_localized_face_repaint_and_dropped_limb_hole(self):
+        # Localized 4.5% repainted face patch (global MAE stays tiny, but contiguous patch >3%)
+        left = np.zeros((100, 100, 4), np.uint8); left[10:90, 10:50] = [40, 90, 160, 255]
+        left[20:38, 20:38] = [245, 20, 20, 255]  # 324px / 6400px = 5.06% localized repaint
+        right = np.zeros((100, 100, 4), np.uint8); right[10:90, 50:90] = [200, 120, 50, 255]
+        rep_paint = self._run_multi_split([('left', left), ('right', right)])
+        self.assertFalse(rep_paint['quality_gate']['passed'], rep_paint['quality_gate'])
+        self.assertIn('original_rgb_fidelity_drift', rep_paint['quality_gate']['reasons'])
+
+        # Dropped 5% single contiguous weapon/limb hole (total uncovered 5% < 12%, max_hole > 3.5%)
+        left2 = np.zeros((100, 100, 4), np.uint8); left2[10:90, 10:50] = [40, 90, 160, 255]
+        left2[20:38, 20:38] = 0
+        rep_hole = self._run_multi_split([('left', left2), ('right', right)])
+        self.assertFalse(rep_hole['quality_gate']['passed'], rep_hole['quality_gate'])
+        self.assertIn('missing_original_coverage', rep_hole['quality_gate']['reasons'])
+
+    def test_split_quality_gate_rejects_one_body_plus_tiny_specks(self):
+        body = np.zeros((100, 100, 4), np.uint8)
+        body[10:90, 10:50] = [40, 90, 160, 255]; body[10:90, 50:90] = [200, 120, 50, 255]
+        speck = np.zeros((100, 100, 4), np.uint8); speck[12:15, 12:15] = [40, 90, 160, 255]
+        report = self._run_multi_split([('body', body), ('speck1', speck), ('speck2', speck)])
+        self.assertFalse(report['quality_gate']['passed'], report['quality_gate'])
+        self.assertIn('insufficient_aligned_layers', report['quality_gate']['reasons'])
 
 if __name__=='__main__':unittest.main()
