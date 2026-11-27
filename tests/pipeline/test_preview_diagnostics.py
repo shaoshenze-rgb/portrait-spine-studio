@@ -3,7 +3,10 @@ import unittest
 from pathlib import Path
 import numpy as np
 from PIL import Image
-from src.gates.preview_diagnostics import inspect_dynamic, inspect_exposure_stress
+from src.gates.preview_diagnostics import (
+    _followed_rest_holes, _hole_records, _interior_transparency,
+    inspect_dynamic, inspect_exposure_stress,
+)
 class DynamicChecksTests(unittest.TestCase):
     def test_silhouette_motion_is_not_an_internal_hole(self):
         class Renderer:
@@ -149,6 +152,18 @@ class DynamicChecksTests(unittest.TestCase):
             )
         self.assertEqual(report['status'], 'fail')
         self.assertGreater(report['levels']['1.0x']['largest_region_px'], 1)
+
+    def test_rotated_original_hole_does_not_exempt_an_adjacent_tear(self):
+        original = np.full((150, 160), 255, np.uint8)
+        original[50:62, 41:101] = 0
+        original[86:98, 41:101] = 0
+        moved = np.asarray(Image.fromarray(original).rotate(9, fillcolor=255)).copy()
+        moved[56:76, 82:102] = 0
+        records = _hole_records(*_interior_transparency(original))
+        holes, labels = _interior_transparency(moved)
+        matched = _followed_rest_holes(records, holes, labels, max_shift=40)
+        self.assertGreater(int(matched[75:].sum()), 650)
+        self.assertGreater(int((holes & ~matched)[57:76, 82:102].sum()), 300)
 
     def test_stress_anchor_registration_ignores_translated_original_hole_but_catches_real_crack(self):
         from types import SimpleNamespace
@@ -314,3 +329,31 @@ class DynamicChecksTests(unittest.TestCase):
             )
         self.assertEqual(report['status'], 'fail')
         self.assertGreater(report['levels']['1.0x']['largest_region_px'], 120)
+
+    def test_anchor_unwarper_prefers_body_over_leading_floating_prop_or_vfx(self):
+        from types import SimpleNamespace
+        from src.gates.preview_diagnostics import _build_anchor_unwarper
+
+        def fake_bone(wx=0.0, wy=0.0):
+            return SimpleNamespace(a=1.0, b=0.0, c=0.0, d=1.0, worldX=wx, worldY=wy)
+
+        sk = SimpleNamespace(by_name={
+            "module_orb": fake_bone(10.0, 20.0),
+            "module_vortex": fake_bone(-15.0, 30.0),
+            "module_foot": fake_bone(0.0, 0.0),
+            "module_torso": fake_bone(0.0, 5.0),
+        })
+        ren = SimpleNamespace(
+            sk=sk,
+            pose=lambda _t, gain=1.0: None,
+            origin_x=100.0, origin_y=100.0,
+            _canvas_sx=1.0, _canvas_sy=1.0,
+        )
+        modules = [
+            {"id": "orb", "role": "prop", "parent": None, "bone": "module_orb"},
+            {"id": "vortex", "role": "effect_group", "parent": None, "bone": "module_vortex"},
+            {"id": "foot", "role": "foot", "parent": None, "bone": "module_foot"},
+            {"id": "torso", "role": "torso", "parent": None, "bone": "module_torso"},
+        ]
+        anchor_bone, _ = _build_anchor_unwarper(ren, modules)
+        self.assertEqual(anchor_bone, "module_torso")

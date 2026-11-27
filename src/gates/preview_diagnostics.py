@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from src.pipeline.canvas_layer_cleanup import check_missing_original_regions
-from src.pipeline.split_parts import _components
+from src.pipeline.split_parts import _components as _numpy_components
 from src.render.renderer import over_bg
 from src.pipeline.local_body_split import _bounds, _components as _mask_spans, _set_spans
 
@@ -205,22 +205,61 @@ def _interior_transparency(alpha, threshold=40):
     return transparent & ~np.isin(labels, border), labels
 
 
+def _components(mask):
+    try:
+        import cv2
+    except ImportError:
+        return _numpy_components(mask)
+    _, labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=4)
+    return labels
+
+
 def _hole_records(holes_mask, labels):
-    ids, counts = np.unique(labels[holes_mask], return_counts=True)
+    rows, cols = np.nonzero(holes_mask)
+    if not len(rows):
+        return []
+    ids = labels[rows, cols]
+    order = np.argsort(ids, kind='stable')
+    ids, rows, cols = ids[order], rows[order], cols[order]
+    ends = np.flatnonzero(ids[1:] != ids[:-1]) + 1
     records = []
-    for cid, area in zip(ids, counts):
-        rows, cols = np.nonzero(labels == cid)
-        r0, r1 = int(rows.min()), int(rows.max()) + 1
-        c0, c1 = int(cols.min()), int(cols.max()) + 1
+    for start, stop in zip([0, *ends], [*ends, len(ids)]):
+        cid, area = ids[start], stop - start
+        hole_rows, hole_cols = rows[start:stop], cols[start:stop]
+        r0, r1 = int(hole_rows.min()), int(hole_rows.max()) + 1
+        c0, c1 = int(hole_cols.min()), int(hole_cols.max()) + 1
         crop = (labels[r0:r1, c0:c1] == cid)
-        records.append((int(cid), int(area), r0, r1, c0, c1, float(rows.mean()), float(cols.mean()), crop))
+        records.append((int(cid), int(area), r0, r1, c0, c1, float(hole_rows.mean()), float(hole_cols.mean()), crop))
     return records
+
+
+def _hole_axis(crop):
+    rows, cols = np.nonzero(crop)
+    rows = rows - rows.mean()
+    cols = cols - cols.mean()
+    return 0.5 * math.atan2(2 * np.dot(rows, cols), np.dot(cols, cols) - np.dot(rows, rows))
+
+
+def _rotated_hole_prediction(rest, current, angle):
+    _, _, rt, _, rl, _, rest_row, rest_col, rest_crop = rest
+    _, _, ct, cb, cl, cr, curr_row, curr_col, _ = current
+    rows, cols = np.ogrid[ct:cb, cl:cr]
+    rows = rows - curr_row
+    cols = cols - curr_col
+    cosine, sine = math.cos(angle), math.sin(angle)
+    source_rows = np.rint(-sine * cols + cosine * rows + rest_row - rt).astype(np.intp)
+    source_cols = np.rint(cosine * cols + sine * rows + rest_col - rl).astype(np.intp)
+    height, width = rest_crop.shape
+    valid = (source_rows >= 0) & (source_rows < height) & (source_cols >= 0) & (source_cols < width)
+    predicted = np.zeros(valid.shape, dtype=bool)
+    predicted[valid] = rest_crop[source_rows[valid], source_cols[valid]]
+    return predicted
 
 
 def _followed_rest_holes(rest_records, current_holes, current_labels, *, max_shift):
     """Match only high-confidence rigid copies of pre-existing enclosed alpha holes.
 
-    Requires similar area/aspect and >=88% overlap after centroid translation so any
+    Requires similar area/aspect and >=88% overlap after bounded rigid registration so any
     new, widened, or merged crack remains visible to the stress gate.
     """
     if not rest_records or not current_holes.any():
@@ -228,9 +267,11 @@ def _followed_rest_holes(rest_records, current_holes, current_labels, *, max_shi
     current_records = _hole_records(current_holes, current_labels)
     matched = np.zeros_like(current_holes)
     used_rest = set()
-    for cid, c_area, ct, cb, cl, cr, crow, ccol, ccrop in current_records:
+    for current in current_records:
+        _, c_area, ct, cb, cl, cr, crow, ccol, ccrop = current
         best = None
-        for r_idx, (_rid, r_area, rt, rb, rl, rr, rrow, rcol, rcrop) in enumerate(rest_records):
+        for r_idx, rest in enumerate(rest_records):
+            _, r_area, rt, rb, rl, rr, rrow, rcol, rcrop = rest
             if r_idx in used_rest:
                 continue
             area_ratio = c_area / max(1, r_area)
@@ -250,22 +291,29 @@ def _followed_rest_holes(rest_records, current_holes, current_labels, *, max_shi
             ix0, ix1 = max(cl, sc0), min(cr, sc1)
             if iy1 <= iy0 or ix1 <= ix0:
                 continue
-            sub_c = ccrop[iy0 - ct : iy1 - ct, ix0 - cl : ix1 - cl]
-            sub_r = rcrop[iy0 - sr0 : iy1 - sr0, ix0 - sc0 : ix1 - sc0]
-            overlap = int((sub_c & sub_r).sum())
+            prediction = np.zeros_like(ccrop)
+            prediction[iy0 - ct : iy1 - ct, ix0 - cl : ix1 - cl] = rcrop[
+                iy0 - sr0 : iy1 - sr0, ix0 - sc0 : ix1 - sc0
+            ]
+            overlap = int((prediction & ccrop).sum())
+            if overlap < 0.88 * max(c_area, r_area):
+                angle = (_hole_axis(ccrop) - _hole_axis(rcrop) + math.pi / 2) % math.pi - math.pi / 2
+                if 0 < abs(angle) <= math.radians(15):
+                    rotated = _rotated_hole_prediction(rest, current, angle)
+                    rotated_overlap = int((rotated & ccrop).sum())
+                    if rotated_overlap > overlap:
+                        prediction, overlap = rotated, rotated_overlap
             if overlap / max(1, c_area) < 0.88 or overlap / max(1, r_area) < 0.88:
                 continue
             score = overlap / max(c_area, r_area)
             if best is None or score > best[0]:
-                best = (score, r_idx)
+                best = (score, r_idx, prediction)
         if best is not None:
             used_rest.add(best[1])
             # Exempt only the predicted old-hole pixels that are still present in
             # the current component. Any expansion or newly attached crack pixels
             # must remain in the stress mask.
-            predicted = np.zeros_like(ccrop)
-            predicted[iy0 - ct : iy1 - ct, ix0 - cl : ix1 - cl] = sub_r
-            matched[ct:cb, cl:cr] |= predicted & ccrop
+            matched[ct:cb, cl:cr] |= best[2] & ccrop
     return matched
 
 
@@ -288,13 +336,25 @@ def _build_anchor_unwarper(renderer, modules):
     ):
         return None, lambda alpha, _t, _g: alpha
 
+    anchor_roles = ('torso', 'body', 'pelvis', 'lower_body')
     anchor_mod = next(
-        (m for m in modules if m.get('parent') is None and m.get('bone') in sk.by_name),
+        (m for m in modules if m.get('parent') is None and m.get('role') in anchor_roles and m.get('bone') in sk.by_name),
         None,
     )
     if anchor_mod is None:
         anchor_mod = next(
-            (m for m in modules if m.get('role') in ('torso', 'body') and m.get('bone') in sk.by_name),
+            (m for m in modules if m.get('role') in anchor_roles and m.get('bone') in sk.by_name),
+            None,
+        )
+    if anchor_mod is None:
+        anchor_mod = next(
+            (
+                m for m in modules
+                if m.get('parent') is None
+                and m.get('role') not in _EXCLUDED_STRESS_ROLES
+                and m.get('role') != 'foot'
+                and m.get('bone') in sk.by_name
+            ),
             None,
         )
     if anchor_mod is None:
