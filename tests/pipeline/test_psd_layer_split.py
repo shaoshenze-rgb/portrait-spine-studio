@@ -124,5 +124,59 @@ class PsdLayerSplitTests(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(rebuilt, dtype=np.uint8), source_rgba)
 
 
+    def test_declared_overlay_claims_open_air_halo_without_stealing_structural_overlap(self):
+        # Canvas 120x120:
+        # - armor (psd idx 0, order 0): x=20..60, y=30..90
+        # - green_aura (psd idx 1, blend="overlay", mapped to air_fx order 1):
+        #     covers BOTH armor (x=35..60, y=40..80) AND open air (x=60..105, y=40..80),
+        #     extending 45px beyond armor (far outside aa_boundary_px=12).
+        h, w = 120, 120
+        armor_ly = np.zeros((h, w, 4), dtype=np.uint8)
+        armor_ly[30:90, 20:60] = [90, 95, 115, 255]
+        aura_ly = np.zeros((h, w, 4), dtype=np.uint8)
+        aura_ly[40:80, 35:105] = [60, 230, 110, 180]
+
+        comp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        comp.alpha_composite(Image.fromarray(armor_ly))
+        comp.alpha_composite(Image.fromarray(aura_ly))
+        source_rgba = np.asarray(comp, dtype=np.uint8)
+
+        fake_layers = [
+            _FakePsdLayer("armor", armor_ly),
+            _FakePsdLayer("green_aura", aura_ly, blend_mode="overlay"),
+        ]
+        specs = [
+            PsdPartSpec(id="armor", psd_indices=(0,), draw_order=0, kind="rigid"),
+            PsdPartSpec(id="air_fx", psd_indices=(1,), draw_order=1, kind="soft"),
+        ]
+        res = split_from_psd(
+            source_rgba,
+            Path("fake.psd"),
+            specs,
+            overlay_indices=(1,),
+            underlap_px=0,
+            aa_boundary_px=8,
+            defringe=False,
+            psd_layers_override=fake_layers,
+            psd_size_override=(w, h),
+        )
+
+        # 1. Overlap region over armor (x=35..59) MUST stay bound to armor (no green contour ghosting)
+        self.assertTrue(res.ownership["armor"][60, 45])
+        self.assertFalse(res.ownership["air_fx"][60, 45])
+        self.assertGreater(res.stats["overlay_rebound_px"], 900)
+
+        # 2. Open-air halo 30px outside armor (x=90) MUST be claimed by air_fx (no coverage error)
+        self.assertTrue(res.ownership["air_fx"][60, 90])
+        self.assertFalse(res.ownership["armor"][60, 90])
+        self.assertGreater(res.stats["overlay_open_air_px"], 1500)
+        self.assertEqual(res.stats["unclaimed_px"], 0)
+
+        # 3. Rest-pose composite MUST be pixel-identical to source_rgba
+        rebuilt = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        rebuilt.alpha_composite(Image.fromarray(res.rgba["armor"]))
+        rebuilt.alpha_composite(Image.fromarray(res.rgba["air_fx"]))
+        np.testing.assert_array_equal(np.asarray(rebuilt, dtype=np.uint8), source_rgba)
+
 if __name__ == "__main__":
     unittest.main()

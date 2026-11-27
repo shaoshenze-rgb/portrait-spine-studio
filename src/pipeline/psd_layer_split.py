@@ -528,6 +528,8 @@ def split_from_psd(
     faint_owner = np.full((height, width), -1, dtype=np.int16)
     faint_alpha = np.zeros((height, width), dtype=np.uint8)
     overlay_support = np.zeros((height, width), dtype=bool)
+    overlay_fallback_owner = np.full((height, width), -1, dtype=np.int16)
+    overlay_fallback_alpha = np.zeros((height, width), dtype=np.uint8)
     overlay_rebound_px = 0
 
     # Pass 1: rasterize structural layers (back-to-front by part draw_order, then PSD index)
@@ -573,11 +575,21 @@ def split_from_psd(
                 ownership[y0 : y0 + th, x0 : x0 + tw] != assigned_order
             )
             overlay_rebound_px += int(rebound.sum())
+            fb_slice = overlay_fallback_alpha[y0 : y0 + th, x0 : x0 + tw]
+            better_fb = (alpha > 0) & (alpha >= fb_slice)
+            fb_slice[better_fb] = alpha[better_fb]
+            overlay_fallback_owner[y0 : y0 + th, x0 : x0 + tw][better_fb] = assigned_order
         overlay_support[y0 : y0 + th, x0 : x0 + tw] |= ov_mask
 
-    # Assign remaining faint structural pixels
+    # Assign remaining faint structural pixels first (structural always wins over overlays)
     faint_assign = (ownership < 0) & (faint_owner >= 0) & subject
     ownership[faint_assign] = faint_owner[faint_assign]
+
+    # Assign pure open-air overlay/glow pixels (zero underlying structural pixels)
+    # to the part declaring that overlay layer, preventing false coverage drops while
+    # keeping overlay pixels over structural parts bound to those structural parts.
+    overlay_open_air_assign = (ownership < 0) & (overlay_fallback_owner >= 0) & subject
+    ownership[overlay_open_air_assign] = overlay_fallback_owner[overlay_open_air_assign]
 
     # Bounded AA edge assignment (for antialiased silhouette fringes & thin overlay halos)
     missing_before_aa = (ownership < 0) & subject
@@ -662,6 +674,7 @@ def split_from_psd(
         "boundary_assignment_px": boundary_assigned_px,
         "overlay_excluded_indices": sorted(overlay_set),
         "overlay_rebound_px": overlay_rebound_px,
+        "overlay_open_air_px": int(overlay_open_air_assign.sum()),
         "underlap_px": pad_px,
         "total_artist_hidden_px": total_artist_hidden,
         "total_auto_bridged_px": total_auto_bridged,
