@@ -213,3 +213,89 @@ class CanvasQualityDefenseTests(unittest.TestCase):
                 }
                 light, msg = mgr._compute_item_traffic_light({'status': 'done'}, bad_job)
                 self.assertEqual(light, 'red', (code, msg))
+
+    def test_canvas_fallback_policy_blocks_unjustified_bypass_and_allows_valid_sources(self):
+        from pathlib import Path
+        import tempfile
+        from src.pipeline.canvas_layer_cleanup import check_canvas_fallback_policy
+        from src.studio.server import StudioJobManager
+
+        # 1. Pure non-PSD local-direct-split without canvas_fallback -> blocked
+        raw_local = [{
+            'name': 'head', 'enabled': True,
+            'canvasLayer': {'provenance': {
+                'operation': 'local-direct-split',
+                'local_derivation': {'method': 'edge_refined_seed_mask'},
+            }},
+        }]
+        pol = check_canvas_fallback_policy(raw_local)
+        self.assertTrue(pol['bypassed'], pol)
+        self.assertFalse(pol['passed'], pol)
+        self.assertEqual(pol['unjustified_local_layers'], ['head'])
+
+        # 2. Fake/invalid reason or too-short detail -> still blocked
+        fake_fb = [{
+            'name': 'head', 'enabled': True,
+            'canvasLayer': {'provenance': {
+                'operation': 'local-direct-split',
+                'local_derivation': {
+                    'method': 'edge_refined_seed_mask',
+                    'canvas_fallback': {'reason': 'too_slow', 'detail': 'skipped'},
+                },
+            }},
+        }]
+        self.assertTrue(check_canvas_fallback_policy(fake_fb)['bypassed'])
+
+        # 3. Valid structured canvas_fallback receipt -> allowed
+        valid_fb = [{
+            'name': 'head', 'enabled': True,
+            'canvasLayer': {'provenance': {
+                'operation': 'local-direct-split',
+                'local_derivation': {
+                    'method': 'edge_refined_seed_mask',
+                    'canvas_fallback': {
+                        'reason': 'canvas_gate_rejected',
+                        'detail': 'handoff verdict=reject_fallback_local rgb_mae=26.4',
+                    },
+                },
+            }},
+        }]
+        pol_ok = check_canvas_fallback_policy(valid_fb)
+        self.assertFalse(pol_ok['bypassed'], pol_ok)
+        self.assertEqual(pol_ok['fallback_reasons'], ['canvas_gate_rejected'])
+
+        # 4. PSD lossless artist layer split -> allowed without Canvas
+        psd_only = [{
+            'name': 'electric', 'enabled': True,
+            'canvasLayer': {'provenance': {
+                'operation': 'local-direct-split',
+                'local_derivation': {'method': 'psd_artist_layer_split', 'psd_indices': [24, 25]},
+            }},
+        }]
+        self.assertFalse(check_canvas_fallback_policy(psd_only)['bypassed'])
+
+        # 5. Hybrid Mivo Canvas + local helper -> allowed
+        hybrid = [
+            {'name': 'torso', 'enabled': True, 'canvasLayer': {'provenance': {'operation': 'split-layers'}}},
+            raw_local[0],
+        ]
+        self.assertFalse(check_canvas_fallback_policy(hybrid)['bypassed'])
+
+        # 6. Studio traffic light turns red on unjustified_canvas_bypass
+        root_dir = Path(__file__).resolve().parents[2] / '.studio-work'
+        with tempfile.TemporaryDirectory(dir=root_dir) as tmp:
+            mgr = StudioJobManager(Path(tmp))
+            job = {
+                'status': 'canvas_preview',
+                'canvas_mode': True,
+                'canvas_checks': {'files_complete': True, 'loop_seam': True,
+                                  'original_coverage': True, 'rigid_no_stretch': True},
+                'canvas_diagnostics': {
+                    'exposure_stress': {'status': 'pass'},
+                    'cleanup': {'recovered_pixel_count': 0, 'recovered_region_count': 0},
+                    'cleanup_warnings': [{'code': 'unjustified_canvas_bypass'}],
+                },
+            }
+            light, msg = mgr._compute_item_traffic_light({'status': 'done'}, job)
+            self.assertEqual(light, 'red', msg)
+            self.assertIn('Canvas', msg)

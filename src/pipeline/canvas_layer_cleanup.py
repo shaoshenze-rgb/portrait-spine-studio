@@ -500,6 +500,65 @@ def _read_cleanup_layer(part, size, root):
             'draw_order': part['drawOrder'], 'enabled': part.get('enabled', True)}
 
 
+VALID_CANVAS_FALLBACK_REASONS = (
+    'canvas_panel_closed',
+    'canvas_panel_not_ready',
+    'canvas_key_required',
+    'canvas_tool_error',
+    'canvas_gate_rejected',
+    'canvas_library_unmounted',
+    'canvas_read_unavailable',
+)
+
+
+def check_canvas_fallback_policy(parts_entries):
+    """Enforce Canvas-first splitting: non-PSD local-direct-split requires real Canvas fallback evidence."""
+    canvas_layers, psd_layers, justified_local, unjustified_local, fallback_reasons = [], [], [], [], []
+    for part in parts_entries:
+        if not part.get('enabled', True):
+            continue
+        name = part.get('name') or part.get('id') or 'unknown'
+        prov = (part.get('canvasLayer') or {}).get('provenance') or part.get('provenance') or {}
+        op = prov.get('operation')
+        if op in ('split-layers', 'edit-image', 'remove-background'):
+            canvas_layers.append(name)
+        elif op == 'local-direct-split':
+            deriv = prov.get('local_derivation') or {}
+            if deriv.get('method') == 'psd_artist_layer_split':
+                psd_layers.append(name)
+            else:
+                fb = deriv.get('canvas_fallback')
+                reason = fb.get('reason') if isinstance(fb, dict) else None
+                detail = fb.get('detail') if isinstance(fb, dict) else None
+                if reason in VALID_CANVAS_FALLBACK_REASONS and isinstance(detail, str) and len(detail.strip()) >= 8:
+                    justified_local.append(name)
+                    if reason not in fallback_reasons:
+                        fallback_reasons.append(reason)
+                else:
+                    unjustified_local.append(name)
+    bypassed = bool(unjustified_local and not canvas_layers)
+    return {
+        'passed': not bypassed,
+        'bypassed': bypassed,
+        'canvas_layers': canvas_layers,
+        'psd_layers': psd_layers,
+        'justified_local_layers': justified_local,
+        'unjustified_local_layers': unjustified_local,
+        'fallback_reasons': fallback_reasons,
+    }
+
+
+def _canvas_bypass_warning(policy):
+    return {
+        'code': 'unjustified_canvas_bypass',
+        'canvas_layer_count': len(policy['canvas_layers']),
+        'psd_layer_count': len(policy['psd_layers']),
+        'unjustified_local_layers': list(policy['unjustified_local_layers']),
+        'allowed_reasons': list(VALID_CANVAS_FALLBACK_REASONS),
+        'suggestion': '禁止无回执绕过 Mivo Canvas：非 PSD 独立层走本机兜底必须在 local_derivation.canvas_fallback 写明有效 reason 与真实失败/拒收回执 detail。',
+    }
+
+
 def inspect_canvas_parts_warnings(parts_dir, *, evidence_root):
     manifest = resolve_evidence_path(Path(parts_dir) / 'parts.json', root=evidence_root)
     parts = json.loads(manifest.read_text())
@@ -514,7 +573,10 @@ def inspect_canvas_parts_warnings(parts_dir, *, evidence_root):
     if fidelity['drifted']:
         warnings.append({'code': 'canvas_original_rgb_drift', **fidelity,
                          'suggestion': 'Canvas 拆层合成与原图外观偏差过大，回 Canvas 重拆或降级本机拆分'})
-    return {'layers': {}, 'warnings': warnings, 'original_fidelity': fidelity}
+    fallback_policy = check_canvas_fallback_policy(parts['parts'])
+    if fallback_policy['bypassed']:
+        warnings.append(_canvas_bypass_warning(fallback_policy))
+    return {'layers': {}, 'warnings': warnings, 'original_fidelity': fidelity, 'canvas_fallback_policy': fallback_policy}
 
 
 def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None, recover_missing=True):
@@ -576,6 +638,10 @@ def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=Tru
     if fidelity['drifted'] and not any(w.get('code')=='canvas_original_rgb_drift' for w in report.get('warnings',[])):
         report.setdefault('warnings',[]).append({'code':'canvas_original_rgb_drift',**fidelity,
             'suggestion':'Canvas 拆层合成与原图外观偏差过大，回 Canvas 重拆或降级本机拆分'})
+    fallback_policy=check_canvas_fallback_policy(parts['parts'])
+    report['canvas_fallback_policy']=fallback_policy
+    if fallback_policy['bypassed'] and not any(w.get('code')=='unjustified_canvas_bypass' for w in report.get('warnings',[])):
+        report.setdefault('warnings',[]).append(_canvas_bypass_warning(fallback_policy))
     marked=Image.fromarray(composite);background=Image.new('RGBA',marked.size,(125,125,125,255));background.alpha_composite(marked)
     draw=ImageDraw.Draw(background)
     for r in report['missing_original_regions']:draw.rectangle(r['bbox'],outline='red',width=4)
