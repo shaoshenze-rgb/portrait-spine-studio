@@ -19,7 +19,7 @@ from src.gates.review_binding import resolve_evidence_path, read_evidence_rgba
 from src.studio.module_contract import (validate_module_contract, MODULE_RULE_VERSION, BODY_ROLES,
                                         validate_hidden_attachment_region)
 from src.studio.vision_schema import VisionReviewRequired, rasterize_polygons
-from .module_rig import (_bone, _topological, _validate_rig_mask_placement, validate_module_rig_spec)
+from .module_rig import (_bone, _topological, _validate_rig_mask_placement, smooth_sharp_centerline, validate_module_rig_spec)
 
 
 def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
@@ -77,10 +77,10 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
         if mid not in by_id or name in arrays:
             raise ValueError('Missing module or duplicate layer piece')
         m = by_id[mid]
-        grounded_foot = (not strict_placement and plan.get('pose_type') == 'grounded'
-                         and m.get('role') == 'foot' and m.get('motion_type') == 'static'
-                         and part['kind'] == 'rigid')
-        if m.get('parent') != part['parent'] or (m.get('motion_type') != part['kind'] and not grounded_foot):
+        grounded_anchor = (not strict_placement and plan.get('pose_type') == 'grounded'
+                           and m.get('role') in ('foot', 'lower_body') and m.get('motion_type') == 'static'
+                           and part['kind'] == 'rigid')
+        if m.get('parent') != part['parent'] or (m.get('motion_type') != part['kind'] and not grounded_anchor):
             raise ValueError('Binding cannot change material module parent or motion kind')
         if not np.allclose(np.asarray(m['pivot']) * [w, h], part['pivot'], atol=1e-5, rtol=0):
             raise ValueError('Binding cannot silently move the declared material pivot')
@@ -201,13 +201,16 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
             oc[key] = str(path); oc[key+'SHA256'] = digest
     def point(p): return [round(p[0]*w, 5), round(p[1]*h, 5)]
     bones = [{'name': 'root', 'pos': [w/2., float(h)], 'role': 'root'}]
-    chains, skin, projection = {}, {}, []
+    chains, skin, projection, centerline_warnings = {}, {}, [], []
     for m in modules:
         mid, driver = m['id'], _bone(m['id']); pos = point(m['pivot']); soft = []
         bones.append({'name': driver, 'parent': _bone(m['parent']) if m['parent'] else 'root',
                       'pos': pos, 'role': m['role']})
         if m['motion_type'] == 'soft':
             cname = 'bend_'+mid; pts = [point(p) for p in m['centerline']]
+            pts, kink_warn = smooth_sharp_centerline(pts)
+            if kink_warn is not None:
+                centerline_warnings.append({'module': mid, **kink_warn})
             chains[cname] = {'parent': driver, 'pts': pts, 'count': len(pts)-1}
             soft = [cname+str(i+1) for i in range(len(pts)-1)]
         names = [p['id'] for p in m['pieces']]
@@ -255,7 +258,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
     rig = {'character': character, 'duration': 8., 'fps': 30, 'key_step': .125,
            'origin': [w/2., float(h)], 'body_height_px': body_h, 'pose_type': contract['pose_type'],
            'bones': bones, 'chains': chains, 'skin': skin, 'ik': ik,
-           'placementWarnings': placement_warnings,
+           'placementWarnings': placement_warnings, 'centerlineWarnings': centerline_warnings,
            'moduleContract': projected, 'preserve_visual_joints': True}
     validate_module_rig_spec(rig)
     (out/'rig-spec.json').write_text(json.dumps(rig, ensure_ascii=False, indent=2))

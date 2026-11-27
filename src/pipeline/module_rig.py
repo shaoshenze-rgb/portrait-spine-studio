@@ -39,8 +39,9 @@ ROLE_LAG_S = {"pelvis": .0, "body": .10, "torso": .15, "head": .45,
               "upper_leg": .20, "lower_leg": .40, "leg": .30, "lower_body": .25}
 LOCKED_ROOT_DEG = 0.25
 MAX_MODULE_GAIN = 1.5
-AIRBORNE_BREATH_TX = (9.5, 4.5)
-AIRBORNE_BREATH_TY = (17.0, 4.2)
+AIRBORNE_BREATH_TX = (3.2, 1.4)
+AIRBORNE_BREATH_TY = (10.5, 2.8)
+GROUNDED_WAIST_BREATH_TY = (4.5, 1.4)
 
 
 def soft_bend_deg_for_link(index: int, *, locked_root: bool = False, scale: float = 1.0) -> float:
@@ -882,12 +883,24 @@ def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dic
                 ty_amp = min(1.85 * factor, 0.012 * body_h)
                 motion[bn] = {"ty": [(-ty_amp, 3, math.pi / 2)]}
             continue
-        if family == "torso" and profile == "breath" and m.get("parent") is None:
+        is_grounded = rig.get("pose_type") == "grounded"
+        if family == "torso" and profile == "breath" and m.get("parent") is not None:
+            waist_rot = min(amp * 0.45, 1.1)
             motion[bn] = {
-                "rotate": terms((amp * 0.95, 2, 0.15), (amp * 0.40, 3, 0.15)),
-                "tx": terms((AIRBORNE_BREATH_TX[0], 2, 0.15), (AIRBORNE_BREATH_TX[1], 1, 0.15)),
-                "ty": terms((AIRBORNE_BREATH_TY[0], 3, 0.0), (AIRBORNE_BREATH_TY[1], 2, 0.0)),
+                "rotate": terms((waist_rot, 2, 0.15), (waist_rot * 0.35, 3, 0.20)),
+                "ty": terms((GROUNDED_WAIST_BREATH_TY[0], 3, 0.0), (GROUNDED_WAIST_BREATH_TY[1], 2, 0.0)),
             }
+            continue
+        if family == "torso" and profile == "breath" and m.get("parent") is None:
+            if is_grounded:
+                ty_amp = min(1.85 * factor, 0.012 * body_h)
+                motion[bn] = {"ty": [(-ty_amp, 3, math.pi / 2)]}
+            else:
+                motion[bn] = {
+                    "rotate": terms((amp * 0.42, 2, 0.15), (amp * 0.18, 3, 0.15)),
+                    "tx": terms((AIRBORNE_BREATH_TX[0], 2, 0.15), (AIRBORNE_BREATH_TX[1], 1, 0.15)),
+                    "ty": terms((AIRBORNE_BREATH_TY[0], 3, 0.0), (AIRBORNE_BREATH_TY[1], 2, 0.0)),
+                }
             continue
         if m.get("parent") is None and not locked and role in ("prop", "pet") and profile != "soft_bend":
             lag = 0.22 + (0.35 if sign > 0 else 0.0) + 0.14 * slot_idx

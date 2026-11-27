@@ -299,7 +299,8 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
         if kind == "static":
             if profile != "static" or not isinstance(module.get("static_reason"), str) or not module["static_reason"].strip():
                 raise VisionReviewRequired("静态模块需要明确语义原因。")
-            if role not in STATIC_ROLES and role != "foot":
+            grounded_lower = (result.get("pose_type") == "grounded" and role == "lower_body" and module["parent"] is None)
+            if role not in STATIC_ROLES and role != "foot" and not grounded_lower:
                 raise VisionReviewRequired("人体主体不能声明静态来绕过动作验收。")
         elif profile == "static":
             raise VisionReviewRequired("需要运动的模块不能将motion改成static。")
@@ -457,8 +458,21 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
             raise VisionReviewRequired("武器需要明确grip连接，不独立漂移。")
         if m["motion_type"] == "static" and m["role"] == "foot" and mid not in foot_modules:
             raise VisionReviewRequired("人体足部静止必须由明确脚锚解释。")
-    if result["pose_type"] == "grounded" and result["anatomy"] == "humanoid_full" and not foot_modules:
-        raise VisionReviewRequired("站立全身必须明确刚体足部锚定；不能静默丢掉接地。")
+    grounded_lower_anchors = {
+        mid for mid, m in by_id.items()
+        if m["role"] == "lower_body" and m["motion_type"] == "static" and m["parent"] is None
+        and any(
+            child["parent"] == mid and child["role"] in ("torso", "body")
+            and child["motion_type"] == "rigid" and child["motion"] in ("breath", "sway")
+            for child in modules
+        )
+    }
+    for mid, m in by_id.items():
+        if m["motion_type"] == "static" and m["role"] == "lower_body" and mid not in grounded_lower_anchors:
+            raise VisionReviewRequired("静态贴地 lower_body 必须挂有活动上半身 torso/body，不能整身静止。")
+    if (result["pose_type"] == "grounded" and result["anatomy"] == "humanoid_full"
+            and not foot_modules and not grounded_lower_anchors):
+        raise VisionReviewRequired("站立全身必须明确刚体足部锚定或静态贴地下半身锚定；不能静默丢掉接地。")
     occlusions = result.get("occlusions")
     if not isinstance(occlusions, list) or len(occlusions) > 128:
         raise VisionValidationError("occlusions必须是有界列表。")

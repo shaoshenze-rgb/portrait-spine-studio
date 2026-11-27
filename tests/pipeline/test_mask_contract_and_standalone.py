@@ -606,3 +606,92 @@ class SoftCenterlineGuardrailTests(unittest.TestCase):
         self.assertEqual(out_h[0], hairpin[0])
         self.assertEqual(out_h[-1], hairpin[-1])
         self.assertLessEqual(_centerline_max_turn_deg(out_h), 42.0)
+
+
+class GroundedStabilityPhysicsTests(unittest.TestCase):
+    def test_grounded_static_lower_body_keeps_legs_nailed_and_breathes_from_waist(self):
+        from src.pipeline.module_rig import GROUNDED_WAIST_BREATH_TY, resolve_module_motion
+        from src.studio.module_contract import MODULE_RULE_VERSION, validate_module_contract
+        import hashlib, tempfile
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / '.studio-work') as tmp:
+            img = Path(tmp) / 'standing.png'
+            Image.new('RGBA', (128, 160), (80, 120, 180, 255)).save(img)
+            h = hashlib.sha256(img.read_bytes()).hexdigest()
+            contract = {
+                'version': 2, 'coord_mode': 'normalized', 'input_sha256': h, 'image_size': [128, 160],
+                'pose_type': 'grounded', 'anatomy': 'humanoid_full', 'uncertainties': [],
+                'modules': [
+                    {'id': 'legs', 'role': 'lower_body', 'motion_type': 'static', 'motion': 'static',
+                     'static_reason': 'standing grounded lower anchor', 'parent': None,
+                     'pivot': [0.5, 0.85], 'confidence': 0.95,
+                     'pieces': [{'id': 'legs_p0', 'polygons': [[[0.3, 0.55], [0.7, 0.55], [0.7, 0.95], [0.3, 0.95]]], 'draw_order': 10}]},
+                    {'id': 'torso', 'role': 'torso', 'motion_type': 'rigid', 'motion': 'breath',
+                     'parent': 'legs', 'pivot': [0.5, 0.55], 'confidence': 0.95,
+                     'pieces': [{'id': 'torso_p0', 'polygons': [[[0.3, 0.25], [0.7, 0.25], [0.7, 0.58], [0.3, 0.58]]], 'draw_order': 20}]},
+                    {'id': 'head', 'role': 'head', 'motion_type': 'rigid', 'motion': 'sway',
+                     'parent': 'torso', 'pivot': [0.5, 0.25], 'confidence': 0.95,
+                     'pieces': [{'id': 'head_p0', 'polygons': [[[0.38, 0.05], [0.62, 0.05], [0.62, 0.28], [0.38, 0.28]]], 'draw_order': 30}]},
+                ],
+                'connections': [
+                    {'id': 'waist', 'type': 'joint', 'a': 'legs', 'b': 'torso', 'point': [0.5, 0.55]},
+                    {'id': 'neck', 'type': 'joint', 'a': 'torso', 'b': 'head', 'point': [0.5, 0.25]},
+                ],
+                'occlusions': [],
+            }
+            validate_module_contract(contract, input_sha256=h, image_size=(128, 160))
+
+            rig = {
+                'pose_type': 'grounded', 'body_height_px': 2400.0, 'ik': [], 'skin': {},
+                'bones': [
+                    {'name': 'root', 'parent': None, 'pos': [64, 160]},
+                    {'name': 'module_legs', 'parent': 'root', 'pos': [64, 136]},
+                    {'name': 'module_torso', 'parent': 'module_legs', 'pos': [64, 88]},
+                    {'name': 'module_head', 'parent': 'module_torso', 'pos': [64, 40]},
+                ],
+                'moduleContract': {
+                    'sourceVersion': 2, 'version': 1, 'ruleVersion': MODULE_RULE_VERSION,
+                    'modules': [
+                        {'id': 'legs', 'role': 'lower_body', 'bone': 'module_legs', 'parent': None,
+                         'shape': 'rigid', 'motion': 'static', 'motionProfile': 'static', 'pivot': [64, 136], 'pieces': []},
+                        {'id': 'torso', 'role': 'torso', 'bone': 'module_torso', 'parent': 'legs',
+                         'shape': 'rigid', 'motion': 'required', 'motionProfile': 'breath', 'pivot': [64, 88], 'pieces': []},
+                        {'id': 'head', 'role': 'head', 'bone': 'module_head', 'parent': 'torso',
+                         'shape': 'rigid', 'motion': 'required', 'motionProfile': 'sway', 'pivot': [64, 40], 'pieces': []},
+                    ],
+                },
+            }
+            mot = resolve_module_motion(rig, 'default')
+            self.assertNotIn('module_legs', mot)
+            self.assertIn('module_torso', mot)
+            self.assertNotIn('tx', mot['module_torso'])
+            self.assertAlmostEqual(mot['module_torso']['ty'][0][0], GROUNDED_WAIST_BREATH_TY[0], places=3)
+            self.assertLessEqual(sum(abs(t[0]) for t in mot['module_torso']['rotate']), 1.6)
+            self.assertIn('module_head', mot)
+
+    def test_grounded_root_torso_never_gets_airborne_float_and_airborne_tilt_is_poised(self):
+        from src.pipeline.module_rig import AIRBORNE_BREATH_TX, resolve_module_motion
+        from src.studio.module_contract import MODULE_RULE_VERSION
+        base_rig = {
+            'body_height_px': 2400.0, 'ik': [], 'skin': {},
+            'bones': [
+                {'name': 'root', 'parent': None, 'pos': [64, 160]},
+                {'name': 'module_torso', 'parent': 'root', 'pos': [64, 80]},
+            ],
+            'moduleContract': {
+                'sourceVersion': 2, 'version': 1, 'ruleVersion': MODULE_RULE_VERSION,
+                'modules': [
+                    {'id': 'torso', 'role': 'torso', 'bone': 'module_torso', 'parent': None,
+                     'shape': 'rigid', 'motion': 'required', 'motionProfile': 'breath', 'pivot': [64, 80], 'pieces': []},
+                ],
+            },
+        }
+        g_mot = resolve_module_motion({**base_rig, 'pose_type': 'grounded'}, 'default')
+        self.assertNotIn('tx', g_mot['module_torso'])
+        self.assertNotIn('rotate', g_mot['module_torso'])
+        self.assertIn('ty', g_mot['module_torso'])
+
+        a_mot = resolve_module_motion({**base_rig, 'pose_type': 'airborne'}, 'default')
+        self.assertLessEqual(sum(abs(t[0]) for t in a_mot['module_torso']['rotate']), 1.7)
+        self.assertLessEqual(sum(abs(t[0]) for t in a_mot['module_torso']['tx']), sum(AIRBORNE_BREATH_TX) + 0.01)
