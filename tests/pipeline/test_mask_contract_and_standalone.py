@@ -667,7 +667,7 @@ class GroundedStabilityPhysicsTests(unittest.TestCase):
             self.assertIn('module_torso', mot)
             self.assertNotIn('tx', mot['module_torso'])
             self.assertAlmostEqual(mot['module_torso']['ty'][0][0], GROUNDED_WAIST_BREATH_TY[0], places=3)
-            self.assertLessEqual(sum(abs(t[0]) for t in mot['module_torso']['rotate']), 1.6)
+            self.assertLessEqual(sum(abs(t[0]) for t in mot['module_torso']['rotate']), 0.75)
             self.assertIn('module_head', mot)
 
     def test_grounded_root_torso_never_gets_airborne_float_and_airborne_tilt_is_poised(self):

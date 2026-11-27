@@ -41,7 +41,7 @@ LOCKED_ROOT_DEG = 0.25
 MAX_MODULE_GAIN = 1.5
 AIRBORNE_BREATH_TX = (3.2, 1.4)
 AIRBORNE_BREATH_TY = (10.5, 2.8)
-GROUNDED_WAIST_BREATH_TY = (4.5, 1.4)
+GROUNDED_WAIST_BREATH_TY = (2.8, 0.8)
 
 
 def soft_bend_deg_for_link(index: int, *, locked_root: bool = False, scale: float = 1.0) -> float:
@@ -885,7 +885,7 @@ def resolve_module_motion(rig: dict, preset: str, *, duration: float=8.0) -> dic
             continue
         is_grounded = rig.get("pose_type") == "grounded"
         if family == "torso" and profile == "breath" and m.get("parent") is not None:
-            waist_rot = min(amp * 0.45, 1.1)
+            waist_rot = min(amp * 0.18, 0.40)
             motion[bn] = {
                 "rotate": terms((waist_rot, 2, 0.15), (waist_rot * 0.35, 3, 0.20)),
                 "ty": terms((GROUNDED_WAIST_BREATH_TY[0], 3, 0.0), (GROUNDED_WAIST_BREATH_TY[1], 2, 0.0)),
