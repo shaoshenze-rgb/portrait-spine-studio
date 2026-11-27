@@ -695,3 +695,72 @@ class GroundedStabilityPhysicsTests(unittest.TestCase):
         a_mot = resolve_module_motion({**base_rig, 'pose_type': 'airborne'}, 'default')
         self.assertLessEqual(sum(abs(t[0]) for t in a_mot['module_torso']['rotate']), 1.7)
         self.assertLessEqual(sum(abs(t[0]) for t in a_mot['module_torso']['tx']), sum(AIRBORNE_BREATH_TX) + 0.01)
+
+    def test_unified_upper_body_plan_mode_supports_grounded_and_airborne_without_neck_cut(self):
+        from src.studio.module_contract import validate_module_contract
+        from src.studio.vision_schema import VisionReviewRequired
+        import hashlib, tempfile
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / '.studio-work') as tmp:
+            img = Path(tmp) / 'hero.png'
+            Image.new('RGBA', (128, 160), (90, 110, 160, 255)).save(img)
+            h = hashlib.sha256(img.read_bytes()).hexdigest()
+            base_grounded = {
+                'version': 2, 'coord_mode': 'normalized', 'input_sha256': h, 'image_size': [128, 160],
+                'pose_type': 'grounded', 'anatomy': 'humanoid_full', 'uncertainties': [],
+                'plan_mode': 'unified_upper_body',
+                'modules': [
+                    {'id': 'legs', 'role': 'lower_body', 'motion_type': 'static', 'motion': 'static',
+                     'static_reason': 'standing grounded lower anchor', 'parent': None,
+                     'pivot': [0.5, 0.85], 'confidence': 0.95,
+                     'pieces': [{'id': 'legs_p0', 'polygons': [[[0.3, 0.55], [0.7, 0.55], [0.7, 0.95], [0.3, 0.95]]], 'draw_order': 10}]},
+                    {'id': 'torso', 'role': 'torso', 'motion_type': 'rigid', 'motion': 'breath',
+                     'parent': 'legs', 'pivot': [0.5, 0.55], 'confidence': 0.95,
+                     'pieces': [{'id': 'torso_p0', 'polygons': [[[0.3, 0.10], [0.7, 0.10], [0.7, 0.58], [0.3, 0.58]]], 'draw_order': 20}]},
+                ],
+                'connections': [
+                    {'id': 'waist', 'type': 'joint', 'a': 'legs', 'b': 'torso', 'point': [0.5, 0.55]},
+                ],
+                'occlusions': [],
+            }
+            # Valid under canvas_layers + unified_upper_body
+            c = validate_module_contract(base_grounded, input_sha256=h, image_size=(128, 160), material_mode='canvas_layers')
+            self.assertEqual(c['plan_mode'], 'unified_upper_body')
+
+            # Standard mode STILL rejects missing head / single active hard body
+            std = dict(base_grounded, plan_mode='standard')
+            with self.assertRaises(VisionReviewRequired):
+                validate_module_contract(std, input_sha256=h, image_size=(128, 160), material_mode='canvas_layers')
+
+            # Grounded unified_upper_body STILL rejects missing lower_body
+            no_legs = {
+                **base_grounded,
+                'modules': [
+                    {**base_grounded['modules'][1], 'parent': None},
+                    {'id': 'fx', 'role': 'effect_group', 'motion_type': 'rigid', 'motion': 'sway',
+                     'parent': None, 'pivot': [0.2, 0.3], 'confidence': 0.95,
+                     'pieces': [{'id': 'fx_p0', 'polygons': [[[0.1, 0.1], [0.25, 0.1], [0.25, 0.4], [0.1, 0.4]]], 'draw_order': 30}]},
+                ],
+                'connections': [],
+            }
+            with self.assertRaises(VisionReviewRequired):
+                validate_module_contract(no_legs, input_sha256=h, image_size=(128, 160), material_mode='canvas_layers')
+
+            # Airborne unified_upper_body with torso + active effect_group passes
+            air_ok = {**no_legs, 'pose_type': 'airborne'}
+            c_air = validate_module_contract(air_ok, input_sha256=h, image_size=(128, 160), material_mode='canvas_layers')
+            self.assertEqual(c_air['plan_mode'], 'unified_upper_body')
+
+            # Airborne unified_upper_body with ONLY torso + static ground (single active module) is rejected
+            air_single = {
+                **air_ok,
+                'modules': [
+                    air_ok['modules'][0],
+                    {'id': 'ground', 'role': 'ground', 'motion_type': 'static', 'motion': 'static',
+                     'static_reason': 'static rock base', 'parent': None, 'pivot': [0.5, 0.9], 'confidence': 0.95,
+                     'pieces': [{'id': 'g_p0', 'polygons': [[[0.2, 0.85], [0.8, 0.85], [0.8, 0.98], [0.2, 0.98]]], 'draw_order': 5}]},
+                ],
+            }
+            with self.assertRaises(VisionReviewRequired):
+                validate_module_contract(air_single, input_sha256=h, image_size=(128, 160), material_mode='canvas_layers')

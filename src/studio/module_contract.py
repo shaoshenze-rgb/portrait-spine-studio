@@ -237,6 +237,12 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
         raise error
     if result.get("pose_type") not in ("grounded", "airborne"):
         raise VisionValidationError("模块合同需要明确 grounded/airborne 姿态。")
+    plan_mode = result.get("plan_mode", "standard")
+    if plan_mode not in ("standard", "unified_upper_body"):
+        raise VisionValidationError("plan_mode必须为 standard 或 unified_upper_body。")
+    if plan_mode == "unified_upper_body" and material_mode != "canvas_layers":
+        raise VisionReviewRequired("头肩一体基础模式仅限已校验材质层（canvas_layers）预览使用。")
+    result["plan_mode"] = plan_mode
     if result.get("anatomy") not in ("humanoid_full", "humanoid_bust", "merfolk", "other"):
         raise VisionValidationError("需要明确 anatomy 分类。")
     unknown = result.get("uncertainties")
@@ -400,16 +406,30 @@ def validate_module_contract(payload: Any, *, input_sha256: str,
             if not module_has_active_host(module, by_id):
                 raise VisionReviewRequired(mid + " 的locked_root没有活动宿主父级。")
     roles = {m["role"] for m in modules}
-    if not ({"head", "face"} & roles) or not ({"torso", "body"} & roles):
-        raise VisionReviewRequired("人物需要实际头部与躯干模块。")
-    if result["anatomy"] == "humanoid_full" and not ({"lower_body", "upper_leg", "lower_leg", "leg"} & roles):
-        raise VisionReviewRequired("全身人物没有真实下身模块，不能删除后放行。")
-    if result["anatomy"] == "merfolk" and "fish_tail" not in roles:
-        raise VisionReviewRequired("人鱼需要主鱼尾模块，不能强造双腿。")
     active_hard = [m for m in modules if m["motion_type"] == "rigid"
                    and m["role"] in BODY_ROLES and m["motion"] in ("breath", "sway")]
-    if len(active_hard) < 2:
-        raise VisionReviewRequired("需要多个硬身体模块的相对轻摆，不能整图同骨或仅靠软附件运动。")
+    active_any = [m for m in modules if m["motion"] in ("breath", "sway", "soft_bend")]
+    has_lower = bool({"lower_body", "upper_leg", "lower_leg", "leg"} & roles)
+    if plan_mode == "unified_upper_body":
+        if not ({"torso", "body"} & roles):
+            raise VisionReviewRequired("头肩一体基础模式仍需明确躯干主体模块。")
+        if result["anatomy"] == "humanoid_full" and result["pose_type"] == "grounded" and not has_lower:
+            raise VisionReviewRequired("站姿全身人物没有真实下身固定模块，不能放行。")
+        if result["anatomy"] == "merfolk" and "fish_tail" not in roles:
+            raise VisionReviewRequired("人鱼需要主鱼尾模块，不能强造双腿。")
+        if len(active_hard) < 1:
+            raise VisionReviewRequired("头肩一体基础模式至少需要一个活动刚性躯干模块。")
+        if len(active_any) < 2 and not (result["pose_type"] == "grounded" and has_lower):
+            raise VisionReviewRequired("头肩一体基础模式至少需要两个活动模块（或站姿下盘+上半身呼吸），不能整图单骨。")
+    else:
+        if not ({"head", "face"} & roles) or not ({"torso", "body"} & roles):
+            raise VisionReviewRequired("人物需要实际头部与躯干模块。")
+        if result["anatomy"] == "humanoid_full" and not has_lower:
+            raise VisionReviewRequired("全身人物没有真实下身模块，不能删除后放行。")
+        if result["anatomy"] == "merfolk" and "fish_tail" not in roles:
+            raise VisionReviewRequired("人鱼需要主鱼尾模块，不能强造双腿。")
+        if len(active_hard) < 2:
+            raise VisionReviewRequired("需要多个硬身体模块的相对轻摆，不能整图同骨或仅靠软附件运动。")
     connections = result.get("connections")
     if not isinstance(connections, list) or len(connections) > 128:
         raise VisionValidationError("connections必须是有界列表。")

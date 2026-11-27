@@ -29,7 +29,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
     advisory_notes = {}
     placement_warnings = []
     allowed = {'pose_type', 'anatomy', 'modules', 'connections', 'uncertainties',
-               'occlusions', 'input_issues', 'boundary_refinements'}
+               'occlusions', 'input_issues', 'boundary_refinements', 'plan_mode'}
     if not isinstance(plan, dict) or set(plan) - allowed:
         raise ValueError('Canvas binding plan contains unsupported fields')
     # Strict callers keep their original rejection behavior. Preview callers
@@ -78,7 +78,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
             raise ValueError('Missing module or duplicate layer piece')
         m = by_id[mid]
         grounded_anchor = (not strict_placement and plan.get('pose_type') == 'grounded'
-                           and m.get('role') in ('foot', 'lower_body') and m.get('motion_type') == 'static'
+                           and m.get('role') in ('foot', 'lower_body', 'ground') and m.get('motion_type') == 'static'
                            and part['kind'] == 'rigid')
         if m.get('parent') != part['parent'] or (m.get('motion_type') != part['kind'] and not grounded_anchor):
             raise ValueError('Binding cannot change material module parent or motion kind')
@@ -122,6 +122,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
     contract = validate_module_contract({
         'version': 2, 'input_sha256': material['sourceSHA256'], 'image_size': [w, h],
         'coord_mode': 'normalized', 'pose_type': plan.get('pose_type'), 'anatomy': plan.get('anatomy'),
+        'plan_mode': plan.get('plan_mode', 'standard'),
         'modules': modules, 'connections': copy.deepcopy(plan.get('connections', [])),
         'occlusions': declared_occlusions, 'uncertainties': plan.get('uncertainties', []),
     }, input_sha256=material['sourceSHA256'], image_size=(w, h), material_mode='canvas_layers')
@@ -248,7 +249,7 @@ def compile_canvas_layer_bindings(parts_dir, plan, out_dir, *, evidence_root,
         if c.get('hidden_by'): contact['hiddenBy'] = copy.deepcopy(c['hidden_by'])
         contacts.append(contact)
     projected = {'sourceVersion': 2, 'version': 1, 'ruleVersion': MODULE_RULE_VERSION,
-        'materialMode': 'canvas_layers', 'productionIntakeReady': False, 'exportAllowed': False,
+        'materialMode': 'canvas_layers', 'planMode': contract.get('plan_mode', 'standard'), 'productionIntakeReady': False, 'exportAllowed': False,
         'sourceSHA256': material['sourceSHA256'], 'originalSourceSHA256': material['originalSourceSHA256'],
         'canvas': [w, h], 'modules': projection, 'requiredModules': list(by_id), 'contacts': contacts,
         'occlusions': occlusion_rows, 'visibleMaskSHA256': hashes,
