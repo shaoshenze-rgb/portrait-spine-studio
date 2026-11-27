@@ -1,6 +1,6 @@
 # Portrait Spine Studio
 
-将一张立绘制作成可交付的 Spine 待机动画：**本机直通（按需去底 → 边缘贴合分层与后层桥接补全 → 100%/150% 压力体检 → 立即出 Studio 实时预览网页）→ 人工微调签收导出**。新会话第 1 轮零停顿直出，仅复杂遮挡武器或糊特效时按需局部补一次 Canvas。身体和武器保形，软饰件轻摆；持续遮住的内容不强补。
+将一张立绘制作成可交付的 Spine 待机动画：**品质优先（默认优先调用 Mivo Canvas AI 拆层与遮挡补全，多层原画 PSD 已独立分层部位 4K 无损直取，仅 Canvas 不可用/出错时自动降级本机兜底）→ 100%/150% 压力体检 → Studio 实时预览网页 → 人工微调签收导出**。身体和武器保形，软饰件轻摆；持续遮住的内容不强补。
 
 Cindy 对话负责调用 Canvas、看图和规划图层；本地 Python 工具负责对齐、净化、骨架、渲染和导出。不是全自动语义拆分服务，也不需要安装专用 Cindy 连接插件。项目 Skill 随仓库分发：[四步 SOP](.agents/skills/portrait-spine-idle/SKILL.md)。
 
@@ -20,7 +20,7 @@ python3 bin/start-studio.py --port 8765 --no-open
 python3 scripts/canvas_to_spine.py --parts-dir <parts目录> --plan <plan.json> --character <角色标识> --out-dir <新输出目录> --evidence-root <任务根> --cleanup --fps 30
 ```
 
-默认本机直通：带背景原图先经 `scripts/local_matte.py` 去底并看三联对照图，透明原图直接经 `scripts/split_local_body.py`（底层 `src/pipeline/local_body_split.py`）按真实边缘贴合、前后景分层、后层遮挡桥接补全与深本色垫边切分，以 `local-direct-split` 来源直进 Studio 实时工作台。公共诊断自动检测同源像素串层、软层大断岛与 100%/150% 满滑块全身露底，红线禁止靠冻住幅度混过检查。仅复杂背景、大面积被挡武器或糊特效且本地补全不足时，才按需补一次 Canvas。
+默认品质优先：无多层原画的扁平图以及多层 PSD 中的合并主体层，默认优先调用 Mivo Canvas（`xd-mivo-canvas` 的 `canvas_remove_background` / `canvas_split_layers` / `canvas_edit_image`），经 `scripts/canvas_handoff.py import-layers` 真实回执与 SIFT 对齐入库；多层原画 `.psd` 中画师已无损画好的 4K/8K 独立附件/特效层直接由 `scripts/psd_split_parts.py` 无损提取；仅当 Mivo Canvas 不可用、面板未开、缺 Key、报错或对齐失败时，才自动降级走本机 `scripts/local_matte.py` / `scripts/split_local_body.py` 兜底并如实标记 `local-direct-split`。公共诊断自动检测同源像素串层、软层大断岛与 100%/150% 满滑块全身露底，红线禁止靠压低幅度混过检查。
 
 ## 文件夹批量处理与真 4K 统一导出
 

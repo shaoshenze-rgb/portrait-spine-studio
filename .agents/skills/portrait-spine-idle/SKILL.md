@@ -1,13 +1,13 @@
 ---
 name: portrait-spine-idle
-description: 触发词「spine动画」（用户说“spine动画”/“Spine动画”，或在任意对话发单张立绘、发多张图或给一个本地文件夹路径说“批量做 Spine 动画 / 做个待机动画 / 把立绘做成动态待机 / 让立绘动起来 / 导出 4K 透明网页视频”时都会自动触发）。支持单张与 20–30 张文件夹批量处理，默认保留 4K 清晰度本机直通去底、边缘贴合分层、后层桥接补全与 100%/150% 压力体检，直出 Studio 实时预览与批量锁定验收台，默认统一导出 4K + 透明网页视频；仅复杂遮挡或糊特效时按需局部补一次 Canvas。不用于普通静态修图或与 Spine 动画无关的问答。
+description: 触发词「spine动画」（用户说“spine动画”/“Spine动画”，或在任意对话发单张立绘、发多张图或给一个本地文件夹路径说“批量做 Spine 动画 / 做个待机动画 / 把立绘做成动态待机 / 让立绘动起来 / 导出 4K 透明网页视频”时都会自动触发）。支持单张与 20–30 张文件夹批量处理：默认品质优先——优先保留 4K/8K 原画 PSD 独立无损分层，对扁平图、合并主体层及复杂遮挡默认优先调用 Mivo Canvas（拆层与 AI 补全），仅在 Canvas 不可用、报错或对齐失败时自动降级本机兜底；经 100%/150% 压力体检后直出 Studio 实时预览与批量锁定验收台，默认统一导出官网同款 60 帧双档透明网页视频。不用于普通静态修图或与 Spine 动画无关的问答。
 ---
 
 # Portrait Spine Idle
 
 先出 8 秒实时可调预览，只修动起来真正穿帮的地方。每轮恢复先读本目标。
 身体、武器保形，头发、衣摆、飘带轻摆；全循环始终被遮住的内容不用强补。
-默认**本机直通优先**（新会话第 1 轮不依赖 Mivo Canvas，零停顿、零付费直出 Studio 网页）；复杂背景、大面积被挡武器或糊特效才按需补一次 Canvas，不递归拆子层。
+默认**品质优先（Mivo Canvas 拆层与补全优先 + 原画无损 PSD 直取 + 本机自动兜底）**：扁平图、无分层立绘及 PSD 中的合并主体层默认优先调用 Mivo Canvas（`xd-mivo-canvas` 的 `canvas_split_layers` / `canvas_edit_image` / `canvas_remove_background`）获取更高质量的拆层与遮挡补全（单图一次顶层拆层，不递归）；画师 PSD 已独立无损画好的 4K/8K 附件/特效层直接无损提取；**仅当 Mivo Canvas 不可用、面板未开、缺 Key、报错或对齐失败时，才自动降级走本机兜底**。
 四项基础检查加 100%/150% 压力体检后由用户看图签收；代码测试不等于角色验收。
 当前事实见[验收状态](../../../docs/acceptance-summary.md)，具体命令见[使用指南](../../../docs/usage.md)。
 
@@ -18,10 +18,11 @@ description: 触发词「spine动画」（用户说“spine动画”/“Spine动
 1. **原画级透明底优先（PSD 优先 + 禁留封闭死灰洞）**：
    - 不透明底立绘只要同目录存在 `.psd` 源文件，**必须优先从 `.psd` 隐藏背景/渐变填充层直接提取原画级无损透明底**（绝不允许只对报错图用 PSD、其余不透明图偷懒跑普通抠图）；
    - 无 `.psd` 走 `local_matte.py` 时，必须清除封闭洞内纯色底（如漩涡/臂弯内的 `#808080` 死灰块），并逐张目检 `matte-overview.jpg` / 去底对照图确认**零死灰洞、零缺块、零截断火焰/特效**后，才允许进入分层。
-2. **PSD 多层原画优先直拆 + 禁止粗多边形盲切与大面积漏认硬粘**：
-   - 同目录存在多图层 `.psd` 源文件（≥3 个可见非背景结构层）时，**必须优先使用通用工具 `scripts/psd_split_parts.py inspect` + `split` 直接基于原画分层拆件**（自动保护跨部件高光/混色层不粘错零件、优先保留画师遮挡下原绘像素并自动补齐剩余遮挡垫边、自动 4K 去白/灰毛边），严禁每张手写一次性脚本或拍扁后用粗多边形硬切；
-   - 仅无可用多图层 `.psd` 时再走 `scripts/split_local_body.py` 精密贴边拆件（复杂装备/领口/发丝/特效结合 SAM 2.1 精切），严禁在小缩略图上一口气盲写几十份粗略多边形后扔进后台队列一锅端；
-   - **高良率精简大模块原则（含「PSD 剥离附件 + 孤立主体补拆头/足」混合标准）**：官网 8 秒微动待机默认按 **6–9 个清晰大模块** 拆件（躯干主体、头/发、完整手臂+武器、独立披风/飘带/悬浮特效），不把单角色硬拆成 12–14 块互相交叉的碎件反复返工；若 PSD 已将披风/漩涡/武器/护手分层、但把人物「头+躯干+腿脚」合画在单层（如「人」「组 3」），先用 `scripts/psd_split_parts.py` 剥离全部原画附件层，再**仅对该干净孤立身体层**跑一次 `split_local_body.py` 补拆绑定必需的 `head`（及站立角色所需腿/静态 `foot` 足锚），无需停下请示；对于**无原画分层底图的扁平大面积交叉遮挡区**（例如法杖穿过厚重衣摆背后、前襟与后摆大面积重叠），默认与主体合并随呼吸整体微动，只让无遮挡焦点部位（头部、悬浮书/火焰/特效、自由外垂衣角/发尾）灵动摆动，绝不硬切死遮挡制造假裂缝；
+2. **Mivo Canvas 默认优先拆补 + PSD 4K 无损层直取 + 本机兜底（禁止粗多边形盲切）**：
+   - **无多层原画的扁平图（含单层 PNG/JPG 与扁平 PSD）**：默认**必须优先调用 Mivo Canvas**（`ghost_id="xd-mivo-canvas", namespace="xd"`：`canvas_selection` 验面板就绪 → 经 `ghost_call.attachments` 送入工作目录 `matted.png` 调一次顶层 `canvas_split_layers` 做 AI 拆层与遮挡补全 → `read_images(original)` 读回层原件 → `scripts/canvas_handoff.py import-layers` 真实回执与 SIFT 对齐入库；若关键大面积被挡武器/披风/手臂仍缺真实纹理，按需对目标节点补一次 `canvas_edit_image` 局部遮挡补全）；
+   - **多层原画 `.psd`（≥3 个可见非背景结构层）**：画师已无损画好的 4K/8K 独立结构层（前后景特效、披风后摆、发束、独立手臂/武器）优先用 `scripts/psd_split_parts.py inspect` + `split` 无损提取（保留画师遮挡下原绘像素，不降清到 2K）；**若 PSD 把人物「头+躯干+手臂+腿脚」合画在单个合并身体层，先剥离原画附件层，再优先把该合并身体层送 Mivo Canvas `canvas_split_layers` 做 AI 拆层与遮挡补全**（若只需轻量切头/足且无复杂遮挡，也可直接无损补拆）；
+   - **仅当 Mivo Canvas 不可用或出错时才降级本机兜底**：遇到 `PANEL_CLOSED`、`PANEL_NOT_READY`、`KEY_REQUIRED`、`MIVO_AUTH_INVALID`、超时、原件不可读、SIFT 对齐失败（`needs_canvas_registration`）或 Canvas 拆层严重糊边残缺时，自动降级走本机 `scripts/split_local_body.py` 兜底，并如实记录降级原因与 `local-direct-split` 来源（绝不伪造 Canvas 回执，绝不因 Canvas 异常卡死整批）；
+   - **高良率精简大模块原则**：官网 8 秒微动待机默认按 **6–9 个清晰大模块** 组织（躯干主体、头/发、完整手臂+武器、独立披风/飘带/悬浮特效），不硬拆 12–14 块互相交叉的碎件；走本机兜底遇到无底图的扁平死交叉遮挡区时，并回主体随呼吸整体微动，绝不硬切死遮挡制造假裂缝；
    - 无论哪种拆件路径，**漏认像素占比 `unclaimed_ratio` 必须 `< 1.5%`**（绝不允许留数万至数百万像素给自动补缺把刀刃、衣摆、火焰碎渣胡乱粘到头/手臂等错位部件上）；半透明火焰/光效/漩涡必须整组完整归属，不得切碎；后层垫边不得在摆动空隙中露出纯色涂抹糊块。
 3. **单张绿灯闸门（红灯必停，不绿灯不准开下一张）**：
    - 每完成 1 张，**必须亲自目检 `all-layers-sheet.jpg`、`keyframes`、`seam-worst-crops.jpg`、`stress-150-frame.jpg` 及实际循环播放**；
@@ -34,20 +35,20 @@ description: 触发词「spine动画」（用户说“spine动画”/“Spine动
    - 默认所有健康可动部件保持 **`motion_scale = 1.0`**（独立悬浮道具 `prop`/`pet`、独立特效 `effect_group`、无遮挡衣角/发尾/飘带可按观感设 `1.0–1.25`），仅在 150% 压测确认**某单一关节真实露底且补垫边后仍超阈值**时，才允许仅针对该单个关节微调幅度；
    - PSD 原画已分层的前/后景特效（如前后旋涡、独立光环、火焰）、悬浮道具（如悬浮魔典/法球）、独立衣衬/飘带与无遮挡手臂/护手，**必须保留为独立可动模块（前/后景特效拆成两个独立 `effect_group` 自动反向视差漂浮）**，禁止为图省事全并回静态主体导致全图只有 2–3 根骨头微动。
 
-## 1. 本机直通准备原图（第 1 轮直接启动，不先调 Canvas）
+## 1. 准备原图（PSD 无损透明优先，否则 Mivo Canvas 抠图优先，本机兜底）
 
 0. **全局调用仓库定位**：无论当前对话在哪个目录，所有命令先切到本技能软链指向的真实仓库根目录（`~/Documents/claude_code_ssz/projects/portrait-spine-studio`，可由 `dirname "$(realpath <SKILL.md>)"/../../..` 解析），再执行下文命令。
 1. 启动或确认本机 Studio 在线：`python3 bin/start-studio.py --port 8765 --no-open`（先查 `http://127.0.0.1:8765/api/health`；若已在跑但版本过旧不识别 `local-direct-split`，原位重启 `8765`，保留 `.studio-work/` 已有任务不删除）。
 2. 直接读取用户本轮对话附件原图：
    - **已是透明 PNG**：直接进入第 3 步。
-   - **带不透明背景（JPG/PNG）**：用 `.venv/bin/python3 scripts/local_matte.py --input <附件原图> --out <透明原图.png> --check-out <去底对照.jpg>` 本机去底，目检 `<去底对照.jpg>` 确认人物轮廓干净、未误抠内部高光。
+   - **带不透明背景（JPG/PNG 且无 `.psd` 可直接隐藏背景层）**：优先调用 Mivo Canvas `canvas_remove_background`（AI 去背景）；仅当 Canvas 不可用/报错/缺 Key 时自动降级走 `.venv/bin/python3 scripts/local_matte.py --input <附件原图> --out <透明原图.png> --check-out <去底对照.jpg>` 本机兜底，目检 `<去底对照.jpg>` 确认人物轮廓干净、无死灰洞、未误抠内部高光。
 3. 创建 Studio 任务并拿到 `job_id` 与规范工作图 `matted.png`：
 
 ```bash
 python3 scripts/portrait_task.py prepare --image <透明原图.png> --character <角色标识>
 ```
 
-## 2. 本机语义切分、后层桥接补全，立即出实时预览
+## 2. Mivo Canvas 优先拆层补全（PSD 无损层直取，失败自动降级本机）并出实时预览
 
 1. 读图规划语义模块（附中文 `label`，如头部、躯干、武器、悬浮道具、前后衣摆、领口围巾、围巾尾、左右臂腿与站立双脚）。前后衣摆、领巾与臂后围巾尾必须按前后深度拆开。
 2. 给出语义种子掩码或轮廓引导线，运行本机统一分层入口：
@@ -66,14 +67,15 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
    `--cleanup` 自动串联轮廓裁切、去白边、糊特效 `omit` 清理、≥200 px 缺块原图恢复、`local_layer_pixel_bleed` 串层检测、`separated_soft_islands` 软层断岛检测，以及 `strict_placement=False` 编译（6 px 静态距离仅入提示，不锁预览）。
 4. 完成后实际验证并提供可点开的实时工作台链接 `http://127.0.0.1:8765/?job=<job_id>` 与单文件 HTML，确认播放器和微调、签收控件可见。深浅底 MP4、关键帧拼图、`seam-worst-crops.jpg`、`all-layers-sheet.jpg` 和诊断 JSON 作辅助，不能以视频替代 Studio。仅无界面批处理时备用 `scripts/canvas_to_spine.py`。
 
-## 3. 看完整循环，微调与按需局部 Canvas 精修
+## 3. 看完整循环、Canvas 局部补全与实时微调
 
 先在 Studio 复核 `all-layers-sheet.jpg` 和自动接缝特写（原图、起始帧、局部最大变化帧），包括肩臂、头臂及自动选出的软层/本地切分交界。先消除 `local_layer_pixel_bleed` 与 `separated_soft_islands`，不靠调幅掩盖。16 个抽样时刻不能替代原速完整循环。
 
 在 Studio 左侧舞台直接看动画，右侧实时调百分比、显隐与前后层级。100% 是角色规划的默认动作；单件与整体乘积封顶 150%，不按最近一次保存反复放大。拖滑块不发保存请求，确认后再一键烘焙并复看。
 
-**按需局部 Canvas（可选，默认不触发）**：仅当用户明确要求使用 Mivo Canvas，或存在本机去底/桥接补全确实无法解决的复杂背景、大面积被挡武器或糊特效时，才在有效授权内最多补一次 Canvas（`remove-bg` 或顶层 `split-layers`）。调用顺序严格遵守：
-- 先调 `canvas_selection` 唤醒并确认面板就绪；若 `canvas_place_image` 返回 `REFERENCE_LIBRARY_CHANGED`，先 `canvas_selection` 确认后重试一次 `canvas_place_image`，**严禁跳过放图直接读画布上旧选中节点**。
+**Mivo Canvas 标准调用与容错兜底顺序（默认优先通道）**：
+- 每次发起 Canvas 任务前，先无参调 `ghost_call({ghost_id:"xd-mivo-canvas", namespace:"xd", tool:"canvas_selection", args:{}})` 确认面板已打开且载入完成；批量任务将工作目录内图片绝对路径传入顶层 `attachments`（单次顶层 `canvas_split_layers` / `canvas_remove_background` / 局部补全 `canvas_edit_image`，禁止二、三级递归拆子层）；遇 `REFERENCE_LIBRARY_CHANGED` 先 `canvas_selection` 确认后重试一次，**严禁跳过放图直接读画布上旧选中节点**；
+- 若返回 `PANEL_CLOSED`、`PANEL_NOT_READY`、`KEY_REQUIRED`、`MIVO_AUTH_INVALID`、超时、读取失败或 `needs_canvas_registration`（SIFT 对齐失败），**记录精确失败原因后自动降级回本机 `local_matte.py` / `split_local_body.py` 兜底**，绝不伪造 Canvas 回执。
 - 调 `read_images(original)` 后优先用宿主注入的只读根路径实际打开（不要只查 shell 环境变量 `$LIBRARY_READ_ROOT`）。若新会话首轮已返回 `available` 但宿主尚未挂载只读目录，保留已入板节点、不报 `fail`，附一键三反引号 `cindy-ui` 按钮：`{"version":1,"seq":1,"op":"create","id":"resume-library-mount","kind":"button","props":{"label":"继续并开始拆层","send":"继续"}}`，第 2 轮复用原节点继续；仅返回 `unavailable` / `unauthorized` / `unauth_cache` 或第 2 轮仍无映射时按读取故障停止并报告。详情见[局部返修](references/rerun-and-troubleshooting.md)。
 
 ## 4. 四项基础检查，100%/150% 压力体检与人工签收导出
@@ -98,7 +100,7 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 
 ## 红线
 
-- 默认第 1 轮走本机直通（`local_matte.py` + `split_local_body.py` + Studio），不因 Mivo Canvas 冷启动或未打开而阻断首轮交付。
+- 默认品质优先：扁平图与合并主体层优先调 Mivo Canvas（`canvas_split_layers` / `canvas_edit_image` / `canvas_remove_background`），画师 4K/8K 原画 PSD 已独立分好的层无损直取；仅当 Canvas 不可用、报错或对齐失败时自动降级本机兜底，不因单次 Canvas 故障卡死整批。
 - 不把软布摆动或呼吸压到近乎静止来过压力检查；保持自然可见的默认动作，用后层桥接和深垫边修露底。
 - 不做二、三级递归拆子层；绝不伪造 Canvas 回执字段，纯本地直分必须如实标记 `local-direct-split`。
 - 不用静态 6 px 距离或零星半透明边缘锁死预览与已签收导出。

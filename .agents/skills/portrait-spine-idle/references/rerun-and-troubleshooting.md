@@ -20,9 +20,9 @@
 
 特效清理从被关闭效果的颜色及范围识别残丝；与主体同色的结构可能受影响，不能宣称对所有新图都无误删。检查清理前后和 `missing_original_regions_raw`：有意移除的效果不等于人物缺件。
 
-## 按需使用 Mivo Canvas 与作品库读取
+## 默认优先使用 Mivo Canvas 与作品库读取（不可用/报错时降级本机兜底）
 
-默认主链已改为本机直通（`scripts/local_matte.py` + `scripts/split_local_body.py`），新会话第 1 轮无需先经过 Canvas。仅当按需使用 Canvas 补去底或局部补拆时：
+默认主链为**品质优先（Mivo Canvas 拆层与补全优先 + 原画多层 PSD 独立层无损直取 + Canvas 不可用/报错/对齐失败时自动降级本机兜底）**。调用 `xd-mivo-canvas` 时严格遵守：
 
 0. **放图顺序防错**：调用 `canvas_place_image` 前先调 `canvas_selection` 唤醒并确认面板就绪；若返回 `REFERENCE_LIBRARY_CHANGED`，先 `canvas_selection` 确认再重试一次 `canvas_place_image`，严禁跳过放图直接读取画布上以前选中的旧节点。
 

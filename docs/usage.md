@@ -1,6 +1,6 @@
 # Portrait Spine Studio 使用指南
 
-默认主链是“启动 Studio → 本机读取/按需去底并准备任务 → `scripts/split_local_body.py` 边缘贴合与后层桥接补全 → 净化与 100%/150% 全身压力体检 → Studio 实时网页微调与人工签收”（首轮零 Canvas 依赖、零停顿）；仅复杂背景、大面积被挡武器或糊特效时按需局部补一次 Canvas。交付必须包含可打开的任务页和单文件 HTML，不只给视频。[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
+默认主链是“启动 Studio → 准备 4K 透明原图（PSD 无损透明优先，否则 Mivo Canvas 抠图优先，异常时本机 `local_matte.py` 兜底）→ **Mivo Canvas 优先拆层与 AI 补全**（扁平图及 PSD 合并主体层优先调 `xd-mivo-canvas` `canvas_split_layers`/`canvas_edit_image` + `scripts/canvas_handoff.py import-layers` 对齐入库；原画 PSD 已无损分好的独立附件/特效层直接 4K 提取；仅 Canvas 不可用、报错或对齐失败时自动降级 `scripts/split_local_body.py` 本机兜底）→ 净化与 100%/150% 全身压力体检 → Studio 实时网页微调与人工签收”。交付必须包含可打开的任务页和单文件 HTML，不只给视频。[验收状态](acceptance-summary.md)区分代表图通过与待验证内容。
 
 ## 启动和准备
 
@@ -15,11 +15,11 @@ python3 scripts/portrait_task.py prepare --image <透明原图.png> --preset agi
 
 服务命令保持运行，prepare 在另一终端执行并返回 job_id。浏览器地址为 http://127.0.0.1:8765/，指运行浏览器那台电脑。已有透明图直接复用；带背景图先取得获授权的真实去底原件。重启不会恢复旧内存任务，保留旧文件后重新 prepare，不伪造恢复。
 
-## 按需 Canvas 交接（可选精修）与本地直分来源
+## Mivo Canvas 默认优先交接、PSD 无损直拆与本机兜底
 
-若同目录存在多图层 `.psd` 原画源文件，优先走通用工具 `scripts/psd_split_parts.py inspect`（导出索引表与图层面检总览）+ `scripts/psd_split_parts.py split`（结构层归属、跨件高光自动归原部件、保留遮挡原绘+自动垫边与 4K 去灰白毛边）直接生成 `material.json`；无可用多图层 PSD 时走 `scripts/split_local_body.py` 产出各层后，在 `material.json` 中使用一等本地来源 `provenance.operation = "local-direct-split"`（含 `source_asset_sha256`、`result_asset_sha256`、单位 `transform` 和 `local_derivation`，不伪造 Canvas 字段），经 `materialize_canvas_layer_parts` 直接接入 Studio `apply-canvas`。
+默认品质优先顺序：① 无多层原画的扁平图（含单层 PNG/JPG 与扁平 PSD）以及多层 PSD 中被合在一层的合并主体层，**默认优先调用 Mivo Canvas（`xd-mivo-canvas` 的 `canvas_split_layers` / `canvas_edit_image`）**，通过下方 `scripts/canvas_handoff.py import-layers` 验证真实回执并 SIFT 对齐入库；② 多层原画 `.psd` 中画师已无损画好的 4K/8K 独立附件/特效层，直接用 `scripts/psd_split_parts.py inspect` + `split` 无损提取；③ **仅当 Mivo Canvas 不可用、面板未开、缺 Key、报错或 SIFT 对齐失败（`needs_canvas_registration`）时**，才自动降级走 `scripts/split_local_body.py` 本机兜底，并在 `material.json` 如实标记 `provenance.operation = "local-direct-split"`（含 `source_asset_sha256`、`result_asset_sha256`、单位 `transform` 和 `local_derivation`，绝不伪造 Canvas 字段）。
 
-仅当需要 Canvas 补拆大面积遮挡武器、复杂背景或糊特效时，再走下方 Canvas 交接：调用 `canvas_place_image` 前先 `canvas_selection` 唤醒面板，遇 `REFERENCE_LIBRARY_CHANGED` 重试一次放图，绝不读取画布旧选中节点。
+调用 Canvas 前务必先无参调 `canvas_selection` 确认面板就绪；遇 `REFERENCE_LIBRARY_CHANGED` 重试一次放图，绝不读取画布旧选中节点。
 
 ### Canvas交接细节
 
