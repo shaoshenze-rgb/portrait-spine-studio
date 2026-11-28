@@ -167,7 +167,9 @@ def register_edit_to_source(
         else:
             raise ValueError(f"Canvas edit SIFT registration failed and no crop_bbox fallback provided: {metrics}")
 
-    if _has_real_transparency(edit_rgba):
+    has_native = _has_real_transparency(edit_rgba)
+    metrics["source_has_native_alpha"] = has_native
+    if has_native:
         pm = edit_rgba.astype(np.float32)
         pm[..., :3] *= pm[..., 3:4] / 255.0
         warped = cv2.warpAffine(pm, matrix, (sw, sh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -195,6 +197,7 @@ def estimate_edit_foreground_alpha(
     occluded_mask: np.ndarray,
     *,
     mode: str = "auto",
+    source_has_native_alpha: Optional[bool] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Derive a clean alpha channel for an aligned Canvas edit image inside the occluded zone."""
     import cv2
@@ -219,7 +222,8 @@ def estimate_edit_foreground_alpha(
     if mode != "auto":
         raise ValueError(f"Unsupported alpha_mode: {mode}")
 
-    if _has_real_transparency(aligned_edit_rgba):
+    use_native = _has_real_transparency(aligned_edit_rgba) if source_has_native_alpha is None else bool(source_has_native_alpha)
+    if use_native:
         return aligned_edit_rgba[..., 3].copy(), {"alpha_source": "native_rgba"}
 
     valid_warp = aligned_edit_rgba[..., 3] >= 128
@@ -347,7 +351,14 @@ def compose_canvas_edit_patch(
         edit_arr = _to_rgba_array(edit_image)
         aligned, reg_metrics = register_edit_to_source(edit_arr, orig, crop_bbox=crop_bbox)
 
-    est_alpha, alpha_meta = estimate_edit_foreground_alpha(aligned, base, orig, occ, mode=alpha_mode)
+    est_alpha, alpha_meta = estimate_edit_foreground_alpha(
+        aligned,
+        base,
+        orig,
+        occ,
+        mode=alpha_mode,
+        source_has_native_alpha=reg_metrics.get("source_has_native_alpha"),
+    )
     aligned_with_alpha = aligned.copy()
     aligned_with_alpha[..., 3] = est_alpha
 

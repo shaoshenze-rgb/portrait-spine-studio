@@ -170,5 +170,28 @@ class CanvasEditPatchTests(unittest.TestCase):
             self.assertEqual(pol["canvas_layers"], ["torso"])
 
 
+    def test_opaque_checkerboard_with_warp_oob_border_still_strips_checkerboard(self):
+        # Simulates Hero 17: opaque checkerboard edit slightly smaller than target canvas after warp,
+        # so cv2.warpAffine adds >10% transparent out-of-bounds margin; MUST NOT mistake OOB margin for native RGBA!
+        h, w = 320, 320
+        full_body = _paint_textured_body(h, w)
+        cloak_mask = np.zeros((h, w), dtype=bool)
+        cloak_mask[110:210, 50:135] = True
+        original = full_body.copy()
+        original[cloak_mask] = [160, 35, 190, 255]
+        base_layer = full_body.copy()
+        base_layer[cloak_mask] = 0
+
+        # Crop edit tightly around body (x=40..260, y=35..285) so warp leaves >20% OOB border around full 320x320 canvas!
+        checker = _make_checkerboard(h, w, tile=16)
+        edit_full = checker.copy()
+        edit_full[full_body[..., 3] > 0] = full_body[full_body[..., 3] > 0, :3]
+        cropped_edit = edit_full[35:285, 40:260]
+
+        res = compose_canvas_edit_patch(base_layer, original, cloak_mask, cropped_edit, alpha_mode="auto")
+        self.assertEqual(res.stats["alpha_source"], "exterior_checkerboard_strip")
+        self.assertEqual(int(res.rgba[150, 60, 3]), 0)
+        self.assertGreater(int(res.rgba[150, 110, 3]), 240)
+
 if __name__ == "__main__":
     unittest.main()
