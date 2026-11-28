@@ -267,6 +267,58 @@ class CanvasQualityDefenseTests(unittest.TestCase):
             self.assertEqual(pol_auth['auth_blocked_layers'], ['head'])
             self.assertEqual(pol_auth['auth_blocked_reasons'], [blocked_reason])
 
+        # 2c. Explicit user-approved anti-deadlock escape valve -> allowed & audited
+        user_ok_fb = [{
+            'name': 'head', 'enabled': True,
+            'canvasLayer': {'provenance': {
+                'operation': 'local-direct-split',
+                'local_derivation': {
+                    'method': 'edge_refined_seed_mask',
+                    'canvas_fallback': {
+                        'reason': 'canvas_unauthorized',
+                        'detail': 'libraryDiagnostics authorizedReadonly=false on remote host',
+                        'user_approved_fallback': True,
+                        'user_approval_note': '用户明确同意本轮先降级避免卡死，回本机后再补Canvas',
+                    },
+                },
+            }},
+        }]
+        pol_user = check_canvas_fallback_policy(user_ok_fb)
+        self.assertFalse(pol_user['bypassed'], pol_user)
+        self.assertTrue(pol_user['passed'], pol_user)
+        self.assertEqual(pol_user['user_approved_fallback_layers'], ['head'])
+
+        # 2d. Zero-cost pre-flight readiness distinguishes open+readable vs auth_blocked vs stale node
+        from src.pipeline.canvas_layer_cleanup import assess_canvas_readiness
+        self.assertEqual(
+            assess_canvas_readiness({'ok': False, 'errorCode': 'PANEL_CLOSED'})['status'],
+            'panel_unavailable',
+        )
+        self.assertEqual(
+            assess_canvas_readiness(
+                {'ok': True},
+                read_receipt={'mediaStates': {'n1': {'state': 'unavailable'}}},
+                library_diagnostics={'handshake': {'attempts': [{'op': 'open', 'outcome': 'unauthorized', 'authorizedReadonly': False}]}},
+            )['status'],
+            'auth_blocked_stop',
+        )
+        self.assertEqual(
+            assess_canvas_readiness(
+                {'ok': True},
+                read_receipt={'mediaStates': {'n1': {'state': 'unavailable'}}},
+                library_diagnostics={'handshake': {'attempts': [{'op': 'open', 'outcome': 'ok', 'authorizedReadonly': True}]}},
+            )['status'],
+            'stale_node_retry_fresh',
+        )
+        self.assertEqual(
+            assess_canvas_readiness(
+                {'ok': True},
+                read_receipt={'mediaStates': {'n1': {'state': 'available'}}},
+                library_diagnostics={'handshake': {'attempts': [{'op': 'open', 'outcome': 'ok', 'authorizedReadonly': True}]}},
+            )['status'],
+            'ready',
+        )
+
         # 3. Valid structured canvas_fallback receipt -> allowed
         valid_fb = [{
             'name': 'head', 'enabled': True,

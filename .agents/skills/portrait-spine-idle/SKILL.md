@@ -101,8 +101,11 @@ python3 scripts/portrait_task.py apply-canvas --job <job_id> --parts-dir <parts�
 
 在 Studio 左侧舞台直接看动画，右侧实时调百分比、显隐与前后层级。100% 是角色规划的默认动作；单件与整体乘积封顶 150%，不按最近一次保存反复放大。拖滑块不发保存请求，确认后再一键烘焙并复看。
 
-**Mivo Canvas 标准调用与容错兜底顺序（默认优先通道）**：
-- 每次发起 Canvas 任务前，先无参调 `ghost_call({ghost_id:"xd-mivo-canvas", namespace:"xd", tool:"canvas_selection", args:{}})` 确认面板已打开且载入完成；批量任务将工作目录内图片绝对路径传入顶层 `attachments`（单次顶层 `canvas_split_layers` / `canvas_remove_background` / 局部补全 `canvas_edit_image`，禁止二、三级递归拆子层）；遇 `REFERENCE_LIBRARY_CHANGED` 先 `canvas_selection` 确认后重试一次，**严禁跳过放图直接读画布上旧选中节点**；
+**Mivo Canvas 标准调用、0 扣费活体预检与防卡死协议（默认优先通道）**：
+- **先验“画布真能调通且读得回原件”，再发收费任务（绝不盲发卡死）**：每次批量或单张调 Canvas 前，先做 0 扣费双检：① 无参调 `ghost_call({ghost_id:"xd-mivo-canvas", namespace:"xd", tool:"canvas_selection", args:{}})` 确认面板已打开且载入完成；② 若画布已有节点，用 `canvas_snapshot(libraryDiagnostics=true, mediaNodeIds=[1个节点])` 或 `read_images` 零扣费核验 `authorizedReadonly == true` 且真能拿到 `available` 原件（可用 `assess_canvas_readiness` 判定）：
+  - 若 `authorizedReadonly == true` 但旧节点报 `unavailable`（`stale_node_retry_fresh`）：说明画布是通的、只是旧节点资产过期，**立即丢弃旧 nodeId、重新 `canvas_place_image` 跑新节点**，绝不在旧节点上卡死；
+  - 若面板开着却返回 `authorizedReadonly == false` / `unauthorized`（`auth_blocked_stop`）：**零扣费暂停收费拆层**，立即如实汇报精确诊断，让用户选择「① 在本机窗口确认读库授权立刻打通 Canvas」或「② 用户明示批准防卡死逃生阀（写入 `user_approved_fallback: true` + `user_approval_note`）继续推进」，绝不静默绕过、也绝不全线卡死；
+- 确认通道就绪后，批量任务将工作目录内图片绝对路径传入顶层 `attachments`（单次顶层 `canvas_split_layers` / `canvas_remove_background` / 局部补全 `canvas_edit_image`，禁止二、三级递归拆子层）；遇 `REFERENCE_LIBRARY_CHANGED` 先 `canvas_selection` 确认后重试一次，**严禁跳过放图直接读画布上旧选中节点**；
 - 若返回 `PANEL_CLOSED`、`PANEL_NOT_READY`、`KEY_REQUIRED`、`MIVO_AUTH_INVALID`、超时，或整图 `canvas_split_layers` 与定点 `canvas_edit_image` 补底均报错 / SIFT 对齐失败（`needs_canvas_registration`），**记录精确失败原因后才允许降级回本机 `local_matte.py` / `split_local_body.py` 兜底**，绝不伪造 Canvas 回执；**严禁将 `library_unmounted` / `unauthorized` / `unavailable` 当作降级理由跳过 Canvas**（必须按下一条立刻停止并引导用户在当前窗口授权）。
 - 调 `read_images(original)` 后优先用宿主注入的只读根路径实际打开（不要只查 shell 环境变量 `$LIBRARY_READ_ROOT`）。若新会话首轮已返回 `available` 但宿主尚未挂载只读目录，保留已入板节点、不报 `fail`，附一键三反引号 `cindy-ui` 按钮：`{"version":1,"seq":1,"op":"create","id":"resume-library-mount","kind":"button","props":{"label":"继续并开始拆层","send":"继续"}}`，第 2 轮复用原节点继续；仅返回 `unavailable` / `unauthorized` / `unauth_cache` 或第 2 轮仍无映射时按读取故障停止并报告。详情见[局部返修](references/rerun-and-troubleshooting.md)。
 

@@ -515,15 +515,117 @@ CANVAS_AUTH_BLOCKED_REASONS = (
 )
 
 
+def assess_canvas_readiness(selection_receipt, read_receipt=None, library_diagnostics=None):
+    """Zero-cost pre-flight check verifying Mivo Canvas is BOTH open AND readable before paid calls.
+
+    Distinguishes 5 actionable states so open-but-unreadable panels never waste credits or deadlock:
+    - 'panel_unavailable': PANEL_CLOSED / PANEL_NOT_READY / KEY_REQUIRED / MIVO_AUTH_INVALID
+    - 'auth_blocked_stop': panel is open, but handshake reports unauthorized / authorizedReadonly=False
+    - 'await_mount_continue': read_images returned available, waiting for host read-root mount (1-click continue)
+    - 'stale_node_retry_fresh': panel is open AND authorizedReadonly=True, only probed old node is unavailable
+    - 'ready': panel is open AND readable (safe to call canvas_split_layers / canvas_edit_image)
+    """
+    sel = selection_receipt or {}
+    if not sel.get('ok', False):
+        code = str(sel.get('errorCode') or 'PANEL_UNAVAILABLE')
+        return {
+            'status': 'panel_unavailable',
+            'callable': False,
+            'error_code': code,
+            'action': '面板未打开或未就绪，勿盲目重试收费任务；按失败码提示用户打开/连接画布。',
+        }
+
+    diag = library_diagnostics
+    if diag is None and isinstance(read_receipt, dict):
+        res = read_receipt.get('result') if isinstance(read_receipt.get('result'), dict) else read_receipt
+        if isinstance(res, dict):
+            diag = res.get('libraryDiagnostics')
+
+    attempts = ((diag or {}).get('handshake') or {}).get('attempts') or []
+    auth_ok = any(a.get('authorizedReadonly') is True for a in attempts if isinstance(a, dict))
+    auth_denied = bool(attempts) and not auth_ok and any(
+        str(a.get('outcome') or '').lower() == 'unauthorized' or a.get('authorizedReadonly') is False
+        for a in attempts if isinstance(a, dict)
+    )
+    if auth_denied:
+        return {
+            'status': 'auth_blocked_stop',
+            'callable': False,
+            'error_code': 'CANVAS_LIBRARY_UNAUTHORIZED',
+            'task_correlation': (diag or {}).get('taskCorrelation'),
+            'action': (
+                '画布面板虽已打开，但当前会话只读作品库未授权（authorizedReadonly=false）。'
+                '先零扣费停止：请在本机目标窗口直接发消息确认授权，或由用户明确批准防卡死降级逃生阀。'
+            ),
+        }
+
+    rr = (read_receipt or {}).get('result') if isinstance(read_receipt, dict) else None
+    if rr is None and isinstance(read_receipt, dict):
+        rr = read_receipt
+    media_states = (rr or {}).get('mediaStates') if isinstance(rr, dict) else None
+    if isinstance(media_states, dict) and media_states:
+        states = [v.get('state') for v in media_states.values() if isinstance(v, dict)]
+        has_avail = any(s == 'available' for s in states)
+        all_unavail = bool(states) and all(s in ('unavailable', 'unauth_cache') for s in states)
+        if has_avail:
+            if (read_receipt or {}).get('host_library_root_mounted') is False:
+                return {
+                    'status': 'await_mount_continue',
+                    'callable': False,
+                    'error_code': 'LIBRARY_MOUNT_PENDING',
+                    'action': '新会话首轮已返回 available，等待只读目录挂载：保留节点，输出一键「继续」按钮进第 2 轮即可打通。',
+                }
+            return {
+                'status': 'ready',
+                'callable': True,
+                'error_code': None,
+                'action': '画布已打开且原件实读通过，可直接调用 canvas_split_layers / canvas_edit_image。',
+            }
+        if all_unavail:
+            if auth_ok:
+                return {
+                    'status': 'stale_node_retry_fresh',
+                    'callable': True,
+                    'error_code': 'STALE_CANVAS_NODE',
+                    'action': '画布与只读库已通，仅旧节点资产失效：丢弃旧 nodeId，直接用当前原图重新上板拆补。',
+                }
+            return {
+                'status': 'auth_blocked_stop',
+                'callable': False,
+                'error_code': 'CANVAS_READ_UNAVAILABLE',
+                'action': (
+                    '画布面板已开但 read_images 返回 unavailable：零扣费暂停收费拆层，'
+                    '先调 libraryDiagnostics 核验 authorizedReadonly，或请在本机窗口完成一次读库授权。'
+                ),
+            }
+
+    if auth_ok:
+        return {
+            'status': 'ready',
+            'callable': True,
+            'error_code': None,
+            'action': '画布已打开且只读作品库已授权（authorizedReadonly=true），可直接调用 Canvas。',
+        }
+    return {
+        'status': 'ready',
+        'callable': True,
+        'error_code': None,
+        'action': '画布面板已打开（未提供节点预检样本），首次读回原件时须校验 available 与本地可读性。',
+    }
+
+
 def check_canvas_fallback_policy(parts_entries):
     """Enforce Canvas-first splitting: non-PSD local-direct-split requires real Canvas fallback evidence.
 
     Missing read-library authorization (canvas_library_unmounted / canvas_read_unavailable /
-    canvas_unauthorized) is NEVER a valid excuse to skip Canvas; the worker must stop and
-    request direct user authorization instead of silently falling back locally.
+    canvas_unauthorized) is BLOCKED by default so AI can never silently skip an open Canvas panel.
+    To prevent deadlocks when the user is remote and explicitly chooses to proceed without Canvas,
+    auth-blocked fallback is permitted ONLY with explicit user_approved_fallback=True plus a
+    recorded user_approval_note (>= 8 chars) and real diagnostic detail (>= 8 chars).
     """
     canvas_layers, psd_layers, justified_local, unjustified_local = [], [], [], []
     fallback_reasons, auth_blocked_layers, auth_blocked_reasons = [], [], []
+    user_approved_fallback_layers = []
     for part in parts_entries:
         if not part.get('enabled', True):
             continue
@@ -540,12 +642,22 @@ def check_canvas_fallback_policy(parts_entries):
                 fb = deriv.get('canvas_fallback')
                 reason = fb.get('reason') if isinstance(fb, dict) else None
                 detail = fb.get('detail') if isinstance(fb, dict) else None
+                has_detail = isinstance(detail, str) and len(detail.strip()) >= 8
                 if reason in CANVAS_AUTH_BLOCKED_REASONS:
-                    unjustified_local.append(name)
-                    auth_blocked_layers.append(name)
-                    if reason not in auth_blocked_reasons:
-                        auth_blocked_reasons.append(reason)
-                elif reason in VALID_CANVAS_FALLBACK_REASONS and isinstance(detail, str) and len(detail.strip()) >= 8:
+                    approved = isinstance(fb, dict) and fb.get('user_approved_fallback') is True
+                    note = fb.get('user_approval_note') if isinstance(fb, dict) else None
+                    has_note = isinstance(note, str) and len(note.strip()) >= 8
+                    if approved and has_detail and has_note:
+                        justified_local.append(name)
+                        user_approved_fallback_layers.append(name)
+                        if reason not in fallback_reasons:
+                            fallback_reasons.append(reason)
+                    else:
+                        unjustified_local.append(name)
+                        auth_blocked_layers.append(name)
+                        if reason not in auth_blocked_reasons:
+                            auth_blocked_reasons.append(reason)
+                elif reason in VALID_CANVAS_FALLBACK_REASONS and has_detail:
                     justified_local.append(name)
                     if reason not in fallback_reasons:
                         fallback_reasons.append(reason)
@@ -562,6 +674,7 @@ def check_canvas_fallback_policy(parts_entries):
         'fallback_reasons': fallback_reasons,
         'auth_blocked_layers': auth_blocked_layers,
         'auth_blocked_reasons': auth_blocked_reasons,
+        'user_approved_fallback_layers': user_approved_fallback_layers,
     }
 
 
