@@ -632,6 +632,13 @@ def plan_occluded_edit_crop(
     return OccludedEditCropPlan(crop_rgba=crop_rgba, occluded_mask_u8=mask_u8, crop_bbox=crop_bbox, meta=meta)
 
 
+def _alpha_over_roi(back_rgba: np.ndarray, front_rgba: np.ndarray) -> np.ndarray:
+    """Exact straight-alpha Porter-Duff `front over back` matching PIL alpha_composite."""
+    b_im = Image.fromarray(back_rgba, mode="RGBA")
+    f_im = Image.fromarray(front_rgba, mode="RGBA")
+    return np.asarray(Image.alpha_composite(b_im, f_im), dtype=np.uint8)
+
+
 def inpaint_translucent_fx_underlap(
     fx_layer_rgba: Any,
     occluder_rgba: Any,
@@ -639,12 +646,13 @@ def inpaint_translucent_fx_underlap(
     max_underlap_px: int = 72,
     blur_sigma: float = 4.0,
     inpaint_radius: int = 14,
+    opaque_occluder_alpha: int = 255,
 ) -> CanvasEditPatchResult:
-    """Smoothly extend a translucent FX layer strictly behind an occluding foreground prop.
+    """Smoothly extend a translucent FX layer strictly behind fully opaque occluder pixels.
 
-    Eliminates sharp cookie-cutter silhouette cutouts on translucent glow/swirl/mist layers when a
-    foreground prop moves away, while keeping 100% of visible pixels outside `occluder_rgba`
-    bit-for-bit identical (`max_outside_diff == 0`).
+    Only fills pixels hidden behind `occluder_rgba[..., 3] >= opaque_occluder_alpha` (default 255)
+    so semi-transparent occluder rims never leak rest-pose color changes into the full-layer
+    composite. Explicitly verifies actual `occluder over fx` composite delta before/after.
     """
     import cv2
 
@@ -654,15 +662,19 @@ def inpaint_translucent_fx_underlap(
         raise ValueError(f"fx_layer_rgba {fx.shape[:2]} != occluder_rgba {occ_arr.shape[:2]}")
     h, w = fx.shape[:2]
 
-    occ = occ_arr[..., 3] >= 16
+    occ = occ_arr[..., 3] >= int(opaque_occluder_alpha)
     fx_support = fx[..., 3] >= 16
     fill_zone = occ & (fx[..., 3] < 250) & _dilate_bool(fx_support, int(max_underlap_px))
     if not fill_zone.any():
         stats = {
             "method": "inpaint_translucent_fx_underlap",
+            "opaque_occluder_alpha": int(opaque_occluder_alpha),
             "filled_px": 0,
             "fill_zone_px": 0,
             "max_outside_diff": 0,
+            "composite_max_diff": 0,
+            "composite_changed_px": 0,
+            "composite_changed_gt2_px": 0,
             "rest_pose_preserved": True,
         }
         return CanvasEditPatchResult(rgba=fx.copy(), stats=stats, comparison=_render_patch_comparison(fx, occ_arr, fx, fill_zone))
@@ -673,23 +685,27 @@ def inpaint_translucent_fx_underlap(
     rx0, rx1 = max(0, int(xs.min()) - pad), min(w, int(xs.max()) + 1 + pad)
 
     roi_fx = fx[ry0:ry1, rx0:rx1]
+    roi_occ_arr = occ_arr[ry0:ry1, rx0:rx1]
     roi_fill = fill_zone[ry0:ry1, rx0:rx1]
     roi_a = roi_fx[..., 3]
-    roi_hole_u8 = roi_fill.astype(np.uint8) * 255
+    # Treat both the opaque fill_zone and the narrow semi-transparent occluder rim (16..254) as
+    # unknown during inpainting so the smooth glow bridges cleanly across the rim without sampling
+    # empty transparent rim pixels; final write is still strictly clipped to `roi_fill` (alpha==255).
+    roi_semi_rim = (roi_occ_arr[..., 3] >= 16) & (~(roi_occ_arr[..., 3] >= int(opaque_occluder_alpha))) & (roi_a < 24)
+    roi_hole_u8 = (roi_fill | roi_semi_rim).astype(np.uint8) * 255
 
     # 1. Smoothly inpaint alpha across the occluded cutout.
     inpainted_a = cv2.inpaint(roi_a, roi_hole_u8, inpaintRadius=int(inpaint_radius), flags=cv2.INPAINT_TELEA)
     if float(blur_sigma) > 0:
         inpainted_a = cv2.GaussianBlur(inpainted_a, (0, 0), sigmaX=float(blur_sigma))
 
-    # Taper alpha smoothly if fill_zone extends all the way to the open-air far side of max_underlap_px.
     if int(max_underlap_px) > 0:
         dist_from_fx = cv2.distanceTransform((~(roi_a >= 16)).astype(np.uint8), cv2.DIST_L2, 5)
         taper = np.clip(1.0 - np.maximum(0.0, dist_from_fx - float(max_underlap_px) * 0.7) / max(1.0, float(max_underlap_px) * 0.35), 0.0, 1.0)
         inpainted_a = np.clip(np.rint(inpainted_a.astype(np.float32) * taper), 0, 255).astype(np.uint8)
 
-    # 2. Inpaint RGB strictly from visible non-empty glow pixels (mark transparent air as unknown too so black never bleeds in).
-    rgb_unknown = ((roi_a < 24) | roi_fill).astype(np.uint8) * 255
+    # 2. Inpaint RGB strictly from visible non-empty glow pixels (never sampling black transparent air).
+    rgb_unknown = ((roi_a < 24) | roi_fill | roi_semi_rim).astype(np.uint8) * 255
     roi_rgb_bgr = cv2.cvtColor(roi_fx[..., :3], cv2.COLOR_RGB2BGR)
     inpainted_bgr = cv2.inpaint(roi_rgb_bgr, rgb_unknown, inpaintRadius=int(inpaint_radius), flags=cv2.INPAINT_TELEA)
     inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
@@ -698,27 +714,39 @@ def inpaint_translucent_fx_underlap(
 
     out = fx.copy()
     roi_out = out[ry0:ry1, rx0:rx1]
-    # Keep higher alpha where base already had partial glow, or fill smoothly inside roi_fill.
     new_a = np.where(roi_fill, np.maximum(roi_a, inpainted_a), roi_a)
     blend_rgb_mask = roi_fill & (new_a > roi_a)
     roi_out[blend_rgb_mask, :3] = inpainted_rgb[blend_rgb_mask]
     roi_out[roi_fill, 3] = new_a[roi_fill]
     out[ry0:ry1, rx0:rx1] = roi_out
 
-    # Enforce strict bit-for-bit preservation outside occluder silhouette.
+    # Enforce strict bit-for-bit preservation everywhere outside fully opaque occluder core.
     sacred = (~occ) | (fx[..., 3] == 255)
     out[sacred] = fx[sacred]
 
     filled_mask = (~sacred) & (out[..., 3] > fx[..., 3])
     outside_diff = int(np.abs(out[~occ].astype(np.int16) - fx[~occ].astype(np.int16)).max()) if (~occ).any() else 0
+
+    # Measure true before/after composite preservation (`occluder over fx`).
+    comp_before = _alpha_over_roi(roi_fx, roi_occ_arr)
+    comp_after = _alpha_over_roi(out[ry0:ry1, rx0:rx1], roi_occ_arr)
+    comp_delta = np.abs(comp_after.astype(np.int16) - comp_before.astype(np.int16)).max(axis=2)
+    comp_max_diff = int(comp_delta.max())
+    comp_changed_px = int((comp_delta > 0).sum())
+    comp_changed_gt2 = int((comp_delta > 2).sum())
+
     stats: Dict[str, Any] = {
         "method": "inpaint_translucent_fx_underlap",
+        "opaque_occluder_alpha": int(opaque_occluder_alpha),
         "max_underlap_px": int(max_underlap_px),
         "blur_sigma": float(blur_sigma),
         "fill_zone_px": int(fill_zone.sum()),
         "filled_px": int(filled_mask.sum()),
         "max_outside_diff": outside_diff,
-        "rest_pose_preserved": outside_diff == 0,
+        "composite_max_diff": comp_max_diff,
+        "composite_changed_px": comp_changed_px,
+        "composite_changed_gt2_px": comp_changed_gt2,
+        "rest_pose_preserved": (outside_diff == 0 and comp_max_diff == 0),
     }
     comp = _render_patch_comparison(fx, occ_arr, out, filled_mask)
     return CanvasEditPatchResult(rgba=out, stats=stats, comparison=comp)

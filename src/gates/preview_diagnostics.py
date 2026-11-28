@@ -64,6 +64,7 @@ def _material_seams(frames, times, parts_dir, material, *, limit=4):
     height, width = frames[0.].shape[:2]
     scale = min(1., 660 / max(height, width))
     size = max(1, round(width * scale)), max(1, round(height * scale))
+    module_by_part = {p['name']: p.get('moduleId') for p in (material.get('parts') or [])}
     masks = _material_masks(parts_dir, material, size, (width, height))
     if len(masks) < 2 or not any(soft or local for _, soft, local, _, _ in masks):
         return []
@@ -71,7 +72,11 @@ def _material_seams(frames, times, parts_dir, material, *, limit=4):
     candidates = []
     tile = max(24, round(min(size) * .12))
     for index, (front, front_soft, front_local, front_band, front_mask) in enumerate(masks):
+        front_mod = module_by_part.get(front)
         for back, back_soft, back_local, back_band, back_mask in masks[index + 1:]:
+            back_mod = module_by_part.get(back)
+            if front_mod is not None and front_mod == back_mod:
+                continue
             soft, local = front_soft or back_soft, front_local or back_local
             if not soft and not local:
                 continue
@@ -542,6 +547,104 @@ def render_layer_sheet(parts_dir, material, out_dir):
     sheet.save(Path(out_dir)/'all-layers-sheet.jpg',quality=94)
 
 
+def inspect_dynamic_silhouette_ghost(renderer, parts_dir, material, modules, times, *, threshold=None):
+    """Detect hidden moving back-layer pixels poking out past static front silhouettes into open air."""
+    sk = getattr(renderer, 'sk', None)
+    if sk is None or not hasattr(sk, 'by_name'):
+        return {'status': 'not_applicable', 'warnings': [], 'levels': {}}, None
+    mod_by_id = {m['id']: m for m in modules}
+    static_mods, moving_mods = set(), set()
+    for m in modules:
+        bname = m.get('bone')
+        if not bname or bname not in sk.by_name:
+            continue
+        renderer.pose(0., gain=1.5)
+        b0 = sk.by_name[bname]
+        m0 = np.array([b0.a, b0.b, b0.c, b0.d, b0.worldX, b0.worldY], dtype=np.float64)
+        max_delta = 0.0
+        for t in times:
+            if t == 0:
+                continue
+            renderer.pose(t, gain=1.5)
+            bt = sk.by_name[bname]
+            mt = np.array([bt.a, bt.b, bt.c, bt.d, bt.worldX, bt.worldY], dtype=np.float64)
+            max_delta = max(max_delta, float(np.abs(mt - m0).max()))
+        role = str(m.get('role') or '').lower()
+        if max_delta < 1e-3 and role in ('lower_body', 'foot', 'ground'):
+            static_mods.add(m['id'])
+        elif max_delta >= 1e-3 and role not in _EXCLUDED_STRESS_ROLES:
+            moving_mods.add(m['id'])
+
+    enabled = [p for p in material.get('parts') or [] if p.get('enabled', True)]
+    static_slots = {p['name'] for p in enabled if p.get('moduleId') in static_mods}
+    moving_slots = {p['name'] for p in enabled if p.get('moduleId') in moving_mods}
+    if not static_slots or not moving_slots:
+        return {'status': 'not_applicable', 'warnings': [], 'levels': {}}, None
+
+    all_slots = static_slots | moving_slots
+    rest_all = renderer.frame(0., slot_names=all_slots)
+    rest_static = renderer.frame(0., slot_names=static_slots)
+    rest_moving = renderer.frame(0., slot_names=moving_slots)
+    rest_alpha = rest_all[..., 3]
+    static_alpha = rest_static[..., 3] >= 180
+    long_edge = max(rest_alpha.shape)
+    if threshold is None:
+        scale = max(1.0, long_edge / 1800.0)
+        threshold = int(round(60 * scale * scale))
+
+    band_px = max(10, round(long_edge * 0.015))
+    guard_px = max(10, round(long_edge * 0.018))
+    open_r = max(2, round(long_edge * 0.0025))
+    moving_vis = (rest_moving[..., 3] >= 32) & (~static_alpha)
+    try:
+        import cv2
+        k = open_r * 2 + 1
+        moving_sub = cv2.morphologyEx(moving_vis.astype(np.uint8), cv2.MORPH_OPEN,
+                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0
+    except Exception:
+        moving_sub = moving_vis
+    static_outer_band = _dilated(static_alpha, band_px) & (rest_alpha < 16) & (~_dilated(moving_sub, guard_px))
+    if not static_outer_band.any():
+        return {'status': 'pass', 'threshold_px': threshold, 'warnings': [], 'levels': {},
+                'static_slots': sorted(static_slots), 'moving_slots': sorted(moving_slots)}, None
+
+    levels, warnings, worst = {}, [], None
+    for gain in (1., 1.5):
+        frames = []
+        for t in times:
+            if t == 0:
+                continue
+            pose_m = renderer.frame(t, gain=gain, slot_names=moving_slots)
+            ghost = static_outer_band & (pose_m[..., 3] >= 40)
+            regions = []
+            for spans, area in _mask_spans(ghost):
+                if area < 4:
+                    continue
+                l, top, r, b = _bounds(spans)
+                regions.append({'area_px': int(area), 'bbox': [int(l), int(top), int(r), int(b)], 'time': t})
+            regions.sort(key=lambda item: item['area_px'], reverse=True)
+            total_area = sum(item['area_px'] for item in regions)
+            if total_area:
+                frames.append({'time': t, 'area_px': total_area, 'regions': regions[:8]})
+                if gain == 1.5 and regions and (worst is None or regions[0]['area_px'] > worst[0]['area_px']):
+                    worst = regions[0], renderer.frame(t, gain=gain)
+        key = f'{gain:.1f}x'
+        peak = max((f['area_px'] for f in frames), default=0)
+        largest = max((r['area_px'] for f in frames for r in f['regions']), default=0)
+        levels[key] = {'peak_ghost_px': peak, 'largest_region_px': largest, 'frames': frames}
+        if largest > threshold:
+            warnings.append({'code': 'dynamic_silhouette_ghost', 'gain': gain,
+                             'peak_ghost_px': peak, 'largest_region_px': largest})
+    return {
+        'status': 'fail' if warnings else 'pass',
+        'threshold_px': threshold,
+        'levels': levels,
+        'warnings': warnings,
+        'static_slots': sorted(static_slots),
+        'moving_slots': sorted(moving_slots),
+    }, worst
+
+
 def inspect_dynamic(renderer, frames, original, out_dir, *, parts_dir=None, material=None, stress_renderer=None):
     out=Path(out_dir);times=sorted(frames);base=frames[0.]
     report={'sample_times':times,'gap_detection_scope':'new enclosed transparent holes; open contacts are shown by angle and material seam crops',
@@ -596,7 +699,17 @@ def inspect_dynamic(renderer, frames, original, out_dir, *, parts_dir=None, mate
     rows.extend(('Seam: ' + ' / '.join(record['pair']), record) for record in report['material_seams'])
     if stress_renderer is not None and parts_dir is not None and material:
         report['exposure_stress'], worst = inspect_exposure_stress(stress_renderer, parts_dir, material, modules, times)
+        report['dynamic_silhouette_ghost'], worst_ghost = inspect_dynamic_silhouette_ghost(
+            stress_renderer, parts_dir, material, modules, times
+        )
         render_layer_sheet(parts_dir, material, out)
+        if worst_ghost and worst_ghost[0]['area_px'] > int(report['dynamic_silhouette_ghost'].get('threshold_px') or 0):
+            g_reg, g_frame = worst_ghost
+            gl, gt, gr, gb = g_reg['bbox']
+            g_border = max(28, round(max(gr - gl, gb - gt) * .45))
+            rows.insert(0, ('150% silhouette ghost · ' + str(g_reg['area_px']) + ' px',
+                {**g_reg, 'bbox': [max(0, gl - g_border), max(0, gt - g_border),
+                                   min(base.shape[1], gr + g_border), min(base.shape[0], gb + g_border)], 'frame': g_frame}))
         if worst:
             region, frame = worst
             Image.fromarray(over_bg(frame,(125,125,125))).save(out/'stress-150-frame.jpg',quality=94)

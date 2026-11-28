@@ -294,10 +294,12 @@ def render_preview(parts_dir, rig_dir, out_dir, *, fps=30, rig_spec=None, plan_p
     diagnostics = {
         'cleanup': cleanup_report, 'dynamic_checks': dynamic,
         'exposure_stress': dynamic.get('exposure_stress'),
+        'dynamic_silhouette_ghost': dynamic.get('dynamic_silhouette_ghost'),
         'character': character, 'material_mode': material.get('materialMode','source_sliced'), 'duration': duration, 'fps': fps,
         'frame_count': total, 'files_complete': all(p.is_file() and p.stat().st_size > 0 for p in paths),
         'loop_seam_max_diff': _diff(frame_zero, renderer.frame(duration))['maxRGBA'],
         'rest_composite_diff': _diff(frame_zero, reference),
+        'original_rest_composite_diff': _diff(frame_zero, _pm(source)),
         'setup_pose_composite_diff': _diff(renderer.frame(None), reference),
         'placement_warnings': rig_spec.get('placementWarnings', []),
         'advisory_notes': rig_spec.get('moduleContract', {}).get('advisoryNotes', {}),

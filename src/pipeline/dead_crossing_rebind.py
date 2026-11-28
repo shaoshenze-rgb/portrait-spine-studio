@@ -356,16 +356,18 @@ def trim_hidden_silhouette_pokeout(
     *,
     keep_underlap_px: int = 48,
     pokeout_margin_px: int = 64,
-    opaque_front_alpha: int = 240,
+    opaque_front_alpha: int = 255,
+    min_emergence_radius_px: int = 6,
+    min_emergence_area_px: int = 400,
+    absorb_static_fringe_slivers: bool = True,
 ) -> DeadCrossingRebindResult:
     """Trim moving back-layer pixels buried behind static opaque front silhouettes near open air.
 
-    In 2D Spine rigs, a moving back layer (e.g. cloak/scarf behind static boots or ground) only
-    needs hidden underlap right behind where it emerges from the static front layer. Hidden pixels
-    far from the back layer's visible edge yet tucked along the static front layer's open-air outer
-    contour poke out during motion as double-edge ghosts while contributing zero pixels at rest.
-    Removing them is 100% bit-for-bit lossless at rest (`rest_delta_px == 0`) and preserves full
-    underlap behind every genuine emerging boundary.
+    Uses `substantial_visible` (morphological opening + min component area) so tiny 1-4 px edge
+    bleed specks hugging a static boot/leg silhouette do NOT protect thousands of hidden poke-out
+    pixels behind the static front. Optionally reassigns disconnected tiny static-hugging fringe
+    slivers onto the touching static front piece with exact Porter-Duff compositing, and verifies
+    full-layer ordered alpha-composite preservation (`full_composite_max_diff == 0`).
     """
     import hashlib
     from pathlib import Path
@@ -394,10 +396,20 @@ def trim_hidden_silhouette_pokeout(
         )
 
     pieces = mat.get("pieces") or []
+    ordered_pieces = sorted(pieces, key=lambda item: int(item["draw_order"]))
     loaded: Dict[str, np.ndarray] = {}
-    for p in pieces:
+    for p in ordered_pieces:
         with Image.open(Path(p["image"]).resolve()) as im:
             loaded[p["id"]] = np.ascontiguousarray(np.asarray(im.convert("RGBA"), dtype=np.uint8))
+
+    def _composite_all(arrays: Dict[str, np.ndarray]) -> np.ndarray:
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        for item in ordered_pieces:
+            if item.get("enabled", True):
+                canvas.alpha_composite(Image.fromarray(arrays[item["id"]], mode="RGBA"))
+        return np.asarray(canvas, dtype=np.uint8)
+
+    before_comp = _composite_all(loaded)
 
     def _dil(mask: np.ndarray, radius: int) -> np.ndarray:
         if radius <= 0 or not mask.any():
@@ -405,22 +417,39 @@ def trim_hidden_silhouette_pokeout(
         k = int(radius) * 2 + 1
         return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0
 
+    def _substantial_visible(vis_mask: np.ndarray) -> np.ndarray:
+        if not vis_mask.any():
+            return vis_mask.copy()
+        opened = vis_mask
+        if int(min_emergence_radius_px) > 0:
+            k = int(min_emergence_radius_px) * 2 + 1
+            opened = cv2.morphologyEx(vis_mask.astype(np.uint8), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0
+        if not opened.any():
+            return opened
+        n_comp, labels, stats, _ = cv2.connectedComponentsWithStats(opened.astype(np.uint8), connectivity=8)
+        keep = np.zeros_like(opened)
+        for cid in range(1, n_comp):
+            if int(stats[cid, cv2.CC_STAT_AREA]) >= int(min_emergence_area_px):
+                keep |= (labels == cid)
+        return keep
+
     near_air = _dil(orig_rgba[..., 3] < 16, int(pokeout_margin_px))
     trimmed_records: List[Dict[str, Any]] = []
+    dirty_piece_ids = set()
 
-    for p in pieces:
+    for p in ordered_pieces:
         mid = p["module_id"]
         if mid in static_mod_ids:
             continue
         p_order = int(p["draw_order"])
         opaque_static_front = np.zeros((h, w), dtype=bool)
-        covering_static_ids: List[str] = []
-        for other in pieces:
+        covering_static_pieces: List[Dict[str, Any]] = []
+        for other in ordered_pieces:
             if other["module_id"] in static_mod_ids and int(other["draw_order"]) > p_order:
                 o_opaque = loaded[other["id"]][..., 3] >= int(opaque_front_alpha)
                 if o_opaque.any():
                     opaque_static_front |= o_opaque
-                    covering_static_ids.append(other["id"])
+                    covering_static_pieces.append(other)
         if not opaque_static_front.any():
             continue
 
@@ -431,47 +460,125 @@ def trim_hidden_silhouette_pokeout(
             continue
 
         b_visible = (b_alpha >= 16) & (~opaque_static_front)
-        safe_underlap = _dil(b_visible, int(keep_underlap_px))
+        sub_vis = _substantial_visible(b_visible)
+        safe_underlap = _dil(sub_vis, int(keep_underlap_px))
         pokeout = hidden & near_air & (~safe_underlap)
         trim_px = int(pokeout.sum())
-        if trim_px == 0:
-            continue
+        absorbed_px = 0
+        absorbed_targets: List[str] = []
 
         cleaned = arr.copy()
-        cleaned[pokeout] = 0
-        # Verify zero visible change outside opaque static front!
-        assert int(np.abs(cleaned[~opaque_static_front].astype(np.int16) - arr[~opaque_static_front].astype(np.int16)).max()) == 0
+        if trim_px > 0:
+            cleaned[pokeout] = 0
 
-        parts_out.mkdir(parents=True, exist_ok=True)
-        out_img = parts_out / f"{p['id']}.png"
-        Image.fromarray(cleaned).save(out_img)
-        new_sha = hashlib.sha256(out_img.read_bytes()).hexdigest()
-        p["image"] = str(out_img)
-        p["sha256"] = new_sha
-        prov = p.get("provenance")
-        if isinstance(prov, dict) and prov.get("operation") == "local-direct-split":
-            prov["result_asset_sha256"] = new_sha
+        if absorb_static_fringe_slivers and b_visible.any():
+            guard_zone = _dil(sub_vis, max(16, int(keep_underlap_px) // 2))
+            candidate_slivers = (cleaned[..., 3] > 0) & (~opaque_static_front) & (~guard_zone)
+            if candidate_slivers.any():
+                touch_static = _dil(opaque_static_front, 8)
+                n_s, lab_s, st_s, _ = cv2.connectedComponentsWithStats(candidate_slivers.astype(np.uint8), connectivity=8)
+                for sid in range(1, n_s):
+                    area = int(st_s[sid, cv2.CC_STAT_AREA])
+                    if area >= int(min_emergence_area_px):
+                        continue
+                    s_mask = lab_s == sid
+                    if not (s_mask & touch_static).any():
+                        continue
+                    # Pick the touching static front piece with max dilated boundary contact.
+                    s_dil = _dil(s_mask, 6)
+                    best_f = None
+                    best_ov = 0
+                    for f_piece in covering_static_pieces:
+                        ov = int((s_dil & (loaded[f_piece["id"]][..., 3] >= 16)).sum())
+                        if ov > best_ov:
+                            best_ov = ov
+                            best_f = f_piece
+                    if best_f is None:
+                        continue
+                    f_order = int(best_f["draw_order"])
+                    # Safety: only move sliver directly onto `best_f` if no intervening layer overlaps `s_mask`.
+                    blocked_mid = any(
+                        p_order < int(mid_p["draw_order"]) < f_order and (loaded[mid_p["id"]][s_mask, 3] > 0).any()
+                        for mid_p in ordered_pieces
+                    )
+                    if blocked_mid:
+                        continue
+                    # Composite `best_f over cleaned` strictly inside `s_mask` and transfer to `best_f`.
+                    f_arr = loaded[best_f["id"]].copy()
+                    ys_s, xs_s = np.nonzero(s_mask)
+                    y0, y1 = int(ys_s.min()), int(ys_s.max()) + 1
+                    x0, x1 = int(xs_s.min()), int(xs_s.max()) + 1
+                    comp_patch = np.asarray(
+                        Image.alpha_composite(
+                            Image.fromarray(cleaned[y0:y1, x0:x1], mode="RGBA"),
+                            Image.fromarray(f_arr[y0:y1, x0:x1], mode="RGBA"),
+                        ),
+                        dtype=np.uint8,
+                    )
+                    sub_m = s_mask[y0:y1, x0:x1]
+                    f_patch = f_arr[y0:y1, x0:x1]
+                    f_patch[sub_m] = comp_patch[sub_m]
+                    f_arr[y0:y1, x0:x1] = f_patch
+                    loaded[best_f["id"]] = f_arr
+                    dirty_piece_ids.add(best_f["id"])
+                    cleaned[s_mask] = 0
+                    absorbed_px += int(s_mask.sum())
+                    if best_f["id"] not in absorbed_targets:
+                        absorbed_targets.append(best_f["id"])
+
+        if trim_px == 0 and absorbed_px == 0:
+            continue
+
         loaded[p["id"]] = cleaned
-
-        ys, xs = np.nonzero(pokeout)
+        dirty_piece_ids.add(p["id"])
+        ys, xs = np.nonzero(pokeout if trim_px > 0 else (arr[..., 3] != cleaned[..., 3]))
         trimmed_records.append(
             {
                 "piece_id": p["id"],
                 "module_id": mid,
-                "covering_static_pieces": covering_static_ids,
+                "covering_static_pieces": [fp["id"] for fp in covering_static_pieces],
                 "trimmed_px": trim_px,
+                "absorbed_fringe_sliver_px": absorbed_px,
+                "absorbed_into_static": absorbed_targets,
                 "trimmed_bbox_xyxy": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
-                "rest_visible_diff": 0,
             }
         )
+
+    after_comp = _composite_all(loaded)
+    full_delta = np.abs(after_comp.astype(np.int16) - before_comp.astype(np.int16)).max(axis=2)
+    full_max_diff = int(full_delta.max())
+    full_changed_px = int((full_delta > 0).sum())
+    if full_max_diff > 0:
+        raise RuntimeError(
+            f"trim_hidden_silhouette_pokeout violated lossless rest composite (max_diff={full_max_diff}, changed_px={full_changed_px})"
+        )
+
+    if dirty_piece_ids:
+        parts_out.mkdir(parents=True, exist_ok=True)
+        for p in pieces:
+            if p["id"] not in dirty_piece_ids:
+                continue
+            out_img = parts_out / f"{p['id']}.png"
+            Image.fromarray(loaded[p["id"]]).save(out_img)
+            new_sha = hashlib.sha256(out_img.read_bytes()).hexdigest()
+            p["image"] = str(out_img)
+            p["sha256"] = new_sha
+            prov = p.get("provenance")
+            if isinstance(prov, dict) and prov.get("operation") == "local-direct-split":
+                prov["result_asset_sha256"] = new_sha
 
     status = "trimmed" if trimmed_records else "noop_clean"
     report = {
         "general_rule": "trim_hidden_silhouette_pokeout",
         "status": status,
+        "opaque_front_alpha": int(opaque_front_alpha),
         "keep_underlap_px": int(keep_underlap_px),
         "pokeout_margin_px": int(pokeout_margin_px),
         "trimmed_pieces": trimmed_records,
         "total_trimmed_px": sum(r["trimmed_px"] for r in trimmed_records),
+        "total_absorbed_fringe_sliver_px": sum(r["absorbed_fringe_sliver_px"] for r in trimmed_records),
+        "full_composite_max_diff": full_max_diff,
+        "full_composite_changed_px": full_changed_px,
+        "rest_pose_preserved": full_max_diff == 0,
     }
     return DeadCrossingRebindResult(status=status, material=mat, plan=pl, report=report)

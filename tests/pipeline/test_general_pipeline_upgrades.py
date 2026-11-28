@@ -469,9 +469,161 @@ class SiblingVariantTransferAndGovernanceTests(unittest.TestCase):
         res = inpaint_translucent_fx_underlap(fx_cut, bottle, max_underlap_px=36, blur_sigma=3.0)
         self.assertTrue(res.stats["rest_pose_preserved"])
         self.assertEqual(res.stats["max_outside_diff"], 0)
+        self.assertEqual(res.stats["composite_max_diff"], 0)
+        self.assertEqual(res.stats["composite_changed_px"], 0)
         np.testing.assert_array_equal(res.rgba[~bmask], fx_cut[~bmask])
         self.assertGreater(int(res.rgba[80, 80, 3]), 110)
         self.assertGreater(int(res.rgba[80, 80, 1]), 180)  # clean green glow, no black bleed!
+
+    def test_inpaint_translucent_fx_underlap_does_not_change_semitransparent_rim_composite(self):
+        h, w = 160, 160
+        yy, xx = np.indices((h, w))
+        dist = np.hypot(xx - 80, yy - 80)
+        glow_a = np.clip((1.0 - dist / 65.0) * 180.0, 0, 180).astype(np.uint8)
+        fx = np.zeros((h, w, 4), dtype=np.uint8)
+        fx[..., :3] = [50, 230, 85]
+        fx[..., 3] = glow_a
+
+        bottle = np.zeros((h, w, 4), dtype=np.uint8)
+        outer = (xx >= 62) & (xx < 98) & (yy >= 62) & (yy < 98)
+        core = (xx >= 66) & (xx < 94) & (yy >= 66) & (yy < 94)
+        bottle[outer] = [210, 195, 175, 110]  # semi-transparent glass rim!
+        bottle[core] = [210, 195, 175, 255]   # opaque bottle core
+        fx_cut = fx.copy()
+        fx_cut[outer] = 0
+
+        res = inpaint_translucent_fx_underlap(fx_cut, bottle, max_underlap_px=36, blur_sigma=3.0)
+        self.assertTrue(res.stats["rest_pose_preserved"])
+        self.assertEqual(res.stats["composite_max_diff"], 0)
+        self.assertEqual(res.stats["composite_changed_px"], 0)
+        self.assertGreater(res.stats["filled_px"], 500)
+        # Semi-transparent rim pixels remain untouched so rest composite never shifts!
+        rim = outer & (~core)
+        np.testing.assert_array_equal(res.rgba[rim], fx_cut[rim])
+
+    def test_trim_hidden_pokeout_absorbs_static_fringe_slivers_with_zero_composite_diff(self):
+        h, w = 256, 256
+        lower = np.zeros((h, w, 4), dtype=np.uint8)
+        lower[100:230, 80:170] = [60, 70, 90, 255]
+        scarf = np.zeros((h, w, 4), dtype=np.uint8)
+        scarf[40:130, 90:150] = [0, 120, 140, 255]   # substantial visible top cloak
+        scarf[180:228, 80:120] = [0, 110, 125, 255]  # hidden cyan behind boot
+        scarf[190:215, 77:80] = [0, 115, 130, 255]   # tiny 3x25 px sliver sticking out along boot edge!
+
+        comp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        comp.alpha_composite(Image.fromarray(scarf))
+        comp.alpha_composite(Image.fromarray(lower))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            orig_p, scarf_p, lower_p = td / "orig.png", td / "scarf.png", td / "lower.png"
+            comp.save(orig_p)
+            Image.fromarray(scarf).save(scarf_p)
+            Image.fromarray(lower).save(lower_p)
+            orig_sha = _sha(orig_p)
+            mat = {
+                "version": 1, "material_mode": "canvas_layers",
+                "source_image": str(orig_p), "source_sha256": orig_sha, "image_size": [w, h],
+                "pieces": [
+                    {"id": "scarf", "module_id": "torso", "parent": "lower_body", "kind": "rigid", "pivot": [128.0, 100.0],
+                     "draw_order": 10, "image": str(scarf_p), "sha256": _sha(scarf_p),
+                     "provenance": {"operation": "local-direct-split", "source_asset_sha256": orig_sha, "result_asset_sha256": _sha(scarf_p), "transform": [[1, 0, 0], [0, 1, 0]], "local_derivation": {"method": "psd_artist_layer_split", "parent_aligned_sha256": orig_sha}}},
+                    {"id": "lower_body", "module_id": "lower_body", "parent": None, "kind": "rigid", "pivot": [128.0, 160.0],
+                     "draw_order": 20, "image": str(lower_p), "sha256": _sha(lower_p),
+                     "provenance": {"operation": "local-direct-split", "source_asset_sha256": orig_sha, "result_asset_sha256": _sha(lower_p), "transform": [[1, 0, 0], [0, 1, 0]], "local_derivation": {"method": "psd_artist_layer_split", "parent_aligned_sha256": orig_sha}}},
+                ],
+            }
+            plan = {
+                "pose_type": "grounded",
+                "modules": [
+                    {"id": "lower_body", "role": "lower_body", "parent": None, "motion": "static", "motion_type": "static"},
+                    {"id": "torso", "role": "torso", "parent": "lower_body", "motion": "breath", "motion_type": "rigid"},
+                ],
+            }
+            res = trim_hidden_silhouette_pokeout(mat, plan, td / "trimmed", keep_underlap_px=24, pokeout_margin_px=24)
+            self.assertEqual(res.status, "trimmed")
+            self.assertEqual(res.report["full_composite_max_diff"], 0)
+            self.assertEqual(res.report["full_composite_changed_px"], 0)
+            self.assertGreater(res.report["total_trimmed_px"], 1000)
+            self.assertGreaterEqual(res.report["total_absorbed_fringe_sliver_px"], 75)
+            new_scarf = np.asarray(Image.open(res.material["pieces"][0]["image"]).convert("RGBA"))
+            new_lower = np.asarray(Image.open(res.material["pieces"][1]["image"]).convert("RGBA"))
+            # Sliver is removed from moving scarf and cleanly preserved on static lower_body!
+            self.assertEqual(int(new_scarf[200, 78, 3]), 0)
+            self.assertEqual(int(new_lower[200, 78, 3]), 255)
+            # Hidden boot interior was NOT shielded by the tiny sliver!
+            self.assertEqual(int(new_scarf[200, 90, 3]), 0)
+
+    def test_material_seams_skips_same_module_and_ghost_detector_catches_pokeout(self):
+        from types import SimpleNamespace
+        from src.gates.preview_diagnostics import _material_seams, inspect_dynamic_silhouette_ghost
+
+        h, w = 200, 200
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            pdir = td / "parts"
+            pdir.mkdir()
+            # Two pieces welded to same module `torso` (`scarf` + `torso`) plus static `lower_body`
+            lower = np.zeros((h, w, 4), dtype=np.uint8)
+            lower[100:180, 60:140] = [60, 70, 90, 255]
+            torso = np.zeros((h, w, 4), dtype=np.uint8)
+            torso[30:105, 70:130] = [150, 90, 80, 255]
+            scarf = np.zeros((h, w, 4), dtype=np.uint8)
+            scarf[40:102, 110:145] = [0, 120, 140, 255]
+            Image.fromarray(lower).save(pdir / "lower_body.png")
+            Image.fromarray(torso).save(pdir / "torso.png")
+            Image.fromarray(scarf).save(pdir / "scarf.png")
+            mat = {
+                "parts": [
+                    {"name": "scarf", "moduleId": "torso", "drawOrder": 10, "kind": "rigid", "enabled": True, "bbox": [0, 0, w, h], "image": "parts/scarf.png", "canvasLayer": {"provenance": {"operation": "local-direct-split"}}},
+                    {"name": "lower_body", "moduleId": "lower_body", "drawOrder": 20, "kind": "rigid", "enabled": True, "bbox": [0, 0, w, h], "image": "parts/lower_body.png", "canvasLayer": {"provenance": {"operation": "local-direct-split"}}},
+                    {"name": "torso", "moduleId": "torso", "drawOrder": 21, "kind": "rigid", "enabled": True, "bbox": [0, 0, w, h], "image": "parts/torso.png", "canvasLayer": {"provenance": {"operation": "local-direct-split"}}},
+                ]
+            }
+            f0 = np.zeros((h, w, 4), dtype=np.uint8)
+            f1 = np.zeros((h, w, 4), dtype=np.uint8)
+            f0[30:180, 60:145] = 255
+            f1[25:175, 65:150] = 255
+            seams = _material_seams({0.0: f0, 1.0: f1}, [0.0, 1.0], td, mat)
+            pairs = [set(s["pair"]) for s in seams]
+            self.assertNotIn({"scarf", "torso"}, pairs)
+
+            # Synthetic renderer to test dynamic_silhouette_ghost detector (fail when ghost pokes out, pass when clean)
+            class _FakeRenderer:
+                def __init__(self, poke_out: bool):
+                    self.poke_out = poke_out
+                    self.t = 0.0
+                    self.sk = SimpleNamespace(by_name={
+                        "module_lower_body": SimpleNamespace(a=1.0, b=0.0, c=0.0, d=1.0, worldX=100.0, worldY=50.0),
+                        "module_torso": SimpleNamespace(a=1.0, b=0.0, c=0.0, d=1.0, worldX=100.0, worldY=100.0),
+                    })
+                def pose(self, t, gain=1.0):
+                    self.t = t
+                    self.sk.by_name["module_torso"].worldY = 100.0 + (8.0 * gain if t > 0 else 0.0)
+                def frame(self, t, gain=1.0, slot_names=None):
+                    self.pose(t, gain=gain)
+                    slots = set(slot_names) if slot_names is not None else {"lower_body", "torso", "scarf"}
+                    out = np.zeros((h, w, 4), dtype=np.uint8)
+                    if "lower_body" in slots:
+                        out[100:180, 60:140] = [60, 70, 90, 255]
+                    if "torso" in slots or "scarf" in slots:
+                        out[30:105, 70:130] = [150, 90, 80, 255]
+                        if self.poke_out and t > 0:
+                            # Hidden cyan scarf poking 10px left of static boot into open air (x=50..60, y=135..175)!
+                            out[135:175, 50:60] = [0, 120, 140, 255]
+                    return out
+
+            mods = [
+                {"id": "lower_body", "role": "lower_body", "bone": "module_lower_body"},
+                {"id": "torso", "role": "torso", "bone": "module_torso"},
+            ]
+            g_fail, _ = inspect_dynamic_silhouette_ghost(_FakeRenderer(poke_out=True), td, mat, mods, [0.0, 1.0], threshold=60)
+            self.assertEqual(g_fail["status"], "fail")
+            self.assertGreaterEqual(g_fail["levels"]["1.5x"]["peak_ghost_px"], 300)
+
+            g_pass, _ = inspect_dynamic_silhouette_ghost(_FakeRenderer(poke_out=False), td, mat, mods, [0.0, 1.0], threshold=60)
+            self.assertEqual(g_pass["status"], "pass")
+            self.assertEqual(g_pass["levels"]["1.5x"]["peak_ghost_px"], 0)
 
 
 if __name__ == "__main__":
