@@ -246,6 +246,27 @@ class CanvasQualityDefenseTests(unittest.TestCase):
         }]
         self.assertTrue(check_canvas_fallback_policy(fake_fb)['bypassed'])
 
+        # 2b. Unmounted / unauthorized Canvas read library MUST be hard-blocked (NEVER allowed as fallback!)
+        for blocked_reason in ('canvas_library_unmounted', 'canvas_read_unavailable', 'canvas_unauthorized'):
+            auth_fb = [{
+                'name': 'head', 'enabled': True,
+                'canvasLayer': {'provenance': {
+                    'operation': 'local-direct-split',
+                    'local_derivation': {
+                        'method': 'edge_refined_seed_mask',
+                        'canvas_fallback': {
+                            'reason': blocked_reason,
+                            'detail': 'Canvas read library not mounted in cross-session turn',
+                        },
+                    },
+                }},
+            }]
+            pol_auth = check_canvas_fallback_policy(auth_fb)
+            self.assertTrue(pol_auth['bypassed'], (blocked_reason, pol_auth))
+            self.assertFalse(pol_auth['passed'], (blocked_reason, pol_auth))
+            self.assertEqual(pol_auth['auth_blocked_layers'], ['head'])
+            self.assertEqual(pol_auth['auth_blocked_reasons'], [blocked_reason])
+
         # 3. Valid structured canvas_fallback receipt -> allowed
         valid_fb = [{
             'name': 'head', 'enabled': True,

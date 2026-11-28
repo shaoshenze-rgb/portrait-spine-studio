@@ -506,14 +506,24 @@ VALID_CANVAS_FALLBACK_REASONS = (
     'canvas_key_required',
     'canvas_tool_error',
     'canvas_gate_rejected',
+)
+
+CANVAS_AUTH_BLOCKED_REASONS = (
     'canvas_library_unmounted',
     'canvas_read_unavailable',
+    'canvas_unauthorized',
 )
 
 
 def check_canvas_fallback_policy(parts_entries):
-    """Enforce Canvas-first splitting: non-PSD local-direct-split requires real Canvas fallback evidence."""
-    canvas_layers, psd_layers, justified_local, unjustified_local, fallback_reasons = [], [], [], [], []
+    """Enforce Canvas-first splitting: non-PSD local-direct-split requires real Canvas fallback evidence.
+
+    Missing read-library authorization (canvas_library_unmounted / canvas_read_unavailable /
+    canvas_unauthorized) is NEVER a valid excuse to skip Canvas; the worker must stop and
+    request direct user authorization instead of silently falling back locally.
+    """
+    canvas_layers, psd_layers, justified_local, unjustified_local = [], [], [], []
+    fallback_reasons, auth_blocked_layers, auth_blocked_reasons = [], [], []
     for part in parts_entries:
         if not part.get('enabled', True):
             continue
@@ -530,7 +540,12 @@ def check_canvas_fallback_policy(parts_entries):
                 fb = deriv.get('canvas_fallback')
                 reason = fb.get('reason') if isinstance(fb, dict) else None
                 detail = fb.get('detail') if isinstance(fb, dict) else None
-                if reason in VALID_CANVAS_FALLBACK_REASONS and isinstance(detail, str) and len(detail.strip()) >= 8:
+                if reason in CANVAS_AUTH_BLOCKED_REASONS:
+                    unjustified_local.append(name)
+                    auth_blocked_layers.append(name)
+                    if reason not in auth_blocked_reasons:
+                        auth_blocked_reasons.append(reason)
+                elif reason in VALID_CANVAS_FALLBACK_REASONS and isinstance(detail, str) and len(detail.strip()) >= 8:
                     justified_local.append(name)
                     if reason not in fallback_reasons:
                         fallback_reasons.append(reason)
@@ -545,17 +560,34 @@ def check_canvas_fallback_policy(parts_entries):
         'justified_local_layers': justified_local,
         'unjustified_local_layers': unjustified_local,
         'fallback_reasons': fallback_reasons,
+        'auth_blocked_layers': auth_blocked_layers,
+        'auth_blocked_reasons': auth_blocked_reasons,
     }
 
 
 def _canvas_bypass_warning(policy):
+    auth_blocked = list(policy.get('auth_blocked_layers') or [])
+    auth_reasons = list(policy.get('auth_blocked_reasons') or [])
+    if auth_blocked:
+        suggestion = (
+            '画布只读图库未挂载或未授权（canvas_library_unmounted / canvas_read_unavailable / '
+            'canvas_unauthorized）严禁降级跳过 Mivo Canvas：请停止跨会话自动派工，由用户在当前窗口'
+            '直接发消息完成一次 Canvas 只读授权后再继续！'
+        )
+    else:
+        suggestion = (
+            '禁止无回执绕过 Mivo Canvas：非 PSD 独立层走本机兜底必须在 local_derivation.canvas_fallback '
+            '写明有效 reason（仅限面板关闭/未就绪/缺Key/工具报错/拆层与局部补图均拒收）与真实回执 detail。'
+        )
     return {
         'code': 'unjustified_canvas_bypass',
         'canvas_layer_count': len(policy['canvas_layers']),
         'psd_layer_count': len(policy['psd_layers']),
         'unjustified_local_layers': list(policy['unjustified_local_layers']),
+        'auth_blocked_layers': auth_blocked,
+        'auth_blocked_reasons': auth_reasons,
         'allowed_reasons': list(VALID_CANVAS_FALLBACK_REASONS),
-        'suggestion': '禁止无回执绕过 Mivo Canvas：非 PSD 独立层走本机兜底必须在 local_derivation.canvas_fallback 写明有效 reason 与真实失败/拒收回执 detail。',
+        'suggestion': suggestion,
     }
 
 
