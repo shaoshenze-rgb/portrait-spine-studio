@@ -509,6 +509,86 @@ def _attach_completion(analysis_path,report_path,node_id,front,back,*,domain_fro
     return analysis
 
 
+
+def apply_edit_patch(
+    base_layer_path,
+    original_path,
+    edit_image_path,
+    out_path,
+    *,
+    front_layer_path=None,
+    occluded_mask_path=None,
+    alpha_mode='auto',
+    crop_bbox=None,
+    max_underlap_px=0,
+    feather_px=4,
+    color_match=True,
+    check_out=None,
+    report_out=None,
+    scene_id=None,
+    node_id=None,
+):
+    """Apply an opaque or RGBA Canvas canvas_edit_image backing inpaint strictly behind the front part."""
+    from src.pipeline.canvas_edit_patch import compose_canvas_edit_patch
+
+    if not front_layer_path and not occluded_mask_path:
+        raise ValueError('Must pass either --front-layer or --occluded-mask to bound the occluded patch.')
+    base = np.asarray(Image.open(base_layer_path).convert('RGBA'), dtype=np.uint8)
+    orig = np.asarray(Image.open(original_path).convert('RGBA'), dtype=np.uint8)
+    edit_sha = hashlib.sha256(Path(edit_image_path).read_bytes()).hexdigest()
+
+    if occluded_mask_path:
+        occ_mask = np.asarray(Image.open(occluded_mask_path).convert('L'), dtype=np.uint8) >= 16
+    else:
+        occ_mask = np.asarray(Image.open(front_layer_path).convert('RGBA'), dtype=np.uint8)[..., 3] >= 16
+
+    bbox = None
+    if crop_bbox:
+        parts = [int(v.strip()) for v in str(crop_bbox).split(',')]
+        if len(parts) != 4:
+            raise ValueError('--crop-bbox must be x,y,w,h')
+        bbox = tuple(parts)
+
+    res = compose_canvas_edit_patch(
+        base, orig, occ_mask, edit_image_path,
+        crop_bbox=bbox, alpha_mode=alpha_mode,
+        max_underlap_px=int(max_underlap_px), feather_px=int(feather_px),
+        color_match=bool(color_match),
+    )
+
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(res.rgba).save(out_p)
+
+    check_path = None
+    if check_out:
+        cp = Path(check_out)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        res.comparison.save(cp, quality=92)
+        check_path = str(cp)
+
+    report = {
+        'ok': True,
+        'out': str(out_p),
+        'out_sha256': sha(out_p),
+        'check_image': check_path,
+        'provenance': {
+            'operation': 'edit-image',
+            'canvas_scene_id': scene_id,
+            'canvas_node_id': node_id,
+            'result_asset_sha256': edit_sha,
+            'patch_method': res.stats['method'],
+            'patched_px': res.stats['patched_px'],
+            'rest_pose_preserved': res.stats['rest_pose_preserved'],
+        },
+        'stats': res.stats,
+    }
+    if report_out:
+        rp = Path(report_out)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     imp=sub.add_parser('import-layers');imp.add_argument('--receipt',required=True);imp.add_argument('--source',required=True)
@@ -522,6 +602,17 @@ def main():
     flow.add_argument('--action',required=True,choices=['start','inspect','status','record_layer_issue','decide','reserve_submission',
         'record_submission','record_result','apply_input','review_layers','bind'])
     flow.add_argument('--payload',help='当前动作的JSON文件；status可省略')
+    ep=sub.add_parser('apply-edit-patch',help='将Canvas不透明/带棋盘格或RGBA定点补图对齐后，仅贴入前景遮挡区，保留4K原画可见区100%无损')
+    ep.add_argument('--base-layer',required=True);ep.add_argument('--original',required=True);ep.add_argument('--edit-image',required=True)
+    ep.add_argument('--front-layer',help='前景遮挡层PNG（取alpha>=16作为补底上限掩码）')
+    ep.add_argument('--occluded-mask',help='显式单通道遮挡掩码PNG（优先于--front-layer）')
+    ep.add_argument('--out',required=True);ep.add_argument('--check-out');ep.add_argument('--report-out')
+    ep.add_argument('--alpha-mode',default='auto',choices=['auto','inpaint_alpha','clip_original'])
+    ep.add_argument('--crop-bbox',help='局部裁图回传时的x,y,w,h坐标（可选）')
+    ep.add_argument('--max-underlap-px',type=int,default=0)
+    ep.add_argument('--feather-px',type=int,default=4)
+    ep.add_argument('--no-color-match',action='store_true')
+    ep.add_argument('--scene-id');ep.add_argument('--node-id')
     a=p.parse_args()
     try:
         if a.command=='workflow':
@@ -531,6 +622,15 @@ def main():
             payload=json.loads(payload_path.read_text()) if payload_path else {}
             out=CanvasRepairWorkflow(a.work_dir,evidence_root=a.evidence_root).act(a.action,payload)
         elif a.command=='import-layers':out=import_layers(a.receipt,a.source,a.working_image,a.assets_dir,a.out_dir,parent_report=a.parent_report)
+        elif a.command=='apply-edit-patch':
+            out=apply_edit_patch(
+                a.base_layer,a.original,a.edit_image,a.out,
+                front_layer_path=a.front_layer,occluded_mask_path=a.occluded_mask,
+                alpha_mode=a.alpha_mode,crop_bbox=a.crop_bbox,
+                max_underlap_px=a.max_underlap_px,feather_px=a.feather_px,
+                color_match=not a.no_color_match,check_out=a.check_out,
+                report_out=a.report_out,scene_id=a.scene_id,node_id=a.node_id,
+            )
         else:out=attach_completion(a.analysis,a.import_report,a.node,a.front,a.back,a.out,domain_from_layer=a.domain_from_layer)
         print(json.dumps(out,ensure_ascii=False,indent=2))
     except Exception as e:
