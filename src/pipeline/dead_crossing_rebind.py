@@ -326,7 +326,14 @@ def rebind_dead_crossings(
             }
         )
 
-    status = "rebound" if rebinds else "requires_human_review"
+    if rebinds and blocked:
+        status = "partial_requires_human_review"
+    elif rebinds:
+        status = "rebound"
+    elif blocked:
+        status = "requires_human_review"
+    else:
+        status = "noop_already_passing"
     report = {
         "general_rule": "dead_crossing_rebind",
         "status": status,
@@ -338,5 +345,133 @@ def rebind_dead_crossings(
             for m in pl.get("modules") or []
         ],
         "independent_motion_groups": _independent_motion_count(pl.get("modules") or [], pose_type),
+    }
+    return DeadCrossingRebindResult(status=status, material=mat, plan=pl, report=report)
+
+
+def trim_hidden_silhouette_pokeout(
+    material: Dict[str, Any],
+    plan: Dict[str, Any],
+    out_dir: Any,
+    *,
+    keep_underlap_px: int = 48,
+    pokeout_margin_px: int = 64,
+    opaque_front_alpha: int = 240,
+) -> DeadCrossingRebindResult:
+    """Trim moving back-layer pixels buried behind static opaque front silhouettes near open air.
+
+    In 2D Spine rigs, a moving back layer (e.g. cloak/scarf behind static boots or ground) only
+    needs hidden underlap right behind where it emerges from the static front layer. Hidden pixels
+    far from the back layer's visible edge yet tucked along the static front layer's open-air outer
+    contour poke out during motion as double-edge ghosts while contributing zero pixels at rest.
+    Removing them is 100% bit-for-bit lossless at rest (`rest_delta_px == 0`) and preserves full
+    underlap behind every genuine emerging boundary.
+    """
+    import hashlib
+    from pathlib import Path
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    mat = copy.deepcopy(material)
+    pl = copy.deepcopy(plan)
+    out_p = Path(out_dir).resolve()
+    parts_out = out_p / "parts"
+
+    orig_path = Path(mat["source_image"]).resolve()
+    with Image.open(orig_path) as im:
+        orig_rgba = np.asarray(im.convert("RGBA"), dtype=np.uint8)
+    h, w = orig_rgba.shape[:2]
+
+    mod_by_id = {m["id"]: m for m in pl.get("modules") or []}
+    static_mod_ids = {mid for mid, m in mod_by_id.items() if not _is_animated_module(m)}
+    if not static_mod_ids:
+        return DeadCrossingRebindResult(
+            status="noop_no_static_front",
+            material=mat,
+            plan=pl,
+            report={"general_rule": "trim_hidden_silhouette_pokeout", "status": "noop_no_static_front", "trimmed_pieces": []},
+        )
+
+    pieces = mat.get("pieces") or []
+    loaded: Dict[str, np.ndarray] = {}
+    for p in pieces:
+        with Image.open(Path(p["image"]).resolve()) as im:
+            loaded[p["id"]] = np.ascontiguousarray(np.asarray(im.convert("RGBA"), dtype=np.uint8))
+
+    def _dil(mask: np.ndarray, radius: int) -> np.ndarray:
+        if radius <= 0 or not mask.any():
+            return mask.copy()
+        k = int(radius) * 2 + 1
+        return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0
+
+    near_air = _dil(orig_rgba[..., 3] < 16, int(pokeout_margin_px))
+    trimmed_records: List[Dict[str, Any]] = []
+
+    for p in pieces:
+        mid = p["module_id"]
+        if mid in static_mod_ids:
+            continue
+        p_order = int(p["draw_order"])
+        opaque_static_front = np.zeros((h, w), dtype=bool)
+        covering_static_ids: List[str] = []
+        for other in pieces:
+            if other["module_id"] in static_mod_ids and int(other["draw_order"]) > p_order:
+                o_opaque = loaded[other["id"]][..., 3] >= int(opaque_front_alpha)
+                if o_opaque.any():
+                    opaque_static_front |= o_opaque
+                    covering_static_ids.append(other["id"])
+        if not opaque_static_front.any():
+            continue
+
+        arr = loaded[p["id"]]
+        b_alpha = arr[..., 3]
+        hidden = (b_alpha > 0) & opaque_static_front
+        if not hidden.any():
+            continue
+
+        b_visible = (b_alpha >= 16) & (~opaque_static_front)
+        safe_underlap = _dil(b_visible, int(keep_underlap_px))
+        pokeout = hidden & near_air & (~safe_underlap)
+        trim_px = int(pokeout.sum())
+        if trim_px == 0:
+            continue
+
+        cleaned = arr.copy()
+        cleaned[pokeout] = 0
+        # Verify zero visible change outside opaque static front!
+        assert int(np.abs(cleaned[~opaque_static_front].astype(np.int16) - arr[~opaque_static_front].astype(np.int16)).max()) == 0
+
+        parts_out.mkdir(parents=True, exist_ok=True)
+        out_img = parts_out / f"{p['id']}.png"
+        Image.fromarray(cleaned).save(out_img)
+        new_sha = hashlib.sha256(out_img.read_bytes()).hexdigest()
+        p["image"] = str(out_img)
+        p["sha256"] = new_sha
+        prov = p.get("provenance")
+        if isinstance(prov, dict) and prov.get("operation") == "local-direct-split":
+            prov["result_asset_sha256"] = new_sha
+        loaded[p["id"]] = cleaned
+
+        ys, xs = np.nonzero(pokeout)
+        trimmed_records.append(
+            {
+                "piece_id": p["id"],
+                "module_id": mid,
+                "covering_static_pieces": covering_static_ids,
+                "trimmed_px": trim_px,
+                "trimmed_bbox_xyxy": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+                "rest_visible_diff": 0,
+            }
+        )
+
+    status = "trimmed" if trimmed_records else "noop_clean"
+    report = {
+        "general_rule": "trim_hidden_silhouette_pokeout",
+        "status": status,
+        "keep_underlap_px": int(keep_underlap_px),
+        "pokeout_margin_px": int(pokeout_margin_px),
+        "trimmed_pieces": trimmed_records,
+        "total_trimmed_px": sum(r["trimmed_px"] for r in trimmed_records),
     }
     return DeadCrossingRebindResult(status=status, material=mat, plan=pl, report=report)

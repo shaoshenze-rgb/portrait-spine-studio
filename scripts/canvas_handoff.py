@@ -613,6 +613,8 @@ def prepare_edit_crop(
     pad_ratio=0.45,
     min_pad_px=128,
     min_crop_edge=512,
+    max_crop_area_ratio=0.55,
+    require_diagnostics_match=False,
 ):
     """Automatically generate an anchor-rich local crop and occluded mask for `canvas_edit_image`."""
     from src.pipeline.canvas_edit_patch import plan_occluded_edit_crop
@@ -633,6 +635,8 @@ def prepare_edit_crop(
         pad_ratio=float(pad_ratio),
         min_pad_px=int(min_pad_px),
         min_crop_edge=int(min_crop_edge),
+        max_crop_area_ratio=float(max_crop_area_ratio),
+        require_diagnostics_match=bool(require_diagnostics_match),
     )
 
     crop_p, mask_p, meta_p = Path(out_crop_path), Path(out_mask_path), Path(out_meta_path)
@@ -643,7 +647,7 @@ def prepare_edit_crop(
     Image.fromarray(plan.occluded_mask_u8).save(mask_p)
 
     out = {
-        'ok': True,
+        'ok': bool(plan.meta.get('usable_for_local_edit', True)),
         'crop_path': str(crop_p.resolve()),
         'occluded_mask_path': str(mask_p.resolve()),
         'crop_bbox': list(plan.crop_bbox),
@@ -722,9 +726,77 @@ def run_rebind_dead_crossings(
     rep_out = out_p / 'rebind-report.json'
     mat_out.write_text(json.dumps(res.material, ensure_ascii=False, indent=2))
     plan_out.write_text(json.dumps(res.plan, ensure_ascii=False, indent=2))
-    out = {'ok': res.status != 'requires_human_review', 'material_out': str(mat_out), 'plan_out': str(plan_out), **res.report}
+    out = {'ok': res.status in ('rebound', 'noop_already_passing'), 'material_out': str(mat_out), 'plan_out': str(plan_out), **res.report}
     rep_out.write_text(json.dumps(out, ensure_ascii=False, indent=2))
     return out
+
+
+def run_trim_hidden_pokeout(
+    material_path,
+    plan_path,
+    out_dir,
+    *,
+    keep_underlap_px=48,
+    pokeout_margin_px=64,
+):
+    """Trim hidden moving back-layer pixels tucked behind static opaque silhouettes near open air."""
+    from src.pipeline.dead_crossing_rebind import trim_hidden_silhouette_pokeout
+
+    mat = json.loads(Path(material_path).read_text())
+    pl = json.loads(Path(plan_path).read_text())
+    res = trim_hidden_silhouette_pokeout(
+        mat, pl, out_dir,
+        keep_underlap_px=int(keep_underlap_px),
+        pokeout_margin_px=int(pokeout_margin_px),
+    )
+    out_p = Path(out_dir)
+    out_p.mkdir(parents=True, exist_ok=True)
+    mat_out = out_p / 'material.json'
+    plan_out = out_p / 'plan.json'
+    rep_out = out_p / 'trim-pokeout-report.json'
+    mat_out.write_text(json.dumps(res.material, ensure_ascii=False, indent=2))
+    plan_out.write_text(json.dumps(res.plan, ensure_ascii=False, indent=2))
+    out = {'ok': True, 'material_out': str(mat_out), 'plan_out': str(plan_out), **res.report}
+    rep_out.write_text(json.dumps(out, ensure_ascii=False, indent=2))
+    return out
+
+
+def run_fill_translucent_underlap(
+    fx_layer_path,
+    occluder_layer_path,
+    out_path,
+    *,
+    max_underlap_px=72,
+    blur_sigma=4.0,
+    inpaint_radius=14,
+    check_out=None,
+    report_out=None,
+):
+    """Smoothly fill hard cutouts in a translucent FX layer strictly behind an occluding prop."""
+    from src.pipeline.canvas_edit_patch import inpaint_translucent_fx_underlap
+
+    res = inpaint_translucent_fx_underlap(
+        fx_layer_path,
+        occluder_layer_path,
+        max_underlap_px=int(max_underlap_px),
+        blur_sigma=float(blur_sigma),
+        inpaint_radius=int(inpaint_radius),
+    )
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(res.rgba).save(out_p)
+    check_path = None
+    if check_out:
+        cp = Path(check_out)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        res.comparison.save(cp, quality=92)
+        check_path = str(cp)
+    report = {'ok': True, 'out': str(out_p), 'out_sha256': sha(out_p), 'check_image': check_path, 'stats': res.stats}
+    if report_out:
+        rp = Path(report_out)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
 
 
 def run_transfer_sibling_variant(
@@ -784,6 +856,8 @@ def main():
     pc.add_argument('--diagnostics');pc.add_argument('--layer-pair',help='仅提取指定层对的露底区，如 scarf,torso')
     pc.add_argument('--pad-ratio',type=float,default=0.45);pc.add_argument('--min-pad-px',type=int,default=128)
     pc.add_argument('--min-crop-edge',type=int,default=512)
+    pc.add_argument('--max-crop-area-ratio',type=float,default=0.55,help='裁框面积占比上限，超过则标记需人工复核并退出码2')
+    pc.add_argument('--require-diagnostics-match',action='store_true',help='传入--diagnostics却未命中任何露底区时拒绝回退整层接触')
 
     ch=sub.add_parser('clean-open-air-halo',help='当补底诊断为 open_air_no_backing 时，清理底层紧贴前景的半透明外沿残晕')
     ch.add_argument('--base-layer',required=True);ch.add_argument('--front-layer',required=True);ch.add_argument('--out',required=True)
@@ -794,6 +868,15 @@ def main():
     rb.add_argument('--material',required=True);rb.add_argument('--plan',required=True);rb.add_argument('--out-dir',required=True)
     rb.add_argument('--diagnostics');rb.add_argument('--failing-pair',action='append',help='显式指定失败层对 layer_a,layer_b，可多次传入')
     rb.add_argument('--max-rebinds',type=int,default=4)
+
+    tp=sub.add_parser('trim-hidden-pokeout',help='裁掉藏在静态不透明前景边缘内侧、易在运动中探出形成双边重影的隐藏后层像素（静止100%无损）')
+    tp.add_argument('--material',required=True);tp.add_argument('--plan',required=True);tp.add_argument('--out-dir',required=True)
+    tp.add_argument('--keep-underlap-px',type=int,default=48);tp.add_argument('--pokeout-margin-px',type=int,default=64)
+
+    fu=sub.add_parser('fill-translucent-underlap',help='为半透明光效层在前景道具遮挡区内平滑补齐连续垫边，消除道具移开后的硬切轮廓边（静止100%无损）')
+    fu.add_argument('--fx-layer',required=True);fu.add_argument('--occluder-layer',required=True);fu.add_argument('--out',required=True)
+    fu.add_argument('--max-underlap-px',type=int,default=72);fu.add_argument('--blur-sigma',type=float,default=4.0)
+    fu.add_argument('--inpaint-radius',type=int,default=14);fu.add_argument('--check-out');fu.add_argument('--report-out')
 
     ts=sub.add_parser('transfer-sibling-variant',help='同构变体（和谐版/原版、国内/国际版）自动迁移已绿灯归属切分并保目标原画无损')
     ts.add_argument('--donor-material',required=True);ts.add_argument('--donor-plan',required=True)
@@ -825,6 +908,8 @@ def main():
                 occluded_mask_path=a.occluded_mask,diagnostics_path=a.diagnostics,
                 layer_pair=a.layer_pair,pad_ratio=a.pad_ratio,
                 min_pad_px=a.min_pad_px,min_crop_edge=a.min_crop_edge,
+                max_crop_area_ratio=a.max_crop_area_ratio,
+                require_diagnostics_match=a.require_diagnostics_match,
             )
         elif a.command=='clean-open-air-halo':
             out=run_clean_open_air_halo(
@@ -838,6 +923,17 @@ def main():
                 diagnostics_path=a.diagnostics,failing_pairs=a.failing_pair,
                 max_rebinds=a.max_rebinds,
             )
+        elif a.command=='trim-hidden-pokeout':
+            out=run_trim_hidden_pokeout(
+                a.material,a.plan,a.out_dir,
+                keep_underlap_px=a.keep_underlap_px,pokeout_margin_px=a.pokeout_margin_px,
+            )
+        elif a.command=='fill-translucent-underlap':
+            out=run_fill_translucent_underlap(
+                a.fx_layer,a.occluder_layer,a.out,
+                max_underlap_px=a.max_underlap_px,blur_sigma=a.blur_sigma,
+                inpaint_radius=a.inpaint_radius,check_out=a.check_out,report_out=a.report_out,
+            )
         elif a.command=='transfer-sibling-variant':
             out=run_transfer_sibling_variant(
                 a.donor_material,a.donor_plan,a.target_source,a.out_dir,
@@ -845,6 +941,8 @@ def main():
             )
         else:out=attach_completion(a.analysis,a.import_report,a.node,a.front,a.back,a.out,domain_from_layer=a.domain_from_layer)
         print(json.dumps(out,ensure_ascii=False,indent=2))
+        if isinstance(out,dict) and out.get('ok') is False:
+            return 2
     except Exception as e:
         result={'ok':False,'error':type(e).__name__,'message':str(e),'resubmitted':False}
         if isinstance(e,AttachSetupError):result['details']=e.details

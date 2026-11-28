@@ -498,6 +498,8 @@ def plan_occluded_edit_crop(
     min_crop_edge: int = 512,
     region_expand_px: Optional[int] = None,
     contact_radius_px: Optional[int] = None,
+    max_crop_area_ratio: float = 0.55,
+    require_diagnostics_match: bool = False,
 ) -> OccludedEditCropPlan:
     """Automatically derive an anchor-rich local crop and occluded mask for `canvas_edit_image`.
 
@@ -592,16 +594,134 @@ def plan_occluded_edit_crop(
     crop_bbox = (int(cx0), int(cy0), int(cx1 - cx0), int(cy1 - cy0))
     crop_rgba = np.ascontiguousarray(orig[cy0:cy1, cx0:cx1].copy())
     mask_u8 = (mask.astype(np.uint8) * 255)
+    crop_area_ratio = round(float(crop_bbox[2] * crop_bbox[3]) / float(max(1, w * h)), 4)
+    diagnostics_supplied = diagnostics is not None
+    diagnostics_matched = matched_regions > 0
+    warnings = []
+    if diagnostics_supplied and not diagnostics_matched:
+        warnings.append("diagnostics_no_matching_exposure_regions_fell_back_to_contact")
+    if crop_area_ratio > float(max_crop_area_ratio):
+        warnings.append(f"crop_too_wide_near_full_frame:{crop_area_ratio:.2%}>{float(max_crop_area_ratio):.2%}")
+
+    if require_diagnostics_match and diagnostics_supplied and not diagnostics_matched:
+        crop_status = "diagnostics_unmatched_requires_human_review"
+        usable = False
+    elif crop_area_ratio > float(max_crop_area_ratio):
+        crop_status = "crop_too_wide_requires_human_review"
+        usable = False
+    else:
+        crop_status = "ready"
+        usable = True
+
     meta = {
+        "status": crop_status,
+        "usable_for_local_edit": usable,
         "source": source_kind,
+        "diagnostics_supplied": diagnostics_supplied,
+        "diagnostics_matched": diagnostics_matched,
         "matched_exposure_regions": matched_regions,
         "image_size": [w, h],
         "occluded_bbox_xywh": [mx0, my0, mw, mh],
         "occluded_mask_px": int(mask.sum()),
         "crop_bbox": list(crop_bbox),
+        "crop_area_ratio": crop_area_ratio,
+        "max_crop_area_ratio": float(max_crop_area_ratio),
         "pad_px": pad,
+        "warnings": warnings,
     }
     return OccludedEditCropPlan(crop_rgba=crop_rgba, occluded_mask_u8=mask_u8, crop_bbox=crop_bbox, meta=meta)
+
+
+def inpaint_translucent_fx_underlap(
+    fx_layer_rgba: Any,
+    occluder_rgba: Any,
+    *,
+    max_underlap_px: int = 72,
+    blur_sigma: float = 4.0,
+    inpaint_radius: int = 14,
+) -> CanvasEditPatchResult:
+    """Smoothly extend a translucent FX layer strictly behind an occluding foreground prop.
+
+    Eliminates sharp cookie-cutter silhouette cutouts on translucent glow/swirl/mist layers when a
+    foreground prop moves away, while keeping 100% of visible pixels outside `occluder_rgba`
+    bit-for-bit identical (`max_outside_diff == 0`).
+    """
+    import cv2
+
+    fx = _to_rgba_array(fx_layer_rgba)
+    occ_arr = _to_rgba_array(occluder_rgba)
+    if fx.shape[:2] != occ_arr.shape[:2]:
+        raise ValueError(f"fx_layer_rgba {fx.shape[:2]} != occluder_rgba {occ_arr.shape[:2]}")
+    h, w = fx.shape[:2]
+
+    occ = occ_arr[..., 3] >= 16
+    fx_support = fx[..., 3] >= 16
+    fill_zone = occ & (fx[..., 3] < 250) & _dilate_bool(fx_support, int(max_underlap_px))
+    if not fill_zone.any():
+        stats = {
+            "method": "inpaint_translucent_fx_underlap",
+            "filled_px": 0,
+            "fill_zone_px": 0,
+            "max_outside_diff": 0,
+            "rest_pose_preserved": True,
+        }
+        return CanvasEditPatchResult(rgba=fx.copy(), stats=stats, comparison=_render_patch_comparison(fx, occ_arr, fx, fill_zone))
+
+    ys, xs = np.nonzero(fill_zone)
+    pad = max(int(max_underlap_px) + 32, int(inpaint_radius) * 3)
+    ry0, ry1 = max(0, int(ys.min()) - pad), min(h, int(ys.max()) + 1 + pad)
+    rx0, rx1 = max(0, int(xs.min()) - pad), min(w, int(xs.max()) + 1 + pad)
+
+    roi_fx = fx[ry0:ry1, rx0:rx1]
+    roi_fill = fill_zone[ry0:ry1, rx0:rx1]
+    roi_a = roi_fx[..., 3]
+    roi_hole_u8 = roi_fill.astype(np.uint8) * 255
+
+    # 1. Smoothly inpaint alpha across the occluded cutout.
+    inpainted_a = cv2.inpaint(roi_a, roi_hole_u8, inpaintRadius=int(inpaint_radius), flags=cv2.INPAINT_TELEA)
+    if float(blur_sigma) > 0:
+        inpainted_a = cv2.GaussianBlur(inpainted_a, (0, 0), sigmaX=float(blur_sigma))
+
+    # Taper alpha smoothly if fill_zone extends all the way to the open-air far side of max_underlap_px.
+    if int(max_underlap_px) > 0:
+        dist_from_fx = cv2.distanceTransform((~(roi_a >= 16)).astype(np.uint8), cv2.DIST_L2, 5)
+        taper = np.clip(1.0 - np.maximum(0.0, dist_from_fx - float(max_underlap_px) * 0.7) / max(1.0, float(max_underlap_px) * 0.35), 0.0, 1.0)
+        inpainted_a = np.clip(np.rint(inpainted_a.astype(np.float32) * taper), 0, 255).astype(np.uint8)
+
+    # 2. Inpaint RGB strictly from visible non-empty glow pixels (mark transparent air as unknown too so black never bleeds in).
+    rgb_unknown = ((roi_a < 24) | roi_fill).astype(np.uint8) * 255
+    roi_rgb_bgr = cv2.cvtColor(roi_fx[..., :3], cv2.COLOR_RGB2BGR)
+    inpainted_bgr = cv2.inpaint(roi_rgb_bgr, rgb_unknown, inpaintRadius=int(inpaint_radius), flags=cv2.INPAINT_TELEA)
+    inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
+    if float(blur_sigma) > 0:
+        inpainted_rgb = cv2.GaussianBlur(inpainted_rgb, (0, 0), sigmaX=max(1.0, float(blur_sigma) * 0.6))
+
+    out = fx.copy()
+    roi_out = out[ry0:ry1, rx0:rx1]
+    # Keep higher alpha where base already had partial glow, or fill smoothly inside roi_fill.
+    new_a = np.where(roi_fill, np.maximum(roi_a, inpainted_a), roi_a)
+    blend_rgb_mask = roi_fill & (new_a > roi_a)
+    roi_out[blend_rgb_mask, :3] = inpainted_rgb[blend_rgb_mask]
+    roi_out[roi_fill, 3] = new_a[roi_fill]
+    out[ry0:ry1, rx0:rx1] = roi_out
+
+    # Enforce strict bit-for-bit preservation outside occluder silhouette.
+    sacred = (~occ) | (fx[..., 3] == 255)
+    out[sacred] = fx[sacred]
+
+    filled_mask = (~sacred) & (out[..., 3] > fx[..., 3])
+    outside_diff = int(np.abs(out[~occ].astype(np.int16) - fx[~occ].astype(np.int16)).max()) if (~occ).any() else 0
+    stats: Dict[str, Any] = {
+        "method": "inpaint_translucent_fx_underlap",
+        "max_underlap_px": int(max_underlap_px),
+        "blur_sigma": float(blur_sigma),
+        "fill_zone_px": int(fill_zone.sum()),
+        "filled_px": int(filled_mask.sum()),
+        "max_outside_diff": outside_diff,
+        "rest_pose_preserved": outside_diff == 0,
+    }
+    comp = _render_patch_comparison(fx, occ_arr, out, filled_mask)
+    return CanvasEditPatchResult(rgba=out, stats=stats, comparison=comp)
 
 
 def clean_open_air_halo(

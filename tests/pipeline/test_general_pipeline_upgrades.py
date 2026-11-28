@@ -15,7 +15,8 @@ from src.pipeline.canvas_layer_cleanup import (
     inspect_canvas_parts_warnings,
 )
 from src.pipeline.canvas_layer_parts import materialize_canvas_layer_parts
-from src.pipeline.dead_crossing_rebind import rebind_dead_crossings
+from src.pipeline.canvas_edit_patch import inpaint_translucent_fx_underlap, plan_occluded_edit_crop
+from src.pipeline.dead_crossing_rebind import rebind_dead_crossings, trim_hidden_silhouette_pokeout
 from src.pipeline.sibling_variant_transfer import transfer_sibling_variant
 
 
@@ -326,6 +327,151 @@ class SiblingVariantTransferAndGovernanceTests(unittest.TestCase):
             light, reason = mgr._compute_item_traffic_light({"status": "done"}, job)
             self.assertEqual(light, "red")
             self.assertIn("未经用户审核批准", reason)
+
+    def test_partial_rebind_never_hides_blocked_pairs_and_cli_exits_2(self):
+        mat, plan = _make_sample_grounded_material_and_plan()
+        res = rebind_dead_crossings(mat, plan, failing_pairs=[("scarf", "torso"), ("torso", "lower_body")])
+        self.assertEqual(res.status, "partial_requires_human_review")
+        self.assertEqual(len(res.report["rebinds"]), 1)
+        self.assertEqual(len(res.report["blocked"]), 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            (td / "mat.json").write_text(json.dumps(mat))
+            (td / "plan.json").write_text(json.dumps(plan))
+            proc = subprocess.run(
+                [
+                    sys.executable, "scripts/canvas_handoff.py", "rebind-dead-crossings",
+                    "--material", str(td / "mat.json"),
+                    "--plan", str(td / "plan.json"),
+                    "--failing-pair", "scarf,torso",
+                    "--failing-pair", "torso,lower_body",
+                    "--out-dir", str(td / "out"),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            out = json.loads(proc.stdout)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["status"], "partial_requires_human_review")
+
+    def test_prepare_edit_crop_flags_too_wide_near_full_frame_and_cli_exits_2(self):
+        h, w = 256, 256
+        orig = np.zeros((h, w, 4), dtype=np.uint8)
+        orig[20:236, 20:236] = [100, 120, 140, 255]
+        front = np.zeros((h, w, 4), dtype=np.uint8)
+        front[20:236, 20:236] = [200, 180, 90, 255]  # wraps almost entire canvas
+        base = orig.copy()
+        empty_diag = {"exposure_stress": {"status": "pass", "levels": {"1.0x": {"frames": []}, "1.5x": {"frames": []}}}}
+
+        plan = plan_occluded_edit_crop(orig, front_layer_rgba=front, base_layer_rgba=base, diagnostics=empty_diag, min_pad_px=20, min_crop_edge=64)
+        self.assertFalse(plan.meta["usable_for_local_edit"])
+        self.assertEqual(plan.meta["status"], "crop_too_wide_requires_human_review")
+        self.assertGreater(plan.meta["crop_area_ratio"], 0.55)
+        self.assertFalse(plan.meta["diagnostics_matched"])
+        self.assertTrue(any("diagnostics_no_matching" in w_msg for w_msg in plan.meta["warnings"]))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            Image.fromarray(orig).save(td / "orig.png")
+            Image.fromarray(front).save(td / "front.png")
+            Image.fromarray(base).save(td / "base.png")
+            (td / "diag.json").write_text(json.dumps(empty_diag))
+            proc = subprocess.run(
+                [
+                    sys.executable, "scripts/canvas_handoff.py", "prepare-edit-crop",
+                    "--original", str(td / "orig.png"),
+                    "--front-layer", str(td / "front.png"),
+                    "--base-layer", str(td / "base.png"),
+                    "--diagnostics", str(td / "diag.json"),
+                    "--min-pad-px", "20", "--min-crop-edge", "64",
+                    "--out-crop", str(td / "c.png"), "--out-mask", str(td / "m.png"), "--out-meta", str(td / "meta.json"),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(proc.returncode, 2)
+            out = json.loads(proc.stdout)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["status"], "crop_too_wide_requires_human_review")
+
+    def test_trim_hidden_silhouette_pokeout_removes_hidden_boot_edge_ghost_losslessly(self):
+        h, w = 256, 256
+        # Static lower_body boot occupies x=80..170, y=100..230; open air is outside.
+        lower = np.zeros((h, w, 4), dtype=np.uint8)
+        lower[100:230, 80:170] = [60, 70, 90, 255]
+        # Moving scarf behind lower_body: visible only near top (y=40..105, x=90..150),
+        # plus hidden cyan tail buried under boot right next to open air at y=180..228, x=80..120!
+        scarf = np.zeros((h, w, 4), dtype=np.uint8)
+        scarf[40:130, 90:150] = [0, 120, 140, 255]
+        scarf[180:228, 80:120] = [0, 110, 125, 255]  # hidden poke-out risk along boot bottom-left!
+
+        comp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        comp.alpha_composite(Image.fromarray(scarf))
+        comp.alpha_composite(Image.fromarray(lower))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            orig_p = td / "orig.png"
+            comp.save(orig_p)
+            scarf_p = td / "scarf.png"
+            lower_p = td / "lower.png"
+            Image.fromarray(scarf).save(scarf_p)
+            Image.fromarray(lower).save(lower_p)
+            orig_sha = _sha(orig_p)
+            mat = {
+                "version": 1, "material_mode": "canvas_layers",
+                "source_image": str(orig_p), "source_sha256": orig_sha, "image_size": [w, h],
+                "pieces": [
+                    {"id": "scarf", "module_id": "torso", "parent": "lower_body", "kind": "rigid", "pivot": [128.0, 100.0],
+                     "draw_order": 10, "image": str(scarf_p), "sha256": _sha(scarf_p),
+                     "provenance": {"operation": "local-direct-split", "source_asset_sha256": orig_sha, "result_asset_sha256": _sha(scarf_p), "transform": [[1, 0, 0], [0, 1, 0]], "local_derivation": {"method": "psd_artist_layer_split", "parent_aligned_sha256": orig_sha}}},
+                    {"id": "lower_body", "module_id": "lower_body", "parent": None, "kind": "rigid", "pivot": [128.0, 160.0],
+                     "draw_order": 20, "image": str(lower_p), "sha256": _sha(lower_p),
+                     "provenance": {"operation": "local-direct-split", "source_asset_sha256": orig_sha, "result_asset_sha256": _sha(lower_p), "transform": [[1, 0, 0], [0, 1, 0]], "local_derivation": {"method": "psd_artist_layer_split", "parent_aligned_sha256": orig_sha}}},
+                ],
+            }
+            plan = {
+                "pose_type": "grounded",
+                "modules": [
+                    {"id": "lower_body", "role": "lower_body", "parent": None, "motion": "static", "motion_type": "static"},
+                    {"id": "torso", "role": "torso", "parent": "lower_body", "motion": "breath", "motion_type": "rigid"},
+                ],
+            }
+            res = trim_hidden_silhouette_pokeout(mat, plan, td / "trimmed", keep_underlap_px=24, pokeout_margin_px=24)
+            self.assertEqual(res.status, "trimmed")
+            self.assertGreater(res.report["total_trimmed_px"], 1000)
+            new_scarf = np.asarray(Image.open(res.material["pieces"][0]["image"]).convert("RGBA"))
+            # Hidden poke-out pixels at boot edge are gone!
+            self.assertEqual(int(new_scarf[210, 88, 3]), 0)
+            # Genuine underlap right behind top visible emergence (y=108, within keep_underlap_px=24 of y=99) is KEPT!
+            self.assertEqual(int(new_scarf[108, 120, 3]), 255)
+            # Visible scarf pixels outside boot are 100% untouched!
+            np.testing.assert_array_equal(new_scarf[40:100, 90:150], scarf[40:100, 90:150])
+
+    def test_inpaint_translucent_fx_underlap_fills_cookie_cutter_hole_losslessly(self):
+        h, w = 160, 160
+        yy, xx = np.indices((h, w))
+        dist = np.hypot(xx - 80, yy - 80)
+        glow_a = np.clip((1.0 - dist / 65.0) * 190.0, 0, 190).astype(np.uint8)
+        fx = np.zeros((h, w, 4), dtype=np.uint8)
+        fx[..., 0] = 55
+        fx[..., 1] = 225
+        fx[..., 2] = 90
+        fx[..., 3] = glow_a
+
+        bottle = np.zeros((h, w, 4), dtype=np.uint8)
+        bmask = (xx >= 66) & (xx < 94) & (yy >= 66) & (yy < 94)
+        bottle[bmask] = [220, 200, 180, 255]
+        # Hard cookie-cutter cutout in fx under bottle!
+        fx_cut = fx.copy()
+        fx_cut[bmask] = 0
+
+        res = inpaint_translucent_fx_underlap(fx_cut, bottle, max_underlap_px=36, blur_sigma=3.0)
+        self.assertTrue(res.stats["rest_pose_preserved"])
+        self.assertEqual(res.stats["max_outside_diff"], 0)
+        np.testing.assert_array_equal(res.rgba[~bmask], fx_cut[~bmask])
+        self.assertGreater(int(res.rgba[80, 80, 3]), 110)
+        self.assertGreater(int(res.rgba[80, 80, 1]), 180)  # clean green glow, no black bleed!
 
 
 if __name__ == "__main__":

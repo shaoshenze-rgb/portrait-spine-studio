@@ -14,7 +14,10 @@
 | 整图 `canvas_edit_image` 把腿/躯干画偏 | 先调 `scripts/canvas_handoff.py prepare-edit-crop` 自动裁局部带锚点框再上板，回传用 `apply-edit-patch --crop-meta` | SIFT 高内点对齐，不改动裁框外任何部位 |
 | 遮挡区底层已有旧像素/半透明残影导致补底写不进 | `apply-edit-patch` 加 `--replace-occluded`（半透明光效同时加 `--alpha-mode inpaint_alpha`） | 仅替换遮挡区内旧像素，可见区 `max_outside_diff == 0` |
 | 补底回执报 `open_air_no_backing`（背后本是透明空气） | 调 `scripts/canvas_handoff.py clean-open-air-halo` 清主层紧贴前景的软光晕残边 | 实心主体 `max_solid_core_diff == 0`，无旧光晕残边 |
-| 无底图死交叉层反复压测露底 | 调 `scripts/canvas_handoff.py rebind-dead-crossings` 按解剖层级自动改绑次级交叉件 | 原 `draw_order` 不变、站姿脚底 `0 px`，未折叠为单块僵硬整体 |
+| 无底图死交叉层反复压测露底 | 调 `scripts/canvas_handoff.py rebind-dead-crossings` 按解剖层级自动改绑次级交叉件 | 原 `draw_order` 不变、站姿脚底 `0 px`；有任意层对被拦截即退出码 `2` 挂起待审 |
+| 运动后层从静态靴子/腿甲/地面背后探出双边重影 | 调 `scripts/canvas_handoff.py trim-hidden-pokeout` 无损裁掉静态不透明前景背后临近空域的隐藏像素 | 静止可见区 `rest_visible_diff == 0`，正常出露区保留 48 px 垫边，无双边重影 |
+| 前景道具移开后，后层半透明光效露出硬切轮廓边 | 调 `scripts/canvas_handoff.py fill-translucent-underlap` 仅在道具遮挡区内平滑延展半透明光效 | 遮挡区外 `max_outside_diff == 0`，道具摆开后光效连续无硬切边 |
+| 局部裁图面积过大（>55% 整图）或未命中压测露底区 | `prepare-edit-crop` 自动返回 `ok:false`（退出码 `2`）并标注 `warnings` | 不直接发整图冒充局部补底，交用户审核或缩小目标层对 |
 | 同角色和谐版/原版、国内/国际版变体 | 调 `scripts/canvas_handoff.py transfer-sibling-variant` 迁移已绿灯同构兄弟切分 | `diff_ratio <= 15%`，目标变体静止合成与原图一致 |
 | 通用流程 3 轮止损后仍未过门 | **立即挂起标为 `needs_human_review` 并汇报用户**；未获用户明确同意严禁擅自单张手搓特调 | 用户审批后方可在 `per_character_override` 记录批准并定向处理 |
 

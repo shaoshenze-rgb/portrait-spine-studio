@@ -139,13 +139,20 @@ def _eroded_u8(arr, radius):
 
 def _rest_contacts(parts_dir, material, part_names, reference):
     height, width = reference.shape
-    masks = _material_masks(parts_dir, {'parts': [p for p in material['parts'] if p['name'] in part_names]},
+    selected = [p for p in material['parts'] if p['name'] in part_names]
+    module_by_part = {p['name']: p.get('moduleId') for p in selected}
+    masks = _material_masks(parts_dir, {'parts': selected},
                             (width, height), (width, height))
     reach = max(6, round(min(height, width) * .019))
     contacts = []
     sweep = np.zeros_like(reference)
     for index, (front, _, _, front_near, front_core) in enumerate(masks):
+        front_mod = module_by_part.get(front)
         for back, _, _, back_near, back_core in masks[index + 1:]:
+            # Pieces rigidly welded to the same module/bone move identically and cannot open a seam.
+            back_mod = module_by_part.get(back)
+            if front_mod is not None and front_mod == back_mod:
+                continue
             boundary = (front_near & back_core) | (back_near & front_core)
             if not boundary.any():
                 continue
