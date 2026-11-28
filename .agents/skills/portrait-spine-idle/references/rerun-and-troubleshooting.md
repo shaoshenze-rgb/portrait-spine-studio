@@ -11,6 +11,12 @@
 | 头手或关节摆开裂缝 | 单模块 `motion_scale` 先试 0.5–0.7，再检查已有 local 垫边 | 目标接缝完整，躯干呼吸与软摆仍自然 |
 | 站立脚漂或 IK 不可达 | 核对 grounded 的真实两段刚体链与静态 foot 锚 | 脚稳且硬物不拉长；不要改浮空掩盖问题 |
 | 仅静态距离大或少数边缘像素低 alpha | 保留提示，直接生成完整预览观察 | 以实际露底/穿模判定，不用告警单独阻断 |
+| 整图 `canvas_edit_image` 把腿/躯干画偏 | 先调 `scripts/canvas_handoff.py prepare-edit-crop` 自动裁局部带锚点框再上板，回传用 `apply-edit-patch --crop-meta` | SIFT 高内点对齐，不改动裁框外任何部位 |
+| 遮挡区底层已有旧像素/半透明残影导致补底写不进 | `apply-edit-patch` 加 `--replace-occluded`（半透明光效同时加 `--alpha-mode inpaint_alpha`） | 仅替换遮挡区内旧像素，可见区 `max_outside_diff == 0` |
+| 补底回执报 `open_air_no_backing`（背后本是透明空气） | 调 `scripts/canvas_handoff.py clean-open-air-halo` 清主层紧贴前景的软光晕残边 | 实心主体 `max_solid_core_diff == 0`，无旧光晕残边 |
+| 无底图死交叉层反复压测露底 | 调 `scripts/canvas_handoff.py rebind-dead-crossings` 按解剖层级自动改绑次级交叉件 | 原 `draw_order` 不变、站姿脚底 `0 px`，未折叠为单块僵硬整体 |
+| 同角色和谐版/原版、国内/国际版变体 | 调 `scripts/canvas_handoff.py transfer-sibling-variant` 迁移已绿灯同构兄弟切分 | `diff_ratio <= 15%`，目标变体静止合成与原图一致 |
+| 通用流程 3 轮止损后仍未过门 | **立即挂起标为 `needs_human_review` 并汇报用户**；未获用户明确同意严禁擅自单张手搓特调 | 用户审批后方可在 `per_character_override` 记录批准并定向处理 |
 
 ## 遮挡移开后的完整性
 

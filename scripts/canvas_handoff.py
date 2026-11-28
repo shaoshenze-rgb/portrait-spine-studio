@@ -520,9 +520,11 @@ def apply_edit_patch(
     occluded_mask_path=None,
     alpha_mode='auto',
     crop_bbox=None,
+    crop_meta_path=None,
     max_underlap_px=0,
     feather_px=4,
     color_match=True,
+    replace_occluded=False,
     check_out=None,
     report_out=None,
     scene_id=None,
@@ -531,8 +533,21 @@ def apply_edit_patch(
     """Apply an opaque or RGBA Canvas canvas_edit_image backing inpaint strictly behind the front part."""
     from src.pipeline.canvas_edit_patch import compose_canvas_edit_patch
 
+    bbox = None
+    if crop_meta_path:
+        meta = json.loads(Path(crop_meta_path).read_text())
+        if crop_bbox is None and meta.get('crop_bbox'):
+            bbox = tuple(int(v) for v in meta['crop_bbox'])
+        if not occluded_mask_path and meta.get('occluded_mask_path'):
+            occluded_mask_path = meta['occluded_mask_path']
+    if crop_bbox:
+        parts = [int(v.strip()) for v in str(crop_bbox).split(',')]
+        if len(parts) != 4:
+            raise ValueError('--crop-bbox must be x,y,w,h')
+        bbox = tuple(parts)
+
     if not front_layer_path and not occluded_mask_path:
-        raise ValueError('Must pass either --front-layer or --occluded-mask to bound the occluded patch.')
+        raise ValueError('Must pass either --front-layer, --occluded-mask, or --crop-meta containing occluded_mask_path.')
     base = np.asarray(Image.open(base_layer_path).convert('RGBA'), dtype=np.uint8)
     orig = np.asarray(Image.open(original_path).convert('RGBA'), dtype=np.uint8)
     edit_sha = hashlib.sha256(Path(edit_image_path).read_bytes()).hexdigest()
@@ -542,18 +557,11 @@ def apply_edit_patch(
     else:
         occ_mask = np.asarray(Image.open(front_layer_path).convert('RGBA'), dtype=np.uint8)[..., 3] >= 16
 
-    bbox = None
-    if crop_bbox:
-        parts = [int(v.strip()) for v in str(crop_bbox).split(',')]
-        if len(parts) != 4:
-            raise ValueError('--crop-bbox must be x,y,w,h')
-        bbox = tuple(parts)
-
     res = compose_canvas_edit_patch(
         base, orig, occ_mask, edit_image_path,
         crop_bbox=bbox, alpha_mode=alpha_mode,
         max_underlap_px=int(max_underlap_px), feather_px=int(feather_px),
-        color_match=bool(color_match),
+        color_match=bool(color_match), replace_occluded=bool(replace_occluded),
     )
 
     out_p = Path(out_path)
@@ -580,6 +588,7 @@ def apply_edit_patch(
             'patch_method': res.stats['method'],
             'patched_px': res.stats['patched_px'],
             'rest_pose_preserved': res.stats['rest_pose_preserved'],
+            'backing_diagnosis': res.stats['backing_diagnosis'],
         },
         'stats': res.stats,
     }
@@ -588,6 +597,158 @@ def apply_edit_patch(
         rp.parent.mkdir(parents=True, exist_ok=True)
         rp.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     return report
+
+
+def prepare_edit_crop(
+    original_path,
+    out_crop_path,
+    out_mask_path,
+    out_meta_path,
+    *,
+    front_layer_path=None,
+    base_layer_path=None,
+    occluded_mask_path=None,
+    diagnostics_path=None,
+    layer_pair=None,
+    pad_ratio=0.45,
+    min_pad_px=128,
+    min_crop_edge=512,
+):
+    """Automatically generate an anchor-rich local crop and occluded mask for `canvas_edit_image`."""
+    from src.pipeline.canvas_edit_patch import plan_occluded_edit_crop
+
+    occ = np.asarray(Image.open(occluded_mask_path).convert('L'), dtype=np.uint8) >= 16 if occluded_mask_path else None
+    diag = json.loads(Path(diagnostics_path).read_text()) if diagnostics_path else None
+    pair = tuple(s.strip() for s in str(layer_pair).split(',') if s.strip()) if layer_pair else None
+    if pair is not None and len(pair) != 2:
+        raise ValueError('--layer-pair must be layer_a,layer_b')
+
+    plan = plan_occluded_edit_crop(
+        original_path,
+        occluded_mask=occ,
+        front_layer_rgba=front_layer_path,
+        base_layer_rgba=base_layer_path,
+        diagnostics=diag,
+        layer_pair=pair,
+        pad_ratio=float(pad_ratio),
+        min_pad_px=int(min_pad_px),
+        min_crop_edge=int(min_crop_edge),
+    )
+
+    crop_p, mask_p, meta_p = Path(out_crop_path), Path(out_mask_path), Path(out_meta_path)
+    crop_p.parent.mkdir(parents=True, exist_ok=True)
+    mask_p.parent.mkdir(parents=True, exist_ok=True)
+    meta_p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(plan.crop_rgba).save(crop_p)
+    Image.fromarray(plan.occluded_mask_u8).save(mask_p)
+
+    out = {
+        'ok': True,
+        'crop_path': str(crop_p.resolve()),
+        'occluded_mask_path': str(mask_p.resolve()),
+        'crop_bbox': list(plan.crop_bbox),
+        'crop_bbox_arg': ','.join(str(v) for v in plan.crop_bbox),
+        **plan.meta,
+    }
+    meta_p.write_text(json.dumps(out, ensure_ascii=False, indent=2))
+    return out
+
+
+def run_clean_open_air_halo(
+    base_layer_path,
+    front_layer_path,
+    out_path,
+    *,
+    radius_px=14,
+    max_halo_alpha=215,
+    check_out=None,
+    report_out=None,
+):
+    """Strip soft open-air halo/glow pixels left on `base_layer` around `front_layer`."""
+    from src.pipeline.canvas_edit_patch import clean_open_air_halo
+
+    res = clean_open_air_halo(
+        base_layer_path,
+        front_layer_path,
+        radius_px=int(radius_px),
+        max_halo_alpha=int(max_halo_alpha),
+    )
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(res.rgba).save(out_p)
+    check_path = None
+    if check_out:
+        cp = Path(check_out)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        res.comparison.save(cp, quality=92)
+        check_path = str(cp)
+    report = {'ok': True, 'out': str(out_p), 'out_sha256': sha(out_p), 'check_image': check_path, 'stats': res.stats}
+    if report_out:
+        rp = Path(report_out)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    return report
+
+
+def run_rebind_dead_crossings(
+    material_path,
+    plan_path,
+    out_dir,
+    *,
+    diagnostics_path=None,
+    failing_pairs=None,
+    max_rebinds=4,
+):
+    """Deterministically rebind unresolvable crossing layers onto their anatomical anchor module."""
+    from src.pipeline.dead_crossing_rebind import rebind_dead_crossings
+
+    mat = json.loads(Path(material_path).read_text())
+    pl = json.loads(Path(plan_path).read_text())
+    diag = json.loads(Path(diagnostics_path).read_text()) if diagnostics_path else None
+    pairs = None
+    if failing_pairs:
+        pairs = []
+        for item in failing_pairs:
+            parts = [s.strip() for s in str(item).split(',') if s.strip()]
+            if len(parts) != 2:
+                raise ValueError(f'--failing-pair must be layer_a,layer_b, got: {item}')
+            pairs.append((parts[0], parts[1]))
+
+    res = rebind_dead_crossings(mat, pl, diagnostics=diag, failing_pairs=pairs, max_rebinds=int(max_rebinds))
+    out_p = Path(out_dir)
+    out_p.mkdir(parents=True, exist_ok=True)
+    mat_out = out_p / 'material.json'
+    plan_out = out_p / 'plan.json'
+    rep_out = out_p / 'rebind-report.json'
+    mat_out.write_text(json.dumps(res.material, ensure_ascii=False, indent=2))
+    plan_out.write_text(json.dumps(res.plan, ensure_ascii=False, indent=2))
+    out = {'ok': res.status != 'requires_human_review', 'material_out': str(mat_out), 'plan_out': str(plan_out), **res.report}
+    rep_out.write_text(json.dumps(out, ensure_ascii=False, indent=2))
+    return out
+
+
+def run_transfer_sibling_variant(
+    donor_material_path,
+    donor_plan_path,
+    target_source_path,
+    out_dir,
+    *,
+    max_diff_ratio=0.15,
+    diff_threshold=4,
+):
+    """Transfer an already-validated isomorphic donor split & motion plan onto a sibling variant PNG."""
+    from src.pipeline.sibling_variant_transfer import transfer_sibling_variant
+
+    res = transfer_sibling_variant(
+        donor_material_path,
+        donor_plan_path,
+        target_source_path,
+        out_dir,
+        max_diff_ratio=float(max_diff_ratio),
+        diff_threshold=int(diff_threshold),
+    )
+    return res.report
+
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
@@ -606,13 +767,39 @@ def main():
     ep.add_argument('--base-layer',required=True);ep.add_argument('--original',required=True);ep.add_argument('--edit-image',required=True)
     ep.add_argument('--front-layer',help='前景遮挡层PNG（取alpha>=16作为补底上限掩码）')
     ep.add_argument('--occluded-mask',help='显式单通道遮挡掩码PNG（优先于--front-layer）')
+    ep.add_argument('--crop-meta',help='由 prepare-edit-crop 生成的JSON，自动读取 crop_bbox 与 occluded_mask_path')
     ep.add_argument('--out',required=True);ep.add_argument('--check-out');ep.add_argument('--report-out')
     ep.add_argument('--alpha-mode',default='auto',choices=['auto','inpaint_alpha','clip_original'])
     ep.add_argument('--crop-bbox',help='局部裁图回传时的x,y,w,h坐标（可选）')
     ep.add_argument('--max-underlap-px',type=int,default=0)
     ep.add_argument('--feather-px',type=int,default=4)
     ep.add_argument('--no-color-match',action='store_true')
+    ep.add_argument('--replace-occluded',action='store_true',help='允许替换遮挡区内的底层旧像素（如未挖空主体或旧半透明残影），可见区仍100%无损')
     ep.add_argument('--scene-id');ep.add_argument('--node-id')
+
+    pc=sub.add_parser('prepare-edit-crop',help='根据压测诊断或前后层自动生成带锚点上下文的局部裁图与遮挡掩码，消除手写坐标')
+    pc.add_argument('--original',required=True);pc.add_argument('--out-crop',required=True)
+    pc.add_argument('--out-mask',required=True);pc.add_argument('--out-meta',required=True)
+    pc.add_argument('--front-layer');pc.add_argument('--base-layer');pc.add_argument('--occluded-mask')
+    pc.add_argument('--diagnostics');pc.add_argument('--layer-pair',help='仅提取指定层对的露底区，如 scarf,torso')
+    pc.add_argument('--pad-ratio',type=float,default=0.45);pc.add_argument('--min-pad-px',type=int,default=128)
+    pc.add_argument('--min-crop-edge',type=int,default=512)
+
+    ch=sub.add_parser('clean-open-air-halo',help='当补底诊断为 open_air_no_backing 时，清理底层紧贴前景的半透明外沿残晕')
+    ch.add_argument('--base-layer',required=True);ch.add_argument('--front-layer',required=True);ch.add_argument('--out',required=True)
+    ch.add_argument('--radius-px',type=int,default=14);ch.add_argument('--max-halo-alpha',type=int,default=215)
+    ch.add_argument('--check-out');ch.add_argument('--report-out')
+
+    rb=sub.add_parser('rebind-dead-crossings',help='压测死交叉无法补底时，按统一解剖层级自动改绑次级交叉件，保原层序与站姿0px漂移')
+    rb.add_argument('--material',required=True);rb.add_argument('--plan',required=True);rb.add_argument('--out-dir',required=True)
+    rb.add_argument('--diagnostics');rb.add_argument('--failing-pair',action='append',help='显式指定失败层对 layer_a,layer_b，可多次传入')
+    rb.add_argument('--max-rebinds',type=int,default=4)
+
+    ts=sub.add_parser('transfer-sibling-variant',help='同构变体（和谐版/原版、国内/国际版）自动迁移已绿灯归属切分并保目标原画无损')
+    ts.add_argument('--donor-material',required=True);ts.add_argument('--donor-plan',required=True)
+    ts.add_argument('--target-source',required=True);ts.add_argument('--out-dir',required=True)
+    ts.add_argument('--max-diff-ratio',type=float,default=0.15);ts.add_argument('--diff-threshold',type=int,default=4)
+
     a=p.parse_args()
     try:
         if a.command=='workflow':
@@ -626,10 +813,35 @@ def main():
             out=apply_edit_patch(
                 a.base_layer,a.original,a.edit_image,a.out,
                 front_layer_path=a.front_layer,occluded_mask_path=a.occluded_mask,
-                alpha_mode=a.alpha_mode,crop_bbox=a.crop_bbox,
+                alpha_mode=a.alpha_mode,crop_bbox=a.crop_bbox,crop_meta_path=a.crop_meta,
                 max_underlap_px=a.max_underlap_px,feather_px=a.feather_px,
-                color_match=not a.no_color_match,check_out=a.check_out,
-                report_out=a.report_out,scene_id=a.scene_id,node_id=a.node_id,
+                color_match=not a.no_color_match,replace_occluded=a.replace_occluded,
+                check_out=a.check_out,report_out=a.report_out,scene_id=a.scene_id,node_id=a.node_id,
+            )
+        elif a.command=='prepare-edit-crop':
+            out=prepare_edit_crop(
+                a.original,a.out_crop,a.out_mask,a.out_meta,
+                front_layer_path=a.front_layer,base_layer_path=a.base_layer,
+                occluded_mask_path=a.occluded_mask,diagnostics_path=a.diagnostics,
+                layer_pair=a.layer_pair,pad_ratio=a.pad_ratio,
+                min_pad_px=a.min_pad_px,min_crop_edge=a.min_crop_edge,
+            )
+        elif a.command=='clean-open-air-halo':
+            out=run_clean_open_air_halo(
+                a.base_layer,a.front_layer,a.out,
+                radius_px=a.radius_px,max_halo_alpha=a.max_halo_alpha,
+                check_out=a.check_out,report_out=a.report_out,
+            )
+        elif a.command=='rebind-dead-crossings':
+            out=run_rebind_dead_crossings(
+                a.material,a.plan,a.out_dir,
+                diagnostics_path=a.diagnostics,failing_pairs=a.failing_pair,
+                max_rebinds=a.max_rebinds,
+            )
+        elif a.command=='transfer-sibling-variant':
+            out=run_transfer_sibling_variant(
+                a.donor_material,a.donor_plan,a.target_source,a.out_dir,
+                max_diff_ratio=a.max_diff_ratio,diff_threshold=a.diff_threshold,
             )
         else:out=attach_completion(a.analysis,a.import_report,a.node,a.front,a.back,a.out,domain_from_layer=a.domain_from_layer)
         print(json.dumps(out,ensure_ascii=False,indent=2))

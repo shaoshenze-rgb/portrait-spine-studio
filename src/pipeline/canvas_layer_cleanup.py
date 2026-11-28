@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from src.gates.review_binding import read_evidence_rgba, resolve_evidence_path
@@ -614,6 +615,42 @@ def assess_canvas_readiness(selection_receipt, read_receipt=None, library_diagno
     }
 
 
+def _is_sha256_hex(value):
+    return isinstance(value, str) and bool(re.fullmatch(r'[0-9a-f]{64}', value))
+
+
+def check_per_character_override_policy(record):
+    """Enforce governance: per-character point-to-point overrides require explicit human approval."""
+    if not isinstance(record, dict):
+        return {'passed': True, 'has_override': False}
+    override = record.get('per_character_override')
+    if override is None:
+        override = record.get('custom_override')
+    if not override:
+        return {'passed': True, 'has_override': False}
+    if isinstance(override, dict):
+        approved = override.get('approved_by_user') is True
+        note = override.get('approval_note')
+        has_note = isinstance(note, str) and len(note.strip()) >= 4
+        if approved and has_note:
+            return {
+                'passed': True,
+                'has_override': True,
+                'approved_by_user': True,
+                'approval_note': note.strip(),
+            }
+    return {
+        'passed': False,
+        'has_override': True,
+        'approved_by_user': False,
+        'code': 'unapproved_per_character_override',
+        'suggestion': (
+            '严禁未经用户审核同意擅自做单张角色点对点特调：通用流程无法过门时必须先挂起汇报卡点，'
+            '仅在用户明确批准并记录 per_character_override.approved_by_user=true 与 approval_note 后方可执行。'
+        ),
+    }
+
+
 def check_canvas_fallback_policy(parts_entries):
     """Enforce Canvas-first splitting: non-PSD local-direct-split requires real Canvas fallback evidence.
 
@@ -622,8 +659,10 @@ def check_canvas_fallback_policy(parts_entries):
     To prevent deadlocks when the user is remote and explicitly chooses to proceed without Canvas,
     auth-blocked fallback is permitted ONLY with explicit user_approved_fallback=True plus a
     recorded user_approval_note (>= 8 chars) and real diagnostic detail (>= 8 chars).
+    Cryptographically verified isomorphic sibling transfers (`sibling_variant_transfer`, diff <= 15%,
+    distinct donor SHA) are recognized as lossless transfers alongside `psd_artist_layer_split`.
     """
-    canvas_layers, psd_layers, justified_local, unjustified_local = [], [], [], []
+    canvas_layers, psd_layers, sibling_transfer_layers, justified_local, unjustified_local = [], [], [], [], []
     fallback_reasons, auth_blocked_layers, auth_blocked_reasons = [], [], []
     user_approved_fallback_layers = []
     for part in parts_entries:
@@ -636,8 +675,26 @@ def check_canvas_fallback_policy(parts_entries):
             canvas_layers.append(name)
         elif op == 'local-direct-split':
             deriv = prov.get('local_derivation') or {}
-            if deriv.get('method') == 'psd_artist_layer_split':
+            method = deriv.get('method')
+            if method == 'psd_artist_layer_split':
                 psd_layers.append(name)
+            elif method == 'sibling_variant_transfer':
+                donor_sha = deriv.get('donor_source_sha256')
+                parent_sha = deriv.get('parent_aligned_sha256')
+                manifest_sha = deriv.get('donor_manifest_sha256')
+                diff_ratio = deriv.get('diff_ratio')
+                valid_transfer = (
+                    _is_sha256_hex(donor_sha)
+                    and _is_sha256_hex(parent_sha)
+                    and donor_sha != parent_sha
+                    and _is_sha256_hex(manifest_sha)
+                    and isinstance(diff_ratio, (int, float))
+                    and 0.0 <= float(diff_ratio) <= 0.15
+                )
+                if valid_transfer:
+                    sibling_transfer_layers.append(name)
+                else:
+                    unjustified_local.append(name)
             else:
                 fb = deriv.get('canvas_fallback')
                 reason = fb.get('reason') if isinstance(fb, dict) else None
@@ -669,6 +726,7 @@ def check_canvas_fallback_policy(parts_entries):
         'bypassed': bypassed,
         'canvas_layers': canvas_layers,
         'psd_layers': psd_layers,
+        'sibling_transfer_layers': sibling_transfer_layers,
         'justified_local_layers': justified_local,
         'unjustified_local_layers': unjustified_local,
         'fallback_reasons': fallback_reasons,
@@ -721,7 +779,16 @@ def inspect_canvas_parts_warnings(parts_dir, *, evidence_root):
     fallback_policy = check_canvas_fallback_policy(parts['parts'])
     if fallback_policy['bypassed']:
         warnings.append(_canvas_bypass_warning(fallback_policy))
-    return {'layers': {}, 'warnings': warnings, 'original_fidelity': fidelity, 'canvas_fallback_policy': fallback_policy}
+    override_policy = check_per_character_override_policy(parts)
+    if not override_policy['passed']:
+        warnings.append(override_policy)
+    return {
+        'layers': {},
+        'warnings': warnings,
+        'original_fidelity': fidelity,
+        'canvas_fallback_policy': fallback_policy,
+        'per_character_override_policy': override_policy,
+    }
 
 
 def prepare_canvas_parts(parts_dir, plan, out_dir, *, evidence_root, cleanup=True, tweaks=None, recover_missing=True):

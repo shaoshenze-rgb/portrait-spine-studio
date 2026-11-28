@@ -29,6 +29,14 @@ class CanvasEditPatchResult:
     comparison: Image.Image
 
 
+@dataclass
+class OccludedEditCropPlan:
+    crop_rgba: np.ndarray
+    occluded_mask_u8: np.ndarray
+    crop_bbox: Tuple[int, int, int, int]
+    meta: Dict[str, Any]
+
+
 def _to_rgba_array(img: Any) -> np.ndarray:
     if isinstance(img, np.ndarray):
         arr = img
@@ -198,6 +206,7 @@ def estimate_edit_foreground_alpha(
     *,
     mode: str = "auto",
     source_has_native_alpha: Optional[bool] = None,
+    replace_occluded: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Derive a clean alpha channel for an aligned Canvas edit image inside the occluded zone."""
     import cv2
@@ -210,7 +219,10 @@ def estimate_edit_foreground_alpha(
 
     if mode == "inpaint_alpha":
         base_a = base_layer_rgba[..., 3].astype(np.uint8)
-        hole = (occluded_mask & (base_a < 250) & (aligned_edit_rgba[..., 3] > 0)).astype(np.uint8) * 255
+        if replace_occluded:
+            hole = (occluded_mask & (aligned_edit_rgba[..., 3] > 0)).astype(np.uint8) * 255
+        else:
+            hole = (occluded_mask & (base_a < 250) & (aligned_edit_rgba[..., 3] > 0)).astype(np.uint8) * 255
         if hole.any():
             inpainted = cv2.inpaint(base_a, hole, inpaintRadius=12, flags=cv2.INPAINT_TELEA)
             blurred = cv2.GaussianBlur(inpainted, (0, 0), sigmaX=4.0)
@@ -325,12 +337,15 @@ def compose_canvas_edit_patch(
     max_underlap_px: int = 0,
     feather_px: int = 4,
     color_match: bool = True,
+    replace_occluded: bool = False,
     aligned_edit_rgba: Optional[np.ndarray] = None,
 ) -> CanvasEditPatchResult:
     """Losslessly patch occluded backing pixels from a Canvas edit onto `base_layer_rgba`.
 
-    Visible pixels of `base_layer_rgba` outside `occluded_mask` (and opaque base pixels inside it)
-    are guaranteed bit-for-bit preserved so rest-pose fidelity stays 100% identical to original 4K art.
+    Visible pixels of `base_layer_rgba` outside `occluded_mask` are always guaranteed bit-for-bit
+    preserved so rest-pose fidelity stays 100% identical to original 4K art. When
+    `replace_occluded=True`, existing opaque or semi-transparent pixels strictly inside the occluded
+    zone (hidden behind the front part at rest) may be replaced by the Canvas-inpainted backing.
     """
     import cv2
 
@@ -358,6 +373,7 @@ def compose_canvas_edit_patch(
         occ,
         mode=alpha_mode,
         source_has_native_alpha=reg_metrics.get("source_has_native_alpha"),
+        replace_occluded=replace_occluded,
     )
     aligned_with_alpha = aligned.copy()
     aligned_with_alpha[..., 3] = est_alpha
@@ -368,58 +384,268 @@ def compose_canvas_edit_patch(
         if base_support.any():
             patch_zone &= _dilate_bool(base_support, int(max_underlap_px))
 
-    fill_candidates = patch_zone & (base[..., 3] < 250) & (est_alpha > 0)
+    if replace_occluded:
+        fill_candidates = patch_zone & (aligned[..., 3] > 0)
+    else:
+        fill_candidates = patch_zone & (base[..., 3] < 250) & (est_alpha > 0)
 
     shift_rgb = np.zeros(3, dtype=np.float32)
     if color_match and fill_candidates.any():
         ring = _dilate_bool(fill_candidates, 18) & (~patch_zone) & (base[..., 3] >= 180) & (est_alpha >= 180)
         if int(ring.sum()) < 32:
-            ring = _dilate_bool(fill_candidates, 28) & (~fill_candidates) & (base[..., 3] >= 160) & (est_alpha >= 160)
+            if replace_occluded:
+                ring = _dilate_bool(fill_candidates, 32) & (~patch_zone) & (base[..., 3] >= 160) & (est_alpha >= 160)
+            else:
+                ring = _dilate_bool(fill_candidates, 28) & (~fill_candidates) & (base[..., 3] >= 160) & (est_alpha >= 160)
         if int(ring.sum()) >= 32:
             diff = base[..., :3][ring].astype(np.float32) - aligned[..., :3][ring].astype(np.float32)
             shift_rgb = np.clip(np.median(diff, axis=0), -30.0, 30.0).astype(np.float32)
 
     patched_rgb = np.clip(aligned[..., :3].astype(np.float32) + shift_rgb[None, None, :], 0.0, 255.0)
-
-    patch_alpha_f = np.where(fill_candidates, est_alpha.astype(np.float32) / 255.0, 0.0)
-    if feather_px > 0 and fill_candidates.any():
-        zone_u8 = patch_zone.astype(np.uint8) * 255
-        dist_in = cv2.distanceTransform(zone_u8, cv2.DIST_L2, 5)
-        ramp = np.clip(dist_in / float(feather_px), 0.0, 1.0)
-        near_base = _dilate_bool(base[..., 3] >= 200, int(feather_px) + 2)
-        ramp = np.where(near_base, 1.0, ramp)
-        patch_alpha_f *= ramp
-
     base_f = base.astype(np.float32)
     ba = base_f[..., 3:4] / 255.0
-    pa = patch_alpha_f[..., None]
-    out_a = ba + pa * (1.0 - ba)
-    out_rgb = np.divide(
-        base_f[..., :3] * ba + patched_rgb * pa * (1.0 - ba),
-        out_a,
-        out=base_f[..., :3].copy(),
-        where=out_a > 1e-6,
-    )
-    out = np.concatenate([np.clip(np.rint(out_rgb), 0, 255), np.clip(np.rint(out_a * 255.0), 0, 255)], axis=2).astype(
-        np.uint8
-    )
 
-    sacred = (~patch_zone) | (base[..., 3] == 255)
-    out[sacred] = base[sacred]
+    if replace_occluded:
+        if feather_px > 0 and fill_candidates.any():
+            zone_u8 = fill_candidates.astype(np.uint8) * 255
+            dist_in = cv2.distanceTransform(zone_u8, cv2.DIST_L2, 5)
+            w_in = np.where(fill_candidates, np.clip(dist_in / float(feather_px), 0.0, 1.0), 0.0)[..., None]
+        else:
+            w_in = fill_candidates.astype(np.float32)[..., None]
+        ta = (est_alpha.astype(np.float32) / 255.0)[..., None]
+        out_a = ba * (1.0 - w_in) + ta * w_in
+        out_rgb = np.divide(
+            base_f[..., :3] * ba * (1.0 - w_in) + patched_rgb * ta * w_in,
+            out_a,
+            out=np.zeros_like(base_f[..., :3]),
+            where=out_a > 1e-6,
+        )
+        out = np.concatenate([np.clip(np.rint(out_rgb), 0, 255), np.clip(np.rint(out_a * 255.0), 0, 255)], axis=2).astype(
+            np.uint8
+        )
+        sacred = ~patch_zone
+        out[sacred] = base[sacred]
+        patched_mask = (~sacred) & (np.abs(out.astype(np.int16) - base.astype(np.int16)).max(axis=2) > 0)
+    else:
+        patch_alpha_f = np.where(fill_candidates, est_alpha.astype(np.float32) / 255.0, 0.0)
+        if feather_px > 0 and fill_candidates.any():
+            zone_u8 = patch_zone.astype(np.uint8) * 255
+            dist_in = cv2.distanceTransform(zone_u8, cv2.DIST_L2, 5)
+            ramp = np.clip(dist_in / float(feather_px), 0.0, 1.0)
+            near_base = _dilate_bool(base[..., 3] >= 200, int(feather_px) + 2)
+            ramp = np.where(near_base, 1.0, ramp)
+            patch_alpha_f *= ramp
 
-    patched_mask = (~sacred) & (out[..., 3] > base[..., 3])
+        pa = patch_alpha_f[..., None]
+        out_a = ba + pa * (1.0 - ba)
+        out_rgb = np.divide(
+            base_f[..., :3] * ba + patched_rgb * pa * (1.0 - ba),
+            out_a,
+            out=base_f[..., :3].copy(),
+            where=out_a > 1e-6,
+        )
+        out = np.concatenate([np.clip(np.rint(out_rgb), 0, 255), np.clip(np.rint(out_a * 255.0), 0, 255)], axis=2).astype(
+            np.uint8
+        )
+        sacred = (~patch_zone) | (base[..., 3] == 255)
+        out[sacred] = base[sacred]
+        patched_mask = (~sacred) & (out[..., 3] > base[..., 3])
+
     outside_diff = int(np.abs(out[~occ].astype(np.int16) - base[~occ].astype(np.int16)).max()) if (~occ).any() else 0
+    patch_zone_px = int(patch_zone.sum())
+    edit_fg_in_patch_px = int((patch_zone & (est_alpha >= 32)).sum())
+    edit_fg_ratio = float(edit_fg_in_patch_px / max(1, patch_zone_px))
+
+    if patch_zone_px == 0:
+        diagnosis, next_action = "empty_patch_zone", "check_occluded_mask_or_underlap"
+    elif patch_zone_px >= 64 and edit_fg_ratio < 0.03:
+        diagnosis, next_action = "open_air_no_backing", "clean_open_air_halo"
+    elif edit_fg_ratio < 0.12 or int(patched_mask.sum()) == 0:
+        diagnosis, next_action = "sparse_or_shifted_backing", "retry_local_crop_or_rebind_dead_crossing"
+    else:
+        diagnosis, next_action = "usable_backing", "inspect_check_image_and_probe"
 
     stats: Dict[str, Any] = {
         "method": "aligned_occluded_backing_patch",
         "registration": reg_metrics,
         **alpha_meta,
+        "replace_occluded": bool(replace_occluded),
         "occluded_mask_px": int(occ.sum()),
-        "patch_zone_px": int(patch_zone.sum()),
+        "patch_zone_px": patch_zone_px,
         "patched_px": int(patched_mask.sum()),
+        "edit_fg_in_patch_zone_px": edit_fg_in_patch_px,
+        "edit_fg_ratio_in_patch_zone": round(edit_fg_ratio, 4),
+        "backing_diagnosis": diagnosis,
+        "recommended_next_action": next_action,
         "color_shift_rgb": [round(float(v), 2) for v in shift_rgb],
         "max_outside_diff": outside_diff,
         "rest_pose_preserved": outside_diff == 0,
     }
     comp = _render_patch_comparison(base, aligned_with_alpha, out, patched_mask)
+    return CanvasEditPatchResult(rgba=out, stats=stats, comparison=comp)
+
+
+def plan_occluded_edit_crop(
+    original_rgba: Any,
+    *,
+    occluded_mask: Optional[np.ndarray] = None,
+    front_layer_rgba: Optional[Any] = None,
+    base_layer_rgba: Optional[Any] = None,
+    diagnostics: Optional[Dict[str, Any]] = None,
+    layer_pair: Optional[Tuple[str, str]] = None,
+    pad_ratio: float = 0.45,
+    min_pad_px: int = 128,
+    min_crop_edge: int = 512,
+    region_expand_px: Optional[int] = None,
+    contact_radius_px: Optional[int] = None,
+) -> OccludedEditCropPlan:
+    """Automatically derive an anchor-rich local crop and occluded mask for `canvas_edit_image`.
+
+    Eliminates manual per-hero coordinate recipes and prevents full-body geometry drift when
+    generative edit models remove an occluding strap, braid, scarf, or floating prop.
+    """
+    orig = _to_rgba_array(original_rgba)
+    h, w = orig.shape[:2]
+    long_edge = max(h, w)
+    front = _to_rgba_array(front_layer_rgba) if front_layer_rgba is not None else None
+    base = _to_rgba_array(base_layer_rgba) if base_layer_rgba is not None else None
+    if front is not None and front.shape[:2] != (h, w):
+        raise ValueError(f"front_layer_rgba {front.shape[:2]} != original {orig.shape[:2]}")
+    if base is not None and base.shape[:2] != (h, w):
+        raise ValueError(f"base_layer_rgba {base.shape[:2]} != original {orig.shape[:2]}")
+
+    source_kind = "explicit_mask"
+    matched_regions = 0
+    if occluded_mask is not None:
+        mask = np.asarray(occluded_mask, dtype=bool)
+        if mask.shape != (h, w):
+            raise ValueError(f"occluded_mask shape {mask.shape} != {(h, w)}")
+    else:
+        diag_roi = np.zeros((h, w), dtype=bool)
+        if diagnostics is not None:
+            stress = diagnostics.get("exposure_stress") if isinstance(diagnostics.get("exposure_stress"), dict) else diagnostics
+            levels = stress.get("levels") if isinstance(stress, dict) else None
+            exp = int(region_expand_px if region_expand_px is not None else max(48, round(96 * long_edge / 1800.0)))
+            target_pair = set(layer_pair) if layer_pair else None
+            if isinstance(levels, dict):
+                for lvl in levels.values():
+                    for frame in (lvl or {}).get("frames") or []:
+                        for reg in frame.get("regions") or []:
+                            layers = set(reg.get("layers") or [])
+                            if target_pair is not None and not target_pair.issubset(layers):
+                                continue
+                            bbox = reg.get("bbox")
+                            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                                rx0, ry0, rx1, ry1 = (int(v) for v in bbox)
+                                x0, y0 = max(0, rx0 - exp), max(0, ry0 - exp)
+                                x1, y1 = min(w, rx1 + exp), min(h, ry1 + exp)
+                                if x1 > x0 and y1 > y0:
+                                    diag_roi[y0:y1, x0:x1] = True
+                                    matched_regions += 1
+        if diag_roi.any():
+            source_kind = "diagnostics_exposure_regions"
+            if front is not None:
+                mask = diag_roi & (front[..., 3] >= 16)
+                if not mask.any():
+                    mask = diag_roi & (orig[..., 3] >= 16)
+            else:
+                mask = diag_roi & (orig[..., 3] >= 16)
+        elif front is not None:
+            front_mask = front[..., 3] >= 16
+            if base is not None:
+                c_rad = int(contact_radius_px if contact_radius_px is not None else max(120, round(long_edge * 0.04)))
+                near_base = _dilate_bool(base[..., 3] >= 16, c_rad)
+                contact = front_mask & near_base
+                if contact.any():
+                    mask = contact
+                    source_kind = "front_base_contact"
+                else:
+                    mask = front_mask
+                    source_kind = "front_layer_full"
+            else:
+                mask = front_mask
+                source_kind = "front_layer_full"
+        else:
+            raise ValueError("Provide occluded_mask, diagnostics with exposure regions, or front_layer_rgba.")
+
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        raise ValueError(f"Derived occluded mask is empty (source={source_kind})")
+
+    mx0, my0, mx1, my1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+    mw, mh = mx1 - mx0, my1 - my0
+    pad = max(int(min_pad_px), int(round(max(mw, mh) * float(pad_ratio))))
+    cx0, cy0 = max(0, mx0 - pad), max(0, my0 - pad)
+    cx1, cy1 = min(w, mx1 + pad), min(h, my1 + pad)
+
+    min_edge_w = min(int(min_crop_edge), w)
+    min_edge_h = min(int(min_crop_edge), h)
+    if (cx1 - cx0) < min_edge_w:
+        mid_x = (cx0 + cx1) // 2
+        cx0 = max(0, min(w - min_edge_w, mid_x - min_edge_w // 2))
+        cx1 = cx0 + min_edge_w
+    if (cy1 - cy0) < min_edge_h:
+        mid_y = (cy0 + cy1) // 2
+        cy0 = max(0, min(h - min_edge_h, mid_y - min_edge_h // 2))
+        cy1 = cy0 + min_edge_h
+
+    crop_bbox = (int(cx0), int(cy0), int(cx1 - cx0), int(cy1 - cy0))
+    crop_rgba = np.ascontiguousarray(orig[cy0:cy1, cx0:cx1].copy())
+    mask_u8 = (mask.astype(np.uint8) * 255)
+    meta = {
+        "source": source_kind,
+        "matched_exposure_regions": matched_regions,
+        "image_size": [w, h],
+        "occluded_bbox_xywh": [mx0, my0, mw, mh],
+        "occluded_mask_px": int(mask.sum()),
+        "crop_bbox": list(crop_bbox),
+        "pad_px": pad,
+    }
+    return OccludedEditCropPlan(crop_rgba=crop_rgba, occluded_mask_u8=mask_u8, crop_bbox=crop_bbox, meta=meta)
+
+
+def clean_open_air_halo(
+    base_layer_rgba: Any,
+    front_layer_rgba: Any,
+    *,
+    radius_px: int = 14,
+    max_halo_alpha: int = 215,
+    min_solid_alpha: int = 245,
+) -> CanvasEditPatchResult:
+    """Strip soft front-prop halo/glow fringe left on `base_layer_rgba` when backing is open air.
+
+    Preserves 100% of solid opaque body core pixels and all pixels outside the immediate halo ring
+    around `front_layer_rgba`.
+    """
+    base = _to_rgba_array(base_layer_rgba)
+    front = _to_rgba_array(front_layer_rgba)
+    if base.shape[:2] != front.shape[:2]:
+        raise ValueError(f"base_layer_rgba {base.shape[:2]} != front_layer_rgba {front.shape[:2]}")
+
+    front_mask = front[..., 3] >= 16
+    solid_core = _erode_bool(base[..., 3] >= int(min_solid_alpha), 2)
+    halo_zone = _dilate_bool(front_mask, int(radius_px)) & (~solid_core)
+    strip_mask = halo_zone & (base[..., 3] > 0) & (
+        (base[..., 3] <= int(max_halo_alpha)) | (front_mask & (base[..., 3] < int(min_solid_alpha)))
+    )
+
+    out = base.copy()
+    out[strip_mask] = 0
+    out[solid_core] = base[solid_core]
+    out[~halo_zone] = base[~halo_zone]
+
+    core_diff = int(np.abs(out[solid_core].astype(np.int16) - base[solid_core].astype(np.int16)).max()) if solid_core.any() else 0
+    outside_diff = int(np.abs(out[~halo_zone].astype(np.int16) - base[~halo_zone].astype(np.int16)).max()) if (~halo_zone).any() else 0
+
+    stats: Dict[str, Any] = {
+        "method": "clean_open_air_halo",
+        "radius_px": int(radius_px),
+        "max_halo_alpha": int(max_halo_alpha),
+        "halo_zone_px": int(halo_zone.sum()),
+        "stripped_halo_px": int(strip_mask.sum()),
+        "max_solid_core_diff": core_diff,
+        "max_outside_halo_diff": outside_diff,
+        "solid_core_preserved": core_diff == 0,
+    }
+    comp = _render_patch_comparison(base, front, out, strip_mask)
     return CanvasEditPatchResult(rgba=out, stats=stats, comparison=comp)

@@ -162,5 +162,7 @@ def materialize_canvas_layer_parts(manifest, out_dir, *, evidence_root):
               'originalSource': str(source), 'originalSourceSHA256': _sha(source),
               'parts': metadata, 'opaqueThreshold': 256, 'preserveSourceRGBA': False,
               'layerReview': 'pending', 'productionIntakeReady': False, 'exportAllowed': False}
+    if manifest.get('per_character_override') is not None:
+        result['per_character_override'] = manifest['per_character_override']
     (out / 'parts.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result
